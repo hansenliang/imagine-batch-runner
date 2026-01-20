@@ -6,6 +6,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { AccountManager } from './core/accounts.js';
 import { BatchRunner } from './core/runner.js';
+import { ParallelRunner } from './core/parallel-runner.js';
 import config from './config.js';
 
 const program = new Command();
@@ -54,17 +55,52 @@ const run = program.command('run').description('Manage batch runs');
 run
   .command('start')
   .description('Start a new batch generation run')
-  .requiredOption('--account <alias>', 'Account alias to use')
-  .requiredOption('--permalink <url>', 'Grok image permalink URL')
-  .requiredOption('--prompt <text>', 'Prompt for video generation')
+  .option('--config <path>', 'Load config from JSON file')
+  .option('--account <alias>', 'Account alias to use')
+  .option('--permalink <url>', 'Grok image permalink URL')
+  .option('--prompt <text>', 'Prompt for video generation')
   .option('--count <number>', 'Number of videos to generate', String(config.DEFAULT_BATCH_SIZE))
   .option('--job-name <name>', 'Custom job name (default: auto-generated)')
+  .option('--parallel <count>', 'Number of parallel workers (1-100)', '1')
   .action(async (options) => {
     try {
+      // Load config file if specified
+      if (options.config) {
+        console.log(chalk.gray(`Loading config from: ${options.config}\n`));
+        const configData = JSON.parse(await fs.readFile(options.config, 'utf-8'));
+
+        // Merge config with options, but preserve config values for defaults
+        // Save original parallel value to detect if it was explicitly set
+        const parallelWasDefault = options.parallel === '1';
+
+        options = { ...configData, ...options };
+
+        // If parallel wasn't explicitly set on CLI, use config value
+        if (parallelWasDefault && configData.parallel !== undefined) {
+          options.parallel = configData.parallel;
+        }
+      }
+
+      // Validate required fields
+      if (!options.account) {
+        throw new Error('--account is required (or specify in config file)');
+      }
+      if (!options.permalink) {
+        throw new Error('--permalink is required (or specify in config file)');
+      }
+      if (!options.prompt) {
+        throw new Error('--prompt is required (or specify in config file)');
+      }
+
       // Validate inputs
       const batchSize = parseInt(options.count, 10);
       if (isNaN(batchSize) || batchSize < 1 || batchSize > config.MAX_BATCH_SIZE) {
         throw new Error(`Count must be between 1 and ${config.MAX_BATCH_SIZE}`);
+      }
+
+      const parallelism = parseInt(options.parallel, 10);
+      if (isNaN(parallelism) || parallelism < 1 || parallelism > config.MAX_PARALLELISM) {
+        throw new Error(`Parallel must be between 1 and ${config.MAX_PARALLELISM}`);
       }
 
       if (!options.permalink.includes('grok.com/imagine')) {
@@ -75,7 +111,7 @@ run
       const accountManager = new AccountManager();
       const exists = await accountManager.accountExists(options.account);
       if (!exists) {
-        throw new Error(`Account "${options.account}" not found. Run "grok-batch accounts:add ${options.account}" first.`);
+        throw new Error(`Account "${options.account}" not found. Run "grok-batch accounts add ${options.account}" first.`);
       }
 
       console.log(chalk.blue('\n🚀 Starting batch run...\n'));
@@ -83,16 +119,28 @@ run
       console.log(chalk.gray(`Permalink: ${options.permalink}`));
       console.log(chalk.gray(`Prompt: "${options.prompt}"`));
       console.log(chalk.gray(`Batch size: ${batchSize}`));
+      if (parallelism > 1) {
+        console.log(chalk.gray(`Parallelism: ${parallelism} workers`));
+      }
       console.log('');
 
-      // Create and start runner
-      const runner = new BatchRunner({
-        accountAlias: options.account,
-        permalink: options.permalink,
-        prompt: options.prompt,
-        batchSize,
-        jobName: options.jobName,
-      });
+      // Create and start runner (parallel if parallelism > 1)
+      const runner = parallelism > 1
+        ? new ParallelRunner({
+            accountAlias: options.account,
+            permalink: options.permalink,
+            prompt: options.prompt,
+            batchSize,
+            jobName: options.jobName,
+            parallelism,
+          })
+        : new BatchRunner({
+            accountAlias: options.account,
+            permalink: options.permalink,
+            prompt: options.prompt,
+            batchSize,
+            jobName: options.jobName,
+          });
 
       await runner.init();
       const summary = await runner.start();
@@ -121,12 +169,32 @@ run
 run
   .command('resume <runDir>')
   .description('Resume a stopped or failed run')
-  .action(async (runDir) => {
+  .option('--parallel <count>', 'Override parallelism (for parallel runs)', null)
+  .action(async (runDir, options) => {
     try {
       console.log(chalk.blue('\n🔄 Resuming run...\n'));
 
-      const runner = new BatchRunner({});
-      await runner.resume(runDir);
+      // Detect if this is a parallel run
+      const isParallel = await ParallelRunner.isParallelRun(runDir);
+
+      let runner;
+      if (isParallel) {
+        console.log(chalk.gray('Detected parallel run\n'));
+        runner = new ParallelRunner({});
+        await runner.resume(runDir);
+        // Override parallelism if specified
+        if (options.parallel) {
+          const newParallelism = parseInt(options.parallel, 10);
+          if (newParallelism > 0 && newParallelism <= config.MAX_PARALLELISM) {
+            runner.parallelism = newParallelism;
+            console.log(chalk.gray(`Overriding parallelism to ${newParallelism} workers\n`));
+          }
+        }
+      } else {
+        console.log(chalk.gray('Detected sequential run\n'));
+        runner = new BatchRunner({});
+        await runner.resume(runDir);
+      }
 
       const summary = await runner.start();
 

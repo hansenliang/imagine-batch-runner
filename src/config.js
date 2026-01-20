@@ -30,6 +30,14 @@ export const config = {
   DEFAULT_BATCH_SIZE: 10,
   MAX_BATCH_SIZE: 100,
 
+  // Parallel execution
+  DEFAULT_PARALLELISM: 10,
+  MAX_PARALLELISM: 100,
+  WORKER_STARTUP_DELAY: 1000, // 1s stagger between worker launches
+  WORKER_SHUTDOWN_TIMEOUT: 60000, // 60s grace period for shutdown
+  CLAIM_RETRY_INTERVAL: 2000, // 2s between work claim attempts
+  WORKER_PROFILE_CLEANUP: true, // Delete worker profiles after run
+
   // Browser settings
   HEADED_MODE: true, // Default to headed for debugging
   VIEWPORT: { width: 1280, height: 720 },
