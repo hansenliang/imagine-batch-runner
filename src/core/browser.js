@@ -11,6 +11,10 @@ export class BrowserManager {
     this.accountAlias = accountAlias;
     this.logger = logger;
     this.profileDir = path.join(config.PROFILES_DIR, accountAlias);
+    this.chromeProfileName = config.CHROME_PROFILE_NAME || 'Default';
+    this.userDataDir = config.CHROME_USER_DATA_DIR
+      ? path.join(config.PROFILES_DIR, `${accountAlias}-chrome`)
+      : this.profileDir;
     this.browser = null;
     this.context = null;
     this.page = null;
@@ -20,7 +24,42 @@ export class BrowserManager {
    * Ensure profile directory exists
    */
   async ensureProfile() {
-    await fs.mkdir(this.profileDir, { recursive: true });
+    if (!config.CHROME_USER_DATA_DIR) {
+      await fs.mkdir(this.profileDir, { recursive: true });
+      return;
+    }
+
+    await fs.mkdir(this.userDataDir, { recursive: true });
+
+    const sourceUserDataDir = config.CHROME_USER_DATA_DIR;
+    const sourceProfileDir = path.join(sourceUserDataDir, this.chromeProfileName);
+    const destProfileDir = path.join(this.userDataDir, this.chromeProfileName);
+    const sourceLocalState = path.join(sourceUserDataDir, 'Local State');
+    const destLocalState = path.join(this.userDataDir, 'Local State');
+
+    try {
+      await fs.access(sourceProfileDir);
+    } catch {
+      this.logger.warn(`Chrome profile not found at ${sourceProfileDir}`);
+      return;
+    }
+
+    try {
+      await fs.access(destProfileDir);
+    } catch {
+      this.logger.info('Copying Chrome profile data (one-time)...');
+      await fs.cp(sourceProfileDir, destProfileDir, { recursive: true });
+    }
+
+    try {
+      await fs.access(destLocalState);
+    } catch {
+      try {
+        await fs.copyFile(sourceLocalState, destLocalState);
+      } catch {
+        this.logger.warn('Could not copy Chrome Local State file.');
+      }
+    }
   }
 
   /**
@@ -31,12 +70,19 @@ export class BrowserManager {
 
     this.logger.info(`Launching browser for account: ${this.accountAlias}`);
 
-    this.context = await chromium.launchPersistentContext(this.profileDir, {
+    const userDataDir = this.userDataDir;
+    const launchArgs = [
+      '--disable-blink-features=AutomationControlled',
+    ];
+    if (this.chromeProfileName) {
+      launchArgs.push(`--profile-directory=${this.chromeProfileName}`);
+    }
+
+    this.context = await chromium.launchPersistentContext(userDataDir, {
+      channel: 'chrome',
       headless: !config.HEADED_MODE,
       viewport: config.VIEWPORT,
-      args: [
-        '--disable-blink-features=AutomationControlled',
-      ],
+      args: launchArgs,
     });
 
     this.browser = this.context.browser();

@@ -96,6 +96,28 @@ Edit `src/config.js` to customize:
 - **Retries**: Max retries per video (default: 3)
 - **Rate limits**: Videos per period (default: 100 per 4 hours)
 - **Browser mode**: Headed vs headless (default: headed for debugging)
+- **Chrome profile**: Optional system profile via env vars
+
+### Use your real Chrome profile (recommended if captcha loops)
+
+Set these env vars before running commands:
+
+```bash
+# macOS example
+export CHROME_USER_DATA_DIR="/Users/<you>/Library/Application Support/Google/Chrome"
+export CHROME_PROFILE_NAME="Default"   # or "Profile 1", "Profile 2", etc.
+```
+
+This will copy your profile into the tool's own user-data directory
+(Playwright can't launch Chrome with the default profile directly).
+
+Then run account setup again:
+
+```bash
+npm start accounts add <alias>
+```
+
+Make sure all Chrome windows are closed before launching.
 
 ## Rate Limiting
 

@@ -51,13 +51,61 @@ export class VideoGenerator {
     const makeVideoBtn = await this.page.$(selectors.MAKE_VIDEO_BUTTON);
     const redoBtn = await this.page.$(selectors.REDO_BUTTON);
 
-    const button = makeVideoBtn || redoBtn;
+    let button = makeVideoBtn || redoBtn;
+    let buttonLabel = null;
+
+    if (!button) {
+      // Fallback: scan visible buttons for likely labels
+      const candidates = await this.page.$$('button, [role="button"]');
+      const matchers = [
+        /make\s+video/i,
+        /create\s+video/i,
+        /generate\s+video/i,
+        /redo/i,
+        /animate/i,
+        /remake\s+video/i,
+      ];
+
+      for (const candidate of candidates) {
+        const isVisible = await candidate.isVisible().catch(() => false);
+        if (!isVisible) continue;
+
+        const text = await candidate.innerText().catch(() => '');
+        const aria = await candidate.getAttribute('aria-label').catch(() => '');
+        const label = `${text} ${aria}`.trim().replace(/\s+/g, ' ');
+        if (!label) continue;
+
+        if (matchers.some((pattern) => pattern.test(label))) {
+          button = candidate;
+          buttonLabel = label;
+          break;
+        }
+      }
+
+      if (!button) {
+        const visibleLabels = [];
+        for (const candidate of candidates) {
+          const isVisible = await candidate.isVisible().catch(() => false);
+          if (!isVisible) continue;
+
+          const text = await candidate.innerText().catch(() => '');
+          const aria = await candidate.getAttribute('aria-label').catch(() => '');
+          const label = `${text} ${aria}`.trim().replace(/\s+/g, ' ');
+          if (label) visibleLabels.push(label.slice(0, 80));
+          if (visibleLabels.length >= 10) break;
+        }
+
+        this.logger.debug(
+          `[Video ${index + 1}] Visible buttons: ${visibleLabels.join(' | ') || 'none'}`
+        );
+      }
+    }
 
     if (!button) {
       throw new Error('Generation button not found (neither "Make video" nor "Redo")');
     }
 
-    const buttonText = await button.textContent();
+    const buttonText = buttonLabel || await button.textContent();
     this.logger.debug(`[Video ${index + 1}] Found button: "${buttonText}"`);
 
     // Check if button is disabled (might indicate rate limit)

@@ -33,6 +33,13 @@ export const config = {
   // Browser settings
   HEADED_MODE: true, // Default to headed for debugging
   VIEWPORT: { width: 1280, height: 720 },
+
+  // Optional: use real Chrome user profile to reduce bot checks
+  // This will COPY the chosen profile into the tool's own user-data dir.
+  // Example macOS path: /Users/<you>/Library/Application Support/Google/Chrome
+  CHROME_USER_DATA_DIR: process.env.CHROME_USER_DATA_DIR || '',
+  // Example: "Default", "Profile 1", "Profile 2"
+  CHROME_PROFILE_NAME: process.env.CHROME_PROFILE_NAME || '',
 };
 
 // UI Selectors (centralized for easy updates)

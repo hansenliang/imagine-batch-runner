@@ -44,11 +44,60 @@ export class AccountManager {
     console.log(chalk.gray('Once logged in, close the browser window to complete setup.\n'));
 
     const profileDir = path.join(config.PROFILES_DIR, alias);
-    await fs.mkdir(profileDir, { recursive: true });
+    const useSystemProfile = Boolean(config.CHROME_USER_DATA_DIR);
+    const chromeProfileName = config.CHROME_PROFILE_NAME || 'Default';
+    let userDataDir = profileDir;
 
-    const context = await chromium.launchPersistentContext(profileDir, {
+    if (useSystemProfile) {
+      userDataDir = path.join(config.PROFILES_DIR, `${alias}-chrome`);
+      await fs.mkdir(userDataDir, { recursive: true });
+
+      console.log(chalk.yellow(`Using a copy of your Chrome profile: ${chromeProfileName}`));
+      console.log(chalk.gray('Make sure all Chrome windows are closed before continuing.\n'));
+
+      const sourceUserDataDir = config.CHROME_USER_DATA_DIR;
+      const sourceProfileDir = path.join(sourceUserDataDir, chromeProfileName);
+      const destProfileDir = path.join(userDataDir, chromeProfileName);
+      const sourceLocalState = path.join(sourceUserDataDir, 'Local State');
+      const destLocalState = path.join(userDataDir, 'Local State');
+
+      try {
+        await fs.access(sourceProfileDir);
+      } catch {
+        throw new Error(`Chrome profile not found at ${sourceProfileDir}`);
+      }
+
+      try {
+        await fs.access(destProfileDir);
+      } catch {
+        console.log(chalk.gray('Copying Chrome profile data (one-time)...'));
+        await fs.cp(sourceProfileDir, destProfileDir, { recursive: true });
+      }
+
+      try {
+        await fs.access(destLocalState);
+      } catch {
+        try {
+          await fs.copyFile(sourceLocalState, destLocalState);
+        } catch {
+          console.log(chalk.yellow('Warning: could not copy Chrome Local State file.'));
+          console.log(chalk.gray('Saved login may not be available.\n'));
+        }
+      }
+    } else {
+      await fs.mkdir(profileDir, { recursive: true });
+    }
+
+    const launchArgs = ['--disable-blink-features=AutomationControlled'];
+    if (chromeProfileName) {
+      launchArgs.push(`--profile-directory=${chromeProfileName}`);
+    }
+
+    const context = await chromium.launchPersistentContext(userDataDir, {
+      channel: 'chrome',
       headless: false,
       viewport: config.VIEWPORT,
+      args: launchArgs,
     });
 
     const page = context.pages()[0] || await context.newPage();
@@ -68,7 +117,7 @@ export class AccountManager {
     const accounts = await this.loadAccounts();
     accounts[alias] = {
       alias,
-      profileDir,
+      profileDir: userDataDir,
       createdAt: new Date().toISOString(),
       lastUsed: new Date().toISOString(),
     };
