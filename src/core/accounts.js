@@ -40,52 +40,58 @@ export class AccountManager {
    */
   async addAccount(alias) {
     console.log(chalk.blue(`\nSetting up account: ${alias}`));
-    console.log(chalk.gray('A browser window will open. Please log in to Grok.'));
-    console.log(chalk.gray('Once logged in, close the browser window to complete setup.\n'));
 
-    const profileDir = path.join(config.PROFILES_DIR, alias);
-    const useSystemProfile = Boolean(config.CHROME_USER_DATA_DIR);
+    // Check if Chrome user data directory is available
+    if (!config.CHROME_USER_DATA_DIR) {
+      console.log(chalk.red('\n✗ Chrome user data directory not found!'));
+      console.log(chalk.yellow('\nTo avoid bot detection, this tool needs to copy your Chrome profile.'));
+      console.log(chalk.gray('Please install Google Chrome or set CHROME_USER_DATA_DIR environment variable.\n'));
+      throw new Error('Chrome profile required for bot detection avoidance');
+    }
+
+    console.log(chalk.gray('A browser window will open with your Chrome profile.'));
+    console.log(chalk.gray('Please log in to Grok, then close the browser to complete setup.\n'));
+
+    // Always use Chrome profile with -chrome suffix
+    const userDataDir = path.join(config.PROFILES_DIR, `${alias}-chrome`);
     const chromeProfileName = config.CHROME_PROFILE_NAME || 'Default';
-    let userDataDir = profileDir;
 
-    if (useSystemProfile) {
-      userDataDir = path.join(config.PROFILES_DIR, `${alias}-chrome`);
-      await fs.mkdir(userDataDir, { recursive: true });
+    await fs.mkdir(userDataDir, { recursive: true });
 
-      console.log(chalk.yellow(`Using a copy of your Chrome profile: ${chromeProfileName}`));
-      console.log(chalk.gray('Make sure all Chrome windows are closed before continuing.\n'));
+    console.log(chalk.yellow(`Copying Chrome profile: ${chromeProfileName}`));
+    console.log(chalk.gray('Make sure all Chrome windows are closed before continuing.\n'));
 
-      const sourceUserDataDir = config.CHROME_USER_DATA_DIR;
-      const sourceProfileDir = path.join(sourceUserDataDir, chromeProfileName);
-      const destProfileDir = path.join(userDataDir, chromeProfileName);
-      const sourceLocalState = path.join(sourceUserDataDir, 'Local State');
-      const destLocalState = path.join(userDataDir, 'Local State');
+    const sourceUserDataDir = config.CHROME_USER_DATA_DIR;
+    const sourceProfileDir = path.join(sourceUserDataDir, chromeProfileName);
+    const destProfileDir = path.join(userDataDir, chromeProfileName);
+    const sourceLocalState = path.join(sourceUserDataDir, 'Local State');
+    const destLocalState = path.join(userDataDir, 'Local State');
 
+    // Validate source profile exists
+    try {
+      await fs.access(sourceProfileDir);
+    } catch {
+      throw new Error(`Chrome profile "${chromeProfileName}" not found at ${sourceProfileDir}`);
+    }
+
+    // Copy profile directory if not already copied
+    try {
+      await fs.access(destProfileDir);
+    } catch {
+      console.log(chalk.gray('Copying Chrome profile data (one-time, may take a minute)...'));
+      await fs.cp(sourceProfileDir, destProfileDir, { recursive: true });
+    }
+
+    // Copy Local State file if not already copied
+    try {
+      await fs.access(destLocalState);
+    } catch {
       try {
-        await fs.access(sourceProfileDir);
+        await fs.copyFile(sourceLocalState, destLocalState);
       } catch {
-        throw new Error(`Chrome profile not found at ${sourceProfileDir}`);
+        console.log(chalk.yellow('Warning: Could not copy Chrome Local State file.'));
+        console.log(chalk.gray('Session may not persist correctly.\n'));
       }
-
-      try {
-        await fs.access(destProfileDir);
-      } catch {
-        console.log(chalk.gray('Copying Chrome profile data (one-time)...'));
-        await fs.cp(sourceProfileDir, destProfileDir, { recursive: true });
-      }
-
-      try {
-        await fs.access(destLocalState);
-      } catch {
-        try {
-          await fs.copyFile(sourceLocalState, destLocalState);
-        } catch {
-          console.log(chalk.yellow('Warning: could not copy Chrome Local State file.'));
-          console.log(chalk.gray('Saved login may not be available.\n'));
-        }
-      }
-    } else {
-      await fs.mkdir(profileDir, { recursive: true });
     }
 
     const launchArgs = ['--disable-blink-features=AutomationControlled'];
@@ -106,7 +112,7 @@ export class AccountManager {
     await page.goto('https://grok.com/imagine', { waitUntil: 'networkidle' });
 
     console.log(chalk.yellow('\nWaiting for you to log in...'));
-    console.log(chalk.gray('Press Ctrl+C if you want to cancel.\n'));
+    console.log(chalk.gray('Close the browser window when done.\n'));
 
     // Wait for user to close the browser
     await new Promise((resolve) => {

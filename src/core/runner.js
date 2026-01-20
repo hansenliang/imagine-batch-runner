@@ -172,7 +172,7 @@ export class BatchRunner {
       );
 
       try {
-        // Generate video with retries
+        // Generate video (retry logic now handled internally in generator)
         await retry(
           async () => {
             return await this.generator.generate(index, prompt, debugDir);
@@ -188,8 +188,10 @@ export class BatchRunner {
               await this.generator.reloadPermalink(permalink);
             },
             shouldRetry: (error) => {
-              // Don't retry rate limits or auth errors
-              if (error.message?.includes('RATE_LIMIT') || error.message?.includes('AUTH_REQUIRED')) {
+              // Don't retry rate limits, auth errors, or content moderation (already retried internally)
+              if (error.message?.includes('RATE_LIMIT') ||
+                  error.message?.includes('AUTH_REQUIRED') ||
+                  error.message?.includes('CONTENT_MODERATED')) {
                 return false;
               }
               return true;
@@ -208,13 +210,38 @@ export class BatchRunner {
         await sleep(2000);
 
       } catch (error) {
-        // Mark as failed
+        // Categorize the error for better handling
+        const errorType = this._categorizeError(error);
+
+        // Mark as failed with error details
         await this.manifest.updateItem(index, {
           status: 'FAILED',
           error: error.message,
+          errorType,
         });
 
         consecutiveFailures++;
+
+        // Log appropriate message based on error type
+        if (errorType === 'CONTENT_MODERATED') {
+          this.logger.warn(
+            `[Video ${index + 1}] Failed after ${config.MODERATION_RETRY_MAX} moderation retries. Moving to next item.`
+          );
+        } else if (errorType === 'RATE_LIMIT') {
+          this.logger.error(`[Video ${index + 1}] Rate limit detected`);
+          throw error; // Propagate to stop the run
+        } else if (errorType === 'AUTH_REQUIRED') {
+          this.logger.error(`[Video ${index + 1}] Authentication required`);
+          throw error; // Propagate to stop the run
+        } else if (errorType === 'TIMEOUT') {
+          this.logger.warn(
+            `[Video ${index + 1}] Generation timeout. Moving to next item.`
+          );
+        } else {
+          this.logger.warn(
+            `[Video ${index + 1}] Generation failed: ${error.message}. Moving to next item.`
+          );
+        }
 
         // If we hit too many consecutive failures, stop
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
@@ -224,17 +251,32 @@ export class BatchRunner {
           throw new Error(`Too many consecutive failures: ${error.message}`);
         }
 
-        // Check if it's a rate limit or auth error
-        if (error.message?.includes('RATE_LIMIT')) {
-          throw error; // Propagate to stop the run
-        }
-        if (error.message?.includes('AUTH_REQUIRED')) {
-          throw error; // Propagate to stop the run
-        }
-
         // Otherwise continue to next item
-        this.logger.warn(`Continuing to next item after failure`);
+        this.logger.debug(`Continuing to next item after failure (type: ${errorType})`);
       }
+    }
+  }
+
+  /**
+   * Categorize error for better handling
+   */
+  _categorizeError(error) {
+    const message = error.message || '';
+
+    if (message.includes('CONTENT_MODERATED')) {
+      return 'CONTENT_MODERATED';
+    } else if (message.includes('RATE_LIMIT')) {
+      return 'RATE_LIMIT';
+    } else if (message.includes('AUTH_REQUIRED')) {
+      return 'AUTH_REQUIRED';
+    } else if (message.includes('TIMEOUT')) {
+      return 'TIMEOUT';
+    } else if (message.includes('NETWORK_ERROR')) {
+      return 'NETWORK_ERROR';
+    } else if (message.includes('GENERATION_ERROR')) {
+      return 'GENERATION_ERROR';
+    } else {
+      return 'UNKNOWN';
     }
   }
 

@@ -132,18 +132,42 @@ export class ParallelRunner {
         this.workers.push(worker);
       }
 
-      // Initialize workers with staggered start
-      for (let i = 0; i < this.workers.length; i++) {
-        const worker = this.workers[i];
-        try {
-          await worker.initialize();
-          // Stagger launches to avoid overwhelming the system
-          if (i < this.workers.length - 1) {
-            await sleep(config.WORKER_STARTUP_DELAY || 1000);
+      // Initialize workers in parallel with minimal stagger
+      // Launch workers in small batches to avoid overwhelming the system
+      const batchSize = 5; // Launch 5 workers at a time
+      const batches = [];
+
+      for (let i = 0; i < this.workers.length; i += batchSize) {
+        const batch = this.workers.slice(i, i + batchSize);
+        batches.push(batch);
+      }
+
+      await this.logger.info(`Launching ${this.workers.length} workers in ${batches.length} batches of ${batchSize}...`);
+
+      for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+        const batch = batches[batchIdx];
+
+        // Launch all workers in this batch in parallel
+        const batchPromises = batch.map(async (worker, idx) => {
+          try {
+            // Small stagger within batch (0-200ms per worker)
+            if (idx > 0) {
+              await sleep(idx * 50); // 50ms stagger
+            }
+            await worker.initialize();
+            return { success: true, workerId: worker.workerId };
+          } catch (error) {
+            await this.logger.error(`Worker ${worker.workerId} initialization failed`, error);
+            return { success: false, workerId: worker.workerId, error };
           }
-        } catch (error) {
-          await this.logger.error(`Worker ${i} initialization failed`, error);
-          // Continue with other workers
+        });
+
+        // Wait for this batch to complete
+        await Promise.allSettled(batchPromises);
+
+        // Small delay before next batch (only if not last batch)
+        if (batchIdx < batches.length - 1) {
+          await sleep(200); // 200ms between batches
         }
       }
 
@@ -161,7 +185,9 @@ export class ParallelRunner {
           // Catch errors but don't stop other workers
           if (error.message === 'RATE_LIMIT_STOP') {
             this.rateLimitDetected = true;
-            this.logger.warn('Rate limit detected, stopping all workers...');
+            this.logger.warn(`Rate limit detected by worker ${worker.workerId}`);
+            this.logger.info('Signaling all workers to stop gracefully...');
+            this.logger.info('Workers will complete their current video before shutting down');
             // Stop all workers
             this.workers.forEach(w => w.stop());
           }

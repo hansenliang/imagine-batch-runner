@@ -142,28 +142,26 @@ Edit `src/config.js` to customize:
 - **Retries**: Max retries per video (default: 3)
 - **Rate limits**: Videos per period (default: 100 per 4 hours)
 - **Browser mode**: Headed vs headless (default: headed for debugging)
-- **Chrome profile**: Optional system profile via env vars
+- **Chrome profile**: Auto-detected and copied for bot detection avoidance
 
-### Use your real Chrome profile (recommended if captcha loops)
+### Chrome Profile Auto-Detection (Bot Detection Avoidance)
 
-Set these env vars before running commands:
+**The tool automatically detects and copies your Chrome profile** to avoid bot detection when adding accounts. This helps prevent human verification loops on Grok.
+
+When you add an account, the tool will:
+- Auto-detect your Chrome installation (macOS/Windows/Linux)
+- Copy your Default Chrome profile to avoid looking like a bot
+- Preserve cookies, session data, and browser fingerprint
+
+**Make sure all Chrome windows are closed** before adding accounts.
+
+If auto-detection fails or you want to use a different profile:
 
 ```bash
-# macOS example
+# Override with environment variables
 export CHROME_USER_DATA_DIR="/Users/<you>/Library/Application Support/Google/Chrome"
-export CHROME_PROFILE_NAME="Default"   # or "Profile 1", "Profile 2", etc.
+export CHROME_PROFILE_NAME="Profile 1"   # or "Profile 2", etc.
 ```
-
-This will copy your profile into the tool's own user-data directory
-(Playwright can't launch Chrome with the default profile directly).
-
-Then run account setup again:
-
-```bash
-npm start accounts add <alias>
-```
-
-Make sure all Chrome windows are closed before launching.
 
 ## Rate Limiting
 

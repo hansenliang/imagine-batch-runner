@@ -159,10 +159,23 @@ export class ParallelWorker {
         }
 
         const index = item.index;
+
+        // Check if we should stop BEFORE starting new work
+        if (this.shouldStop) {
+          this.logger.info(`[Worker ${this.workerId}] Stop signal received, releasing unclaimed item ${index + 1}`);
+          // Release the item back to PENDING
+          await this.manifest.updateItemAtomic(
+            index,
+            { status: 'PENDING' },
+            this.workerId
+          );
+          break;
+        }
+
         this.logger.info(`[Worker ${this.workerId}] Processing video ${index + 1}`);
 
         try {
-          // Generate video
+          // Generate video (this will complete even if stop signal comes mid-generation)
           const startTime = Date.now();
           await this.generator.generate(index, this.prompt, this.debugDir);
           const duration = Math.floor((Date.now() - startTime) / 1000);
@@ -176,6 +189,12 @@ export class ParallelWorker {
 
           this.logger.success(`[Worker ${this.workerId}] Video ${index + 1} completed in ${duration}s`);
 
+          // Check if we should stop AFTER completing work
+          if (this.shouldStop) {
+            this.logger.info(`[Worker ${this.workerId}] Stop signal received, exiting after completing video ${index + 1}`);
+            break;
+          }
+
           // Small delay between generations
           await sleep(config.CLAIM_RETRY_INTERVAL || 2000);
 
@@ -184,7 +203,7 @@ export class ParallelWorker {
 
           // Check if rate limit
           if (error.message?.includes('RATE_LIMIT')) {
-            this.logger.warn(`[Worker ${this.workerId}] Rate limit detected, stopping worker`);
+            this.logger.warn(`[Worker ${this.workerId}] Rate limit detected during video ${index + 1}`);
             await this.manifest.updateItemAtomic(
               index,
               {

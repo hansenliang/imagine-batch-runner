@@ -1,5 +1,5 @@
 import config, { selectors } from '../config.js';
-import { retry, sleep } from '../utils/retry.js';
+import { retry, retryWithCooldown, sleep } from '../utils/retry.js';
 import path from 'path';
 
 /**
@@ -13,27 +13,46 @@ export class VideoGenerator {
   }
 
   /**
-   * Generate a single video from the current permalink
+   * Generate a single video from the current permalink with internal retry for content moderation
    */
   async generate(index, prompt, debugDir) {
     this.logger.info(`[Video ${index + 1}] Starting generation`);
     this.logger.debug(`Prompt: "${prompt}"`);
 
     try {
-      // Step 1: Find and click the generation button
-      await this._clickGenerationButton(index);
+      // Wrap the entire generation process with retry logic for content moderation
+      await retryWithCooldown(
+        async () => {
+          // Step 1: Find and click the generation button
+          await this._clickGenerationButton(index);
 
-      // Step 2: Enter prompt (if needed)
-      await this._enterPrompt(prompt, index);
+          // Step 2: Enter prompt (if needed)
+          await this._enterPrompt(prompt, index);
 
-      // Step 3: Wait for video generation to complete
-      await this._waitForCompletion(index);
+          // Step 3: Wait for video generation to complete (with real-time failure detection)
+          await this._waitForCompletion(index);
+
+          return { success: true };
+        },
+        {
+          maxRetries: config.MODERATION_RETRY_MAX,
+          cooldown: config.MODERATION_RETRY_COOLDOWN,
+          errorPattern: 'CONTENT_MODERATED',
+          onRetry: async (attempt, maxRetries, cooldown, error) => {
+            this.logger.warn(
+              `[Video ${index + 1}] Content moderated (attempt ${attempt}/${maxRetries}). Retrying in ${cooldown / 1000}s...`
+            );
+            // Reload the page to reset state for retry
+            await this.reloadPermalink(this.browser.page.url());
+          },
+        }
+      );
 
       this.logger.success(`[Video ${index + 1}] Generation completed`);
       return { success: true };
 
     } catch (error) {
-      this.logger.error(`[Video ${index + 1}] Generation failed`, error);
+      this.logger.error(`[Video ${index + 1}] Generation failed: ${error.message}`);
 
       // Save debug artifacts
       await this._saveDebugArtifacts(index, debugDir, error);
@@ -149,57 +168,179 @@ export class VideoGenerator {
   }
 
   /**
-   * Wait for video generation to complete
+   * Detect if content was moderated
+   */
+  async _detectContentModeration() {
+    try {
+      const moderationMsg = await this.page.$(selectors.CONTENT_MODERATED_MESSAGE);
+      if (moderationMsg) {
+        const text = await moderationMsg.textContent().catch(() => '');
+        return { detected: true, message: text };
+      }
+      return { detected: false, message: null };
+    } catch (error) {
+      return { detected: false, message: null };
+    }
+  }
+
+  /**
+   * Detect rate limit from UI
+   */
+  async _detectRateLimit() {
+    try {
+      const rateLimitMsg = await this.page.$(selectors.RATE_LIMIT_TOAST);
+      if (rateLimitMsg) {
+        const text = await rateLimitMsg.textContent().catch(() => '');
+        return { detected: true, message: text };
+      }
+      return { detected: false, message: null };
+    } catch (error) {
+      return { detected: false, message: null };
+    }
+  }
+
+  /**
+   * Detect network errors
+   */
+  async _detectNetworkError() {
+    try {
+      const networkError = await this.page.$(selectors.NETWORK_ERROR_MESSAGE);
+      if (networkError) {
+        const text = await networkError.textContent().catch(() => '');
+        return { detected: true, message: text };
+      }
+      return { detected: false, message: null };
+    } catch (error) {
+      return { detected: false, message: null };
+    }
+  }
+
+  /**
+   * Detect general generation errors
+   */
+  async _detectGenerationError() {
+    try {
+      const genError = await this.page.$(selectors.GENERATION_ERROR_MESSAGE);
+      if (genError) {
+        const text = await genError.textContent().catch(() => '');
+        return { detected: true, message: text };
+      }
+      return { detected: false, message: null };
+    } catch (error) {
+      return { detected: false, message: null };
+    }
+  }
+
+  /**
+   * Verify video is actually playable
+   */
+  async _verifyVideoPlayable(videoElement) {
+    try {
+      // 1. Check if video has src attribute
+      const src = await videoElement.getAttribute('src');
+      if (!src) {
+        this.logger.debug('Video verification failed: no src attribute');
+        return false;
+      }
+
+      // 2. Wait briefly for video to load metadata
+      await sleep(1000);
+
+      // 3. Check if video has duration > 0
+      const duration = await videoElement.evaluate(v => v.duration).catch(() => 0);
+      if (!duration || duration === 0 || isNaN(duration)) {
+        this.logger.debug(`Video verification failed: invalid duration (${duration})`);
+        return false;
+      }
+
+      // 4. Ensure no error messages are present
+      const moderation = await this._detectContentModeration();
+      if (moderation.detected) {
+        this.logger.debug('Video verification failed: moderation message present');
+        return false;
+      }
+
+      this.logger.debug(`Video verified: duration=${duration.toFixed(2)}s, src=${src.substring(0, 50)}...`);
+      return true;
+    } catch (error) {
+      this.logger.debug(`Video verification error: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Wait for video generation to complete with real-time failure detection
    */
   async _waitForCompletion(index) {
     this.logger.debug(`[Video ${index + 1}] Waiting for generation to complete`);
 
     const startTime = Date.now();
+    const checkInterval = 2000; // Check every 2 seconds
+    let lastProgressLog = 0;
 
-    // Wait for the video element to appear and stabilize
-    await retry(
-      async () => {
-        // Check for loading indicators first
+    while (true) {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+
+      // 1. Check for failures FIRST (highest priority)
+
+      // Rate limit check (highest priority - stops all work)
+      const rateLimit = await this._detectRateLimit();
+      if (rateLimit.detected) {
+        this.logger.warn(`[Video ${index + 1}] Rate limit detected: ${rateLimit.message}`);
+        throw new Error(`RATE_LIMIT: ${rateLimit.message}`);
+      }
+
+      // Content moderation check
+      const moderation = await this._detectContentModeration();
+      if (moderation.detected) {
+        this.logger.warn(`[Video ${index + 1}] Content moderation detected: ${moderation.message}`);
+        throw new Error(`CONTENT_MODERATED: ${moderation.message}`);
+      }
+
+      // Network error check
+      const networkError = await this._detectNetworkError();
+      if (networkError.detected) {
+        this.logger.warn(`[Video ${index + 1}] Network error detected: ${networkError.message}`);
+        throw new Error(`NETWORK_ERROR: ${networkError.message}`);
+      }
+
+      // General generation error check
+      const genError = await this._detectGenerationError();
+      if (genError.detected) {
+        this.logger.warn(`[Video ${index + 1}] Generation error detected: ${genError.message}`);
+        throw new Error(`GENERATION_ERROR: ${genError.message}`);
+      }
+
+      // 2. Check for success
+      const video = await this.page.$(selectors.VIDEO_CONTAINER);
+      if (video) {
+        // Video element found, verify it's actually playable
+        const isPlayable = await this._verifyVideoPlayable(video);
+        if (isPlayable) {
+          const duration = Math.floor((Date.now() - startTime) / 1000);
+          this.logger.success(`[Video ${index + 1}] Video ready and verified (took ${duration}s)`);
+          return { success: true };
+        }
+      }
+
+      // 3. Check for timeout
+      if (elapsed > config.VIDEO_GENERATION_TIMEOUT / 1000) {
+        this.logger.error(`[Video ${index + 1}] Generation timeout after ${elapsed}s`);
+        throw new Error(`TIMEOUT: Video generation exceeded ${config.VIDEO_GENERATION_TIMEOUT / 1000}s`);
+      }
+
+      // 4. Log progress periodically
+      if (elapsed - lastProgressLog >= 10) {
         const loading = await this.page.$(selectors.LOADING_INDICATOR);
         if (loading) {
-          const elapsed = Math.floor((Date.now() - startTime) / 1000);
           this.logger.debug(`[Video ${index + 1}] Still generating... (${elapsed}s)`);
-          throw new Error('RETRY: Still generating');
         }
-
-        // Look for video element
-        const video = await this.page.$(selectors.VIDEO_CONTAINER);
-        if (!video) {
-          throw new Error('RETRY: Video not yet rendered');
-        }
-
-        // Video found - wait a bit to ensure it's stable
-        await sleep(2000);
-
-        // Check if it's the new video (not cached)
-        const videoSrc = await video.getAttribute('src');
-        if (!videoSrc) {
-          throw new Error('RETRY: Video not loaded');
-        }
-
-        this.logger.debug(`[Video ${index + 1}] Video rendered`);
-        return true;
-      },
-      {
-        maxRetries: Math.floor(config.VIDEO_GENERATION_TIMEOUT / 3000), // Check every ~3 seconds
-        onRetry: async (attempt, maxRetries) => {
-          const elapsed = Math.floor((Date.now() - startTime) / 1000);
-          if (elapsed > config.VIDEO_GENERATION_TIMEOUT / 1000) {
-            throw new Error(`TIMEOUT: Video generation exceeded ${config.VIDEO_GENERATION_TIMEOUT / 1000}s`);
-          }
-          await sleep(3000);
-        },
-        shouldRetry: (error) => error.message?.includes('RETRY'),
+        lastProgressLog = elapsed;
       }
-    );
 
-    const duration = Math.floor((Date.now() - startTime) / 1000);
-    this.logger.success(`[Video ${index + 1}] Video ready (took ${duration}s)`);
+      // 5. Wait before next check
+      await sleep(checkInterval);
+    }
   }
 
   /**

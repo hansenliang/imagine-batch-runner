@@ -60,4 +60,43 @@ export async function retry(fn, options = {}) {
   throw lastError;
 }
 
-export default { sleep, calculateBackoff, retry };
+/**
+ * Retry a function with fixed cooldown (for content moderation retries)
+ */
+export async function retryWithCooldown(fn, options = {}) {
+  const {
+    maxRetries = config.MODERATION_RETRY_MAX,
+    cooldown = config.MODERATION_RETRY_COOLDOWN,
+    onRetry = null,
+    errorPattern = 'CONTENT_MODERATED',
+  } = options;
+
+  let lastError;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+
+      // Check if this is a retryable error
+      const isRetryable = error.message?.includes(errorPattern);
+
+      if (!isRetryable || attempt === maxRetries) {
+        throw error;
+      }
+
+      // Notify retry callback
+      if (onRetry) {
+        await onRetry(attempt + 1, maxRetries, cooldown, error);
+      }
+
+      // Wait fixed cooldown period
+      await sleep(cooldown);
+    }
+  }
+
+  throw lastError;
+}
+
+export default { sleep, calculateBackoff, retry, retryWithCooldown };
