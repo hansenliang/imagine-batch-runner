@@ -1,0 +1,8 @@
+{
+  "account": "my-account-alias",
+  "permalink": "https://grok.com/imagine/post/YOUR_IMAGE_ID_HERE",
+  "prompt": "cinematic slow pan over landscape",
+  "count": 20,
+  "jobName": "landscape_videos",
+  "parallel": 10
+}

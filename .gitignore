@@ -4,3 +4,8 @@ GrokBatchRuns/
 *.log
 .DS_Store
 debug/
+
+# User-specific config files (may contain account info, permalinks, prompts)
+batch-config.json
+batch-config-*.json
+*config-test.json

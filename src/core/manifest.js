@@ -1,14 +1,18 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import { FileLock } from '../utils/lock.js';
 
 /**
  * Manifest manager for tracking run state
+ * Thread-safe with file locking for parallel execution
  */
 export class ManifestManager {
   constructor(runDir) {
     this.runDir = runDir;
     this.manifestPath = path.join(runDir, 'manifest.json');
+    this.lockPath = path.join(runDir, 'manifest.lock');
+    this.lock = new FileLock(this.lockPath);
     this.manifest = null;
   }
 
@@ -67,13 +71,37 @@ export class ManifestManager {
   }
 
   /**
-   * Save manifest to disk
+   * Save manifest to disk (with locking for thread safety)
    */
   async save() {
     if (!this.manifest) {
       throw new Error('No manifest to save');
     }
 
+    await this.lock.withLock(async () => {
+      this.manifest.updatedAt = new Date().toISOString();
+      await fs.writeFile(
+        this.manifestPath,
+        JSON.stringify(this.manifest, null, 2),
+        'utf-8'
+      );
+    });
+  }
+
+  /**
+   * Reload manifest from disk (used within locked sections)
+   * @private
+   */
+  async _reloadFromDisk() {
+    const data = await fs.readFile(this.manifestPath, 'utf-8');
+    this.manifest = JSON.parse(data);
+  }
+
+  /**
+   * Write to file without acquiring lock (used within withLock)
+   * @private
+   */
+  async _writeToFile() {
     this.manifest.updatedAt = new Date().toISOString();
     await fs.writeFile(
       this.manifestPath,
@@ -165,6 +193,94 @@ export class ManifestManager {
       status,
       stopReason,
     };
+  }
+
+  /**
+   * Atomically claim the next pending item for a worker
+   * Thread-safe for parallel execution
+   * @param {string|number} workerId - Unique worker identifier
+   * @returns {Promise<Object|null>} The claimed item or null if no work available
+   */
+  async claimNextItem(workerId) {
+    return await this.lock.withLock(async () => {
+      // Reload latest state from disk (another worker may have updated)
+      await this._reloadFromDisk();
+
+      // Find first PENDING or FAILED item (retry failed items)
+      const item = this.manifest.items.find(
+        i => i.status === 'PENDING' || (i.status === 'FAILED' && i.attempts < 3)
+      );
+
+      if (!item) {
+        return null; // No work available
+      }
+
+      // Mark as IN_PROGRESS and assign to worker
+      item.status = 'IN_PROGRESS';
+      item.workerId = workerId;
+      item.claimedAt = new Date().toISOString();
+      item.attempts = (item.attempts || 0) + 1;
+      if (!item.createdAt) {
+        item.createdAt = new Date().toISOString();
+      }
+
+      // Write immediately
+      await this._writeToFile();
+
+      return item;
+    });
+  }
+
+  /**
+   * Update an item atomically (thread-safe)
+   * @param {number} index - Item index
+   * @param {Object} updates - Fields to update
+   * @param {string|number} workerId - Worker that owns this item
+   */
+  async updateItemAtomic(index, updates, workerId = null) {
+    await this.lock.withLock(async () => {
+      // Reload to get latest state
+      await this._reloadFromDisk();
+
+      const item = this.manifest.items[index];
+      if (!item) {
+        throw new Error(`Item ${index} not found in manifest`);
+      }
+
+      // Verify worker ownership if specified
+      if (workerId && item.workerId !== workerId) {
+        throw new Error(`Worker ${workerId} does not own item ${index}`);
+      }
+
+      // Apply updates
+      Object.assign(item, updates);
+
+      // Update counters based on status changes
+      if (updates.status === 'COMPLETED' && item.status !== 'COMPLETED') {
+        this.manifest.completedCount++;
+        item.completedAt = new Date().toISOString();
+      } else if (updates.status === 'FAILED' && item.status !== 'FAILED') {
+        this.manifest.failedCount++;
+      }
+
+      await this._writeToFile();
+    });
+  }
+
+  /**
+   * Update run status atomically
+   * @param {string} status - New status
+   * @param {string} stopReason - Optional reason for stopping
+   */
+  async updateStatusAtomic(status, stopReason = null) {
+    await this.lock.withLock(async () => {
+      await this._reloadFromDisk();
+      this.manifest.status = status;
+      if (stopReason) {
+        this.manifest.stopReason = stopReason;
+      }
+      await this._writeToFile();
+    });
   }
 }
 
