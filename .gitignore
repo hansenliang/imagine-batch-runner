@@ -1,0 +1,6 @@
+node_modules/
+profiles/
+GrokBatchRuns/
+*.log
+.DS_Store
+debug/

@@ -1,0 +1,35 @@
+{
+  "name": "grok-batch-video-generator",
+  "version": "1.0.0",
+  "description": "Local batch image-to-video generator for Grok Imagine",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "grok-batch": "./src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js",
+    "test": "node src/test-imports.js",
+    "account:add": "node src/cli.js accounts add",
+    "account:list": "node src/cli.js accounts list",
+    "run": "node src/cli.js run start",
+    "resume": "node src/cli.js run resume",
+    "status": "node src/cli.js run status",
+    "list": "node src/cli.js run list"
+  },
+  "keywords": [
+    "grok",
+    "imagine",
+    "batch",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.49.0",
+    "commander": "^12.0.0",
+    "chalk": "^5.3.0",
+    "ora": "^8.0.1",
+    "uuid": "^10.0.0"
+  }
+}
