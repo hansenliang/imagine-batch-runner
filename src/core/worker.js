@@ -172,15 +172,15 @@ export class ParallelWorker {
           break;
         }
 
-        this.logger.info(`[Worker ${this.workerId}] Attempting video ${index + 1}`);
+        this.logger.info(`[Worker ${this.workerId}] Attempting generation ${index + 1}`);
 
-        // Generate video (returns result with success, rateLimited, attempts)
+        // Generate video (returns result with success, rateLimited, attempted)
         const result = await this.generator.generate(index, this.prompt, this.debugDir);
         const duration = Math.round((result.durationMs || 0) / 1000);
 
         // Handle rate limit
         if (result.rateLimited) {
-          this.logger.warn(`[Worker ${this.workerId}] Rate limit detected during video ${index + 1}`);
+          this.logger.warn(`[Worker ${this.workerId}] Rate limit detected during attempt ${index + 1}`);
           await this.manifest.updateItemAtomic(
             index,
             {
@@ -199,13 +199,13 @@ export class ParallelWorker {
             index,
             {
               status: 'COMPLETED',
-              attempts: result.attempts
+              attempts: result.attempted ? 1 : 0
             },
             this.workerId
           );
 
           this.logger.success(
-            `[Worker ${this.workerId}] Video ${index + 1}: Success after ${result.attempts} attempts in ${duration}s`
+            `[Worker ${this.workerId}] Attempt ${index + 1}: Success in ${duration}s - ${this.page.url()}`
           );
         } else {
           // Handle failure
@@ -214,19 +214,19 @@ export class ParallelWorker {
             {
               status: 'FAILED',
               error: result.error,
-              attempts: result.attempts
+              attempts: result.attempted ? 1 : 0
             },
             this.workerId
           );
 
           this.logger.error(
-            `[Worker ${this.workerId}] Video ${index + 1}: Failed after ${result.attempts} attempts`
+            `[Worker ${this.workerId}] Attempt ${index + 1}: Failed`
           );
         }
 
         // Check if we should stop AFTER completing work
         if (this.shouldStop) {
-          this.logger.info(`[Worker ${this.workerId}] Stop signal received, exiting after completing video ${index + 1}`);
+          this.logger.info(`[Worker ${this.workerId}] Stop signal received, exiting after completing attempt ${index + 1}`);
           stoppedEarly = true;
           break;
         }

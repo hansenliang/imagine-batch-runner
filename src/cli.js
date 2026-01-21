@@ -175,11 +175,9 @@ run
       // Print summary
       console.log(chalk.blue('\n📊 Run Summary:\n'));
       console.log(chalk.gray(`  Workers: ${parallelism}`));
-      console.log(chalk.gray(`  Total attempts: ${summary.totalAttempts}`));
+      console.log(chalk.gray(`  Total attempts: ${summary.totalAttempts} (successes + failures)`));
       console.log(chalk.green(`    ✓ Successful: ${summary.successfulAttempts} (${summary.videosCompleted} videos)`));
-      if (summary.failedAttempts > 0) {
-        console.log(chalk.red(`    ✗ Failed: ${summary.failedAttempts} (${summary.videosFailed} videos)`));
-      }
+      console.log(chalk.red(`    ✗ Failed: ${summary.failedAttempts} (${summary.videosFailed} videos)`));
       if (summary.videosRateLimited > 0) {
         console.log(chalk.yellow(`  Rate limited: ${summary.videosRateLimited} videos (not attempted)`));
       }
@@ -229,11 +227,9 @@ run
       // Print summary
       console.log(chalk.blue('\n📊 Run Summary:\n'));
       console.log(chalk.gray(`  Workers: ${finalParallelism}`));
-      console.log(chalk.gray(`  Total attempts: ${summary.totalAttempts}`));
+      console.log(chalk.gray(`  Total attempts: ${summary.totalAttempts} (successes + failures)`));
       console.log(chalk.green(`    ✓ Successful: ${summary.successfulAttempts} (${summary.videosCompleted} videos)`));
-      if (summary.failedAttempts > 0) {
-        console.log(chalk.red(`    ✗ Failed: ${summary.failedAttempts} (${summary.videosFailed} videos)`));
-      }
+      console.log(chalk.red(`    ✗ Failed: ${summary.failedAttempts} (${summary.videosFailed} videos)`));
       if (summary.videosRateLimited > 0) {
         console.log(chalk.yellow(`  Rate limited: ${summary.videosRateLimited} videos (not attempted)`));
       }

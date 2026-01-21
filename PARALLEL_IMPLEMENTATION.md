@@ -205,6 +205,13 @@ await manifest.updateItemAtomic(
 - Auto-cleanup of stale locks (>60s)
 - Stores lock holder PID for debugging
 
+## Attempt Semantics
+
+- Each manifest item represents a single attempt (not a video with retries)
+- Attempts are counted only when generation starts
+- Content moderation, network errors, and timeouts are failed attempts
+- Rate limit detected before generation starts is not an attempt
+
 ## Error Handling
 
 ### Rate Limit Detection
@@ -216,7 +223,7 @@ await manifest.updateItemAtomic(
 
 ### Worker Failures
 - Individual worker errors logged but don't stop others
-- Failed items can be retried (up to 3 attempts)
+- Failed attempts are counted once; no per-item retries
 - Critical errors (auth, rate limit) stop new work
 
 ### Chrome Profile Conflicts

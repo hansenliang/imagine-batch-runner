@@ -4,7 +4,13 @@ import config from '../config.js';
 import { ManifestManager } from './manifest.js';
 import { Logger } from '../utils/logger.js';
 import { ParallelWorker } from './worker.js';
-import { sleep } from '../utils/retry.js';
+
+/**
+ * Sleep utility
+ */
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 /**
  * Parallel Runner - coordinates multiple workers for concurrent video generation
@@ -23,9 +29,9 @@ export class ParallelRunner {
     this.accountAlias = accountAlias;
     this.permalink = permalink;
     this.prompt = prompt;
-    this.batchSize = Math.min(batchSize, config.MAX_BATCH_SIZE);
+    this.batchSize = batchSize;
     this.jobName = jobName;
-    this.parallelism = Math.min(parallelism, config.MAX_PARALLELISM || 100);
+    this.parallelism = parallelism;
 
     // Runtime state
     this.runDir = path.join(config.RUNS_DIR, this.jobName);
@@ -105,7 +111,7 @@ export class ParallelRunner {
     await this.manifest.updateStatus('IN_PROGRESS');
 
     const summary = this.manifest.getSummary();
-    await this.logger.info(`Progress: ${summary.completed}/${summary.total} completed, ${summary.failed} failed`);
+    await this.logger.info(`Progress: ${summary.videosCompleted} completed, ${summary.videosFailed} failed, ${summary.videosRemaining} remaining`);
     await this.logger.success('Resume initialized');
   }
 
@@ -130,44 +136,18 @@ export class ParallelRunner {
         this.workers.push(worker);
       }
 
-      // Initialize workers in parallel with minimal stagger
-      // Launch workers in small batches to avoid overwhelming the system
-      const batchSize = 5; // Launch 5 workers at a time
-      const batches = [];
+      // Initialize all workers in parallel
+      await this.logger.info(`Launching ${this.workers.length} workers...`);
 
-      for (let i = 0; i < this.workers.length; i += batchSize) {
-        const batch = this.workers.slice(i, i + batchSize);
-        batches.push(batch);
-      }
-
-      await this.logger.info(`Launching ${this.workers.length} workers in ${batches.length} batches of ${batchSize}...`);
-
-      for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-        const batch = batches[batchIdx];
-
-        // Launch all workers in this batch in parallel
-        const batchPromises = batch.map(async (worker, idx) => {
-          try {
-            // Small stagger within batch (0-200ms per worker)
-            if (idx > 0) {
-              await sleep(idx * 50); // 50ms stagger
-            }
-            await worker.initialize();
-            return { success: true, workerId: worker.workerId };
-          } catch (error) {
-            await this.logger.error(`Worker ${worker.workerId} initialization failed`, error);
-            return { success: false, workerId: worker.workerId, error };
-          }
-        });
-
-        // Wait for this batch to complete
-        await Promise.allSettled(batchPromises);
-
-        // Small delay before next batch (only if not last batch)
-        if (batchIdx < batches.length - 1) {
-          await sleep(200); // 200ms between batches
+      const initPromises = this.workers.map(async (worker) => {
+        try {
+          await worker.initialize();
+        } catch (error) {
+          await this.logger.error(`Worker ${worker.workerId} initialization failed`, error);
         }
-      }
+      });
+
+      await Promise.allSettled(initPromises);
 
       const successfulWorkers = this.workers.filter(w => w.context !== null);
       await this.logger.success(`${successfulWorkers.length} workers initialized successfully`);
@@ -213,15 +193,7 @@ export class ParallelRunner {
         await this.logger.error('All workers failed');
         await this.manifest.updateStatusAtomic('FAILED', 'All workers failed');
       } else {
-        // Check if all items completed
-        const summary = this.manifest.getSummary();
-        if (summary.remaining === 0) {
-          await this.logger.success('All videos generated successfully!');
-          await this.manifest.updateStatusAtomic('COMPLETED');
-        } else {
-          await this.logger.warn(`Run completed with ${summary.remaining} items remaining`);
-          await this.manifest.updateStatusAtomic('COMPLETED');
-        }
+        await this.manifest.updateStatusAtomic('COMPLETED');
       }
 
       // Print final summary
@@ -261,18 +233,6 @@ export class ParallelRunner {
 
     await Promise.allSettled(shutdownPromises);
 
-    // Cleanup worker profiles directory if empty
-    try {
-      const workerProfilesDir = path.join(this.runDir, 'worker-profiles');
-      const remaining = await fs.readdir(workerProfilesDir);
-      if (remaining.length === 0) {
-        await fs.rmdir(workerProfilesDir);
-        await this.logger.debug('Worker profiles directory cleaned up');
-      }
-    } catch (error) {
-      // Ignore cleanup errors
-    }
-
     const cleanupDurationMs = Date.now() - cleanupStart;
     await this.logger.success(`Cleanup complete in ${cleanupDurationMs}ms`);
   }
@@ -286,7 +246,7 @@ export class ParallelRunner {
 
     await this.logger.info('=== Run Summary ===');
     await this.logger.info(`Workers: ${this.parallelism}`);
-    await this.logger.info(`Total attempts: ${summary.totalAttempts}`);
+    await this.logger.info(`Total attempts: ${summary.totalAttempts} (successes + failures)`);
     await this.logger.info(`  Successful: ${summary.successfulAttempts} (${summary.videosCompleted} videos)`);
     await this.logger.info(`  Failed: ${summary.failedAttempts} (${summary.videosFailed} videos)`);
     if (summary.videosRateLimited > 0) {

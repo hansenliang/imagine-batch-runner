@@ -215,9 +215,9 @@ export class ManifestManager {
     const pending = items.filter(i => i.status === 'PENDING');
 
     return {
-      totalAttempts: [...completed, ...failed].reduce((sum, i) => sum + i.attempts, 0),
-      successfulAttempts: completed.reduce((sum, i) => sum + i.attempts, 0),
-      failedAttempts: failed.reduce((sum, i) => sum + i.attempts, 0),
+      totalAttempts: completed.length + failed.length,
+      successfulAttempts: completed.length,
+      failedAttempts: failed.length,
       videosCompleted: completed.length,
       videosFailed: failed.length,
       videosRateLimited: rateLimited.length,
@@ -242,10 +242,8 @@ export class ManifestManager {
         return null;
       }
 
-      // Find first PENDING or FAILED item (retry failed items)
-      const item = this.manifest.items.find(
-        i => i.status === 'PENDING' || (i.status === 'FAILED' && i.attempts < 3)
-      );
+      // Find first PENDING item (each item is a single attempt)
+      const item = this.manifest.items.find(i => i.status === 'PENDING');
 
       if (!item) {
         return null; // No work available
@@ -257,7 +255,6 @@ export class ManifestManager {
       item.status = 'IN_PROGRESS';
       item.workerId = workerId;
       item.claimedAt = new Date().toISOString();
-      item.attempts = (item.attempts || 0) + 1;
       if (!item.createdAt) {
         item.createdAt = new Date().toISOString();
       }
