@@ -51,8 +51,8 @@ Completely refactored `_waitForCompletion()` method:
 
 The `generate()` method now wraps the entire generation process with `retryWithCooldown()`:
 
-- **Max 5 retries** for content moderation errors (configurable)
-- **3 second cooldown** between retries (configurable)
+- **Max retries** for content moderation errors (configurable)
+- **Fixed cooldown** between retries (configurable)
 - **Automatic page reload** between retries to reset state
 - **Other errors** (network, timeout) still use outer retry logic
 
@@ -71,7 +71,7 @@ Updated the main processing loop:
 
 - Added `_categorizeError()` method to classify errors:
   - `CONTENT_MODERATED` - Already retried internally, just log and continue
-  - `RATE_LIMIT` - Stop the entire run
+  - `RATE_LIMIT` - Stop new work, finish in-flight video
   - `AUTH_REQUIRED` - Stop the entire run
   - `TIMEOUT` - Log and continue to next item
   - `NETWORK_ERROR` - Log and continue to next item
@@ -87,8 +87,8 @@ Added:
 
 ```javascript
 // Content moderation retry configuration
-MODERATION_RETRY_MAX: 5,              // Max retries for content moderation
-MODERATION_RETRY_COOLDOWN: 3000,      // 3s cooldown between retries
+MODERATION_RETRY_MAX: 100,            // Max retries for content moderation
+MODERATION_RETRY_COOLDOWN: 1000,      // 1s cooldown between retries
 SUCCESS_VERIFICATION_TIMEOUT: 5000,   // 5s to verify video success
 ```
 
@@ -122,9 +122,9 @@ VIDEO_DOWNLOAD_BUTTON: 'button:has-text("Download"), button:has-text("Save"), a[
      - ✅ Video element appears → Verify playability
      - ⏱️ Timeout exceeded → Throw `TIMEOUT`
 5. **If content moderation detected:**
-   - Retry up to 5 times with 3s cooldown
+- Retry up to `MODERATION_RETRY_MAX` times with `MODERATION_RETRY_COOLDOWN`
    - Reload page between retries
-   - If still fails after 5 retries → Mark as FAILED
+- If still fails after max retries → Mark as FAILED
 6. **If success:**
    - Mark item as COMPLETED
    - Continue to next item
@@ -137,8 +137,8 @@ VIDEO_DOWNLOAD_BUTTON: 'button:has-text("Download"), button:has-text("Save"), a[
 
 | Error Type | Internal Retries | Outer Retries | Behavior |
 |------------|------------------|---------------|----------|
-| Content Moderated | 5 (fixed cooldown) | No | Continue to next after exhausted |
-| Rate Limit | No | No | Stop entire run |
+| Content Moderated | Fixed cooldown (config) | No | Continue to next after exhausted |
+| Rate Limit | No | No | Stop new work, finish current video |
 | Auth Required | No | No | Stop entire run |
 | Network Error | No | 3 (exp backoff) | Continue to next after exhausted |
 | Timeout | No | 3 (exp backoff) | Continue to next after exhausted |
@@ -152,7 +152,7 @@ VIDEO_DOWNLOAD_BUTTON: 'button:has-text("Download"), button:has-text("Save"), a[
 - Network errors caught immediately
 
 ### 2. **Smart Retry Logic**
-- Content moderation gets 5 quick retries (often succeeds on 2nd-3rd try)
+- Content moderation uses fixed cooldown retries (configurable)
 - Other errors get exponential backoff (handles transient issues)
 - No wasted retries on permanent failures (rate limits, auth)
 
@@ -184,8 +184,8 @@ Before production use, test these scenarios:
 
 1. **Content Moderation**
    - Use prompts that trigger moderation
-   - Verify 5 retries happen with 3s cooldown
-   - Confirm it marks as FAILED after 5 attempts
+   - Verify retries happen with configured cooldown
+   - Confirm it marks as FAILED after max retries
 
 2. **Successful Generation**
    - Verify video playability check works
@@ -212,9 +212,9 @@ Before production use, test these scenarios:
 Adjust these values in `src/config.js` based on your needs:
 
 ```javascript
-// More aggressive retry for moderation
-MODERATION_RETRY_MAX: 10,              // Try 10 times
-MODERATION_RETRY_COOLDOWN: 5000,       // Wait 5s between tries
+// Moderation retry tuning
+MODERATION_RETRY_MAX: 100,             // Try more times
+MODERATION_RETRY_COOLDOWN: 1000,       // 1s between tries
 
 // Longer timeout for slow videos
 VIDEO_GENERATION_TIMEOUT: 120000,      // 2 minutes

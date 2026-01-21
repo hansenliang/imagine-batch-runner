@@ -29,7 +29,6 @@ Output:
 
 Account: primary-account
 Permalink: https://grok.com/imagine/post/060ec750-c502-4fb2-9de0-562bdd2e599e
-Prompt: "camera pans into a detail of the dandelions softly moving in the wind"
 Batch size: 10
 
 [12:34:56] INFO: Initializing batch runner
@@ -50,12 +49,14 @@ In another terminal, check status:
 npm start run status ~/GrokBatchRuns/dandelion-test
 ```
 
+Status counts are computed from manifest item statuses.
+
 ### Step 4: Handle Rate Limiting
 
 If the run stops due to rate limiting:
 
 ```
-[12:45:30] WARN: Rate limit detected, stopping run
+[12:45:30] WARN: Rate limit detected, stopping new work
 
 📊 Run Summary:
 

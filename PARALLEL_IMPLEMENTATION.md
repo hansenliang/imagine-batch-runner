@@ -23,9 +23,9 @@ Successfully implemented parallel video generation for the Grok Batch Video Gene
 
 3. **Parallel Runner** (`src/core/parallel-runner.js`)
    - Coordinates multiple workers (1-100)
-   - Staggered worker startup (1s delay between launches)
+   - Batched worker startup with light stagger
    - Aggregate progress tracking
-   - Rate limit coordination (stops all workers on detection)
+   - Rate limit coordination (stops new work, lets in-flight finish)
    - Resume capability for interrupted runs
 
 4. **Enhanced Manifest Manager** (`src/core/manifest.js`)
@@ -44,7 +44,6 @@ Successfully implemented parallel video generation for the Grok Batch Video Gene
 6. **Configuration Updates** (`src/config.js`)
    - `DEFAULT_PARALLELISM: 10` - Safe default
    - `MAX_PARALLELISM: 100` - Maximum workers allowed
-   - `WORKER_STARTUP_DELAY: 1000` - Stagger launches
    - `WORKER_SHUTDOWN_TIMEOUT: 60000` - Grace period
    - `CLAIM_RETRY_INTERVAL: 2000` - Work claim retry delay
    - `WORKER_PROFILE_CLEANUP: true` - Auto-delete profiles
@@ -79,7 +78,7 @@ Successfully implemented parallel video generation for the Grok Batch Video Gene
 Central Coordinator
   ├── Work Queue (atomic item assignment)
   ├── Shared Manifest (file-locked updates)
-  └── Rate Limit Manager (stops all on detection)
+  └── Rate Limit Manager (stops new work on detection)
 ```
 
 ## Usage
@@ -209,16 +208,16 @@ await manifest.updateItemAtomic(
 ## Error Handling
 
 ### Rate Limit Detection
-- Any worker detecting rate limit sets global flag
-- All workers check flag before claiming next item
-- Coordinator stops all workers gracefully
+- Any worker detecting rate limit updates run status
+- Workers finish current video, then stop claiming new work
+- Coordinator signals workers to stop after current item
 - Manifest status: `STOPPED_RATE_LIMIT`
 - Can resume later
 
 ### Worker Failures
 - Individual worker errors logged but don't stop others
 - Failed items can be retried (up to 3 attempts)
-- Critical errors (auth, rate limit) stop all workers
+- Critical errors (auth, rate limit) stop new work
 
 ### Chrome Profile Conflicts
 - **Solved**: Each worker gets isolated profile copy
@@ -288,7 +287,6 @@ Expected output:
 {
   DEFAULT_PARALLELISM: 10,        // Safe default
   MAX_PARALLELISM: 100,           // Maximum workers
-  WORKER_STARTUP_DELAY: 1000,    // 1s stagger
   WORKER_SHUTDOWN_TIMEOUT: 60000, // 60s grace period
   CLAIM_RETRY_INTERVAL: 2000,     // 2s between claims
   WORKER_PROFILE_CLEANUP: true    // Auto-delete profiles

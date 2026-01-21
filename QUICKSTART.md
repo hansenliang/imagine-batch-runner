@@ -73,7 +73,6 @@ You'll see:
 
 Account: my-grok
 Permalink: https://grok.com/imagine/post/...
-Prompt: "camera pans into a detail..."
 Batch size: 5
 
 [INFO] Initializing batch runner

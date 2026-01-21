@@ -60,8 +60,8 @@ export const config = {
   RETRY_DELAY_MAX: 30000, // 30 seconds max delay
 
   // Content moderation retry configuration
-  MODERATION_RETRY_MAX: 5, // Max retries for content moderation errors
-  MODERATION_RETRY_COOLDOWN: 3000, // 3 seconds cooldown between moderation retries
+  MODERATION_RETRY_MAX: 100, // Max retries for content moderation errors
+  MODERATION_RETRY_COOLDOWN: 1000, // 1 second cooldown between moderation retries
   SUCCESS_VERIFICATION_TIMEOUT: 5000, // 5 seconds to verify video success
 
   // Rate limiting
@@ -76,7 +76,6 @@ export const config = {
   // Parallel execution
   DEFAULT_PARALLELISM: 10,
   MAX_PARALLELISM: 100,
-  WORKER_STARTUP_DELAY: 50, // 50ms stagger within batch (deprecated, now using batch launching)
   WORKER_SHUTDOWN_TIMEOUT: 60000, // 60s grace period for shutdown
   CLAIM_RETRY_INTERVAL: 2000, // 2s between work claim attempts
   WORKER_PROFILE_CLEANUP: true, // Delete worker profiles after run
@@ -94,8 +93,8 @@ export const config = {
 // UI Selectors (centralized for easy updates)
 export const selectors = {
   // Video generation buttons
-  MAKE_VIDEO_BUTTON: 'button:has-text("Make video"), button:has-text("make video")',
-  REDO_BUTTON: 'button:has-text("Redo"), button:has-text("redo")',
+  MAKE_VIDEO_BUTTON: 'button:has-text("Make video"), button:has-text("make video"), button[aria-label*="make video" i], button[aria-label*="generate video" i], button[title*="make video" i], button[title*="generate video" i]',
+  REDO_BUTTON: 'button:has-text("Redo"), button:has-text("redo"), button[aria-label*="redo" i], button[title*="redo" i]',
 
   // Prompt input
   PROMPT_INPUT: 'textarea[placeholder*="prompt"], input[placeholder*="prompt"], textarea, input[type="text"]',

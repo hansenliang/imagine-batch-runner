@@ -111,6 +111,29 @@ export class ManifestManager {
   }
 
   /**
+   * Apply status transition and maintain counters.
+   * @private
+   */
+  _applyStatusTransition(item, prevStatus, nextStatus) {
+    if (!nextStatus || nextStatus === prevStatus) {
+      return;
+    }
+
+    if (prevStatus === 'COMPLETED') {
+      this.manifest.completedCount = Math.max(0, this.manifest.completedCount - 1);
+    } else if (prevStatus === 'FAILED') {
+      this.manifest.failedCount = Math.max(0, this.manifest.failedCount - 1);
+    }
+
+    if (nextStatus === 'COMPLETED') {
+      this.manifest.completedCount++;
+      item.completedAt = new Date().toISOString();
+    } else if (nextStatus === 'FAILED') {
+      this.manifest.failedCount++;
+    }
+  }
+
+  /**
    * Initialize a new run
    */
   async init(options) {
@@ -145,15 +168,9 @@ export class ManifestManager {
       throw new Error(`Item ${index} not found in manifest`);
     }
 
+    const prevStatus = item.status;
     Object.assign(item, updates);
-
-    // Update counters
-    if (updates.status === 'COMPLETED') {
-      this.manifest.completedCount++;
-      item.completedAt = new Date().toISOString();
-    } else if (updates.status === 'FAILED') {
-      this.manifest.failedCount++;
-    }
+    this._applyStatusTransition(item, prevStatus, updates.status);
 
     await this.save();
   }
@@ -184,7 +201,9 @@ export class ManifestManager {
    * Get summary
    */
   getSummary() {
-    const { batchSize, completedCount, failedCount, status, stopReason } = this.manifest;
+    const { batchSize, status, stopReason, items } = this.manifest;
+    const completedCount = items.filter(item => item.status === 'COMPLETED').length;
+    const failedCount = items.filter(item => item.status === 'FAILED').length;
     return {
       total: batchSize,
       completed: completedCount,
@@ -206,6 +225,10 @@ export class ManifestManager {
       // Reload latest state from disk (another worker may have updated)
       await this._reloadFromDisk();
 
+      if (this.manifest.status === 'STOPPED_RATE_LIMIT') {
+        return null;
+      }
+
       // Find first PENDING or FAILED item (retry failed items)
       const item = this.manifest.items.find(
         i => i.status === 'PENDING' || (i.status === 'FAILED' && i.attempts < 3)
@@ -215,6 +238,8 @@ export class ManifestManager {
         return null; // No work available
       }
 
+      const prevStatus = item.status;
+
       // Mark as IN_PROGRESS and assign to worker
       item.status = 'IN_PROGRESS';
       item.workerId = workerId;
@@ -223,6 +248,8 @@ export class ManifestManager {
       if (!item.createdAt) {
         item.createdAt = new Date().toISOString();
       }
+
+      this._applyStatusTransition(item, prevStatus, item.status);
 
       // Write immediately
       await this._writeToFile();
@@ -252,16 +279,11 @@ export class ManifestManager {
         throw new Error(`Worker ${workerId} does not own item ${index}`);
       }
 
+      const prevStatus = item.status;
+
       // Apply updates
       Object.assign(item, updates);
-
-      // Update counters based on status changes
-      if (updates.status === 'COMPLETED' && item.status !== 'COMPLETED') {
-        this.manifest.completedCount++;
-        item.completedAt = new Date().toISOString();
-      } else if (updates.status === 'FAILED' && item.status !== 'FAILED') {
-        this.manifest.failedCount++;
-      }
+      this._applyStatusTransition(item, prevStatus, updates.status);
 
       await this._writeToFile();
     });

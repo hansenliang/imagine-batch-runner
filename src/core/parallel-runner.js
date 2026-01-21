@@ -52,7 +52,6 @@ export class ParallelRunner {
     await this.logger.info(`Batch size: ${this.batchSize}`);
     await this.logger.info(`Parallelism: ${this.parallelism} workers`);
     await this.logger.info(`Permalink: ${this.permalink}`);
-    await this.logger.info(`Prompt: "${this.prompt}"`);
 
     // Initialize manifest
     this.manifest = new ManifestManager(this.runDir);
@@ -184,12 +183,13 @@ export class ParallelRunner {
         worker.run().catch(error => {
           // Catch errors but don't stop other workers
           if (error.message === 'RATE_LIMIT_STOP') {
-            this.rateLimitDetected = true;
-            this.logger.warn(`Rate limit detected by worker ${worker.workerId}`);
-            this.logger.info('Signaling all workers to stop gracefully...');
-            this.logger.info('Workers will complete their current video before shutting down');
-            // Stop all workers
-            this.workers.forEach(w => w.stop());
+            if (!this.rateLimitDetected) {
+              this.rateLimitDetected = true;
+              this.logger.warn(`Rate limit detected by worker ${worker.workerId}`);
+              this.logger.info('Signaling all workers to stop gracefully...');
+              this.logger.info('Workers will complete their current video before shutting down');
+              this.workers.forEach(w => w.stop());
+            }
           }
           return { error, workerId: worker.workerId };
         })
@@ -203,7 +203,10 @@ export class ParallelRunner {
         .filter(r => r.status === 'rejected' || r.value?.error)
         .map(r => r.reason || r.value?.error);
 
-      if (this.rateLimitDetected) {
+      await this.manifest.load();
+      const manifestStatus = this.manifest.manifest?.status;
+
+      if (this.rateLimitDetected || manifestStatus === 'STOPPED_RATE_LIMIT') {
         await this.logger.warn('Run stopped due to rate limit');
         await this.manifest.updateStatusAtomic('STOPPED_RATE_LIMIT', 'Rate limit detected');
       } else if (errors.length > 0 && errors.length === successfulWorkers.length) {

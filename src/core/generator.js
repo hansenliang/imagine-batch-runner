@@ -1,5 +1,5 @@
 import config, { selectors } from '../config.js';
-import { retry, retryWithCooldown, sleep } from '../utils/retry.js';
+import { retryWithCooldown, sleep } from '../utils/retry.js';
 import path from 'path';
 
 /**
@@ -10,6 +10,7 @@ export class VideoGenerator {
     this.browser = browser;
     this.logger = logger;
     this.page = browser.page;
+    this.rateLimitAfterStart = false;
   }
 
   /**
@@ -17,7 +18,7 @@ export class VideoGenerator {
    */
   async generate(index, prompt, debugDir) {
     this.logger.info(`[Video ${index + 1}] Starting generation`);
-    this.logger.debug(`Prompt: "${prompt}"`);
+    this.rateLimitAfterStart = false;
 
     try {
       // Wrap the entire generation process with retry logic for content moderation
@@ -49,7 +50,7 @@ export class VideoGenerator {
       );
 
       this.logger.success(`[Video ${index + 1}] Generation completed`);
-      return { success: true };
+      return { success: true, rateLimitDetected: this.rateLimitAfterStart };
 
     } catch (error) {
       this.logger.error(`[Video ${index + 1}] Generation failed: ${error.message}`);
@@ -74,6 +75,13 @@ export class VideoGenerator {
     let buttonLabel = null;
 
     if (!button) {
+      const promptButton = await this._findGenerationButtonNearPrompt(index);
+      if (promptButton) {
+        button = promptButton;
+      }
+    }
+
+    if (!button) {
       // Fallback: scan visible buttons for likely labels
       const candidates = await this.page.$$('button, [role="button"]');
       const matchers = [
@@ -83,6 +91,8 @@ export class VideoGenerator {
         /redo/i,
         /animate/i,
         /remake\s+video/i,
+        /submit/i,
+        /send/i,
       ];
 
       for (const candidate of candidates) {
@@ -121,7 +131,7 @@ export class VideoGenerator {
     }
 
     if (!button) {
-      throw new Error('Generation button not found (neither "Make video" nor "Redo")');
+      throw new Error('Generation button not found');
     }
 
     const buttonText = buttonLabel || await button.textContent();
@@ -138,6 +148,83 @@ export class VideoGenerator {
 
     // Wait for UI to respond
     await sleep(1000);
+  }
+
+  /**
+   * Find the generation button near the prompt input field
+   */
+  async _findGenerationButtonNearPrompt(index) {
+    try {
+      const promptInput = await this.page.$(selectors.PROMPT_INPUT);
+      if (!promptInput) return null;
+
+      const containerHandle = await promptInput.evaluateHandle((el) => {
+        return (
+          el.closest('form') ||
+          el.closest('[role="form"]') ||
+          el.closest('[data-slot]') ||
+          el.closest('[class*="composer"]') ||
+          el.closest('[class*="prompt"]') ||
+          el.closest('div') ||
+          el.parentElement
+        );
+      });
+      const container = containerHandle.asElement();
+      if (!container) return null;
+
+      const candidates = await container.$$('button, [role="button"]');
+      if (candidates.length === 0) return null;
+
+      const matchers = [
+        /make\s+video/i,
+        /generate\s+video/i,
+        /create\s+video/i,
+        /redo/i,
+        /animate/i,
+        /submit/i,
+        /send/i,
+      ];
+
+      let best = null;
+      let bestScore = -1;
+      let bestLabel = null;
+
+      for (const candidate of candidates) {
+        const isVisible = await candidate.isVisible().catch(() => false);
+        if (!isVisible) continue;
+
+        const isDisabled = await candidate.isDisabled().catch(() => false);
+        if (isDisabled) continue;
+
+        const text = await candidate.innerText().catch(() => '');
+        const aria = await candidate.getAttribute('aria-label').catch(() => '');
+        const title = await candidate.getAttribute('title').catch(() => '');
+        const label = `${text} ${aria} ${title}`.trim().replace(/\s+/g, ' ');
+        const hasSvg = Boolean(await candidate.$('svg'));
+
+        let score = 0;
+        if (label && matchers.some((pattern) => pattern.test(label))) score += 3;
+        if (aria || title) score += 2;
+        if (hasSvg) score += 1;
+
+        if (score > bestScore) {
+          best = candidate;
+          bestScore = score;
+          bestLabel = label;
+        }
+      }
+
+      if (best) {
+        this.logger.debug(
+          `[Video ${index + 1}] Found prompt-adjacent button: "${bestLabel || 'icon-only'}" (score=${bestScore})`
+        );
+      }
+
+      return best;
+    } catch (error) {
+      this.logger.debug(`[Video ${index + 1}] Prompt-adjacent button lookup failed: ${error.message}`);
+      return null;
+    }
   }
 
   /**
@@ -277,17 +364,34 @@ export class VideoGenerator {
     const startTime = Date.now();
     const checkInterval = 2000; // Check every 2 seconds
     let lastProgressLog = 0;
+    let sawGenerationSignal = false;
 
     while (true) {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
 
       // 1. Check for failures FIRST (highest priority)
 
-      // Rate limit check (highest priority - stops all work)
+      const loading = await this.page.$(selectors.LOADING_INDICATOR);
+      const progress = await this.page.$(selectors.VIDEO_PROGRESS_BAR);
+      const video = await this.page.$(selectors.VIDEO_CONTAINER);
+      if (loading || progress || video) {
+        sawGenerationSignal = true;
+      }
+
+      // Rate limit check (if before generation starts, stop immediately)
       const rateLimit = await this._detectRateLimit();
       if (rateLimit.detected) {
-        this.logger.warn(`[Video ${index + 1}] Rate limit detected: ${rateLimit.message}`);
-        throw new Error(`RATE_LIMIT: ${rateLimit.message}`);
+        if (!sawGenerationSignal) {
+          this.logger.warn(`[Video ${index + 1}] Rate limit detected before generation started: ${rateLimit.message}`);
+          throw new Error(`RATE_LIMIT: ${rateLimit.message}`);
+        }
+
+        if (!this.rateLimitAfterStart) {
+          this.logger.debug(
+            `[Video ${index + 1}] Rate limit detected after generation started; will stop after current video`
+          );
+        }
+        this.rateLimitAfterStart = true;
       }
 
       // Content moderation check
@@ -312,13 +416,11 @@ export class VideoGenerator {
       }
 
       // 2. Check for success
-      const video = await this.page.$(selectors.VIDEO_CONTAINER);
       if (video) {
         // Video element found, verify it's actually playable
         const isPlayable = await this._verifyVideoPlayable(video);
         if (isPlayable) {
-          const duration = Math.floor((Date.now() - startTime) / 1000);
-          this.logger.success(`[Video ${index + 1}] Video ready and verified (took ${duration}s)`);
+          this.logger.success(`[Video ${index + 1}] Video ready and verified`);
           return { success: true };
         }
       }
@@ -331,7 +433,6 @@ export class VideoGenerator {
 
       // 4. Log progress periodically
       if (elapsed - lastProgressLog >= 10) {
-        const loading = await this.page.$(selectors.LOADING_INDICATOR);
         if (loading) {
           this.logger.debug(`[Video ${index + 1}] Still generating... (${elapsed}s)`);
         }

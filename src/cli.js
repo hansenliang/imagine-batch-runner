@@ -11,6 +11,38 @@ import config from './config.js';
 
 const program = new Command();
 
+async function getGitCommitHash() {
+  try {
+    const headPath = path.join(config.PROJECT_ROOT, '.git', 'HEAD');
+    const head = (await fs.readFile(headPath, 'utf-8')).trim();
+    if (head.startsWith('ref:')) {
+      const ref = head.split(' ')[1];
+      const refPath = path.join(config.PROJECT_ROOT, '.git', ref);
+      return (await fs.readFile(refPath, 'utf-8')).trim();
+    }
+    return head;
+  } catch {
+    return null;
+  }
+}
+
+async function getCodeVersionLabel() {
+  let pkgVersion = null;
+  try {
+    const pkgPath = path.join(config.PROJECT_ROOT, 'package.json');
+    const pkg = JSON.parse(await fs.readFile(pkgPath, 'utf-8'));
+    pkgVersion = pkg?.version || null;
+  } catch {
+    // Ignore version lookup errors
+  }
+
+  const hash = await getGitCommitHash();
+  if (pkgVersion && hash) return `v${pkgVersion} (${hash.slice(0, 7)})`;
+  if (pkgVersion) return `v${pkgVersion}`;
+  if (hash) return hash.slice(0, 7);
+  return 'unknown';
+}
+
 program
   .name('grok-batch')
   .description('Local batch image-to-video generator for Grok Imagine')
@@ -70,14 +102,20 @@ run
         const configData = JSON.parse(await fs.readFile(options.config, 'utf-8'));
 
         // Merge config with options, but preserve config values for defaults
-        // Save original parallel value to detect if it was explicitly set
+        // Save original values to detect if they were explicitly set
         const parallelWasDefault = options.parallel === '1';
+        const countWasDefault = options.count === String(config.DEFAULT_BATCH_SIZE);
 
         options = { ...configData, ...options };
 
         // If parallel wasn't explicitly set on CLI, use config value
         if (parallelWasDefault && configData.parallel !== undefined) {
           options.parallel = configData.parallel;
+        }
+
+        // If count wasn't explicitly set on CLI, use config value
+        if (countWasDefault && configData.count !== undefined) {
+          options.count = configData.count;
         }
       }
 
@@ -115,9 +153,9 @@ run
       }
 
       console.log(chalk.blue('\n🚀 Starting batch run...\n'));
+      console.log(chalk.gray(`Code version: ${await getCodeVersionLabel()}`));
       console.log(chalk.gray(`Account: ${options.account}`));
       console.log(chalk.gray(`Permalink: ${options.permalink}`));
-      console.log(chalk.gray(`Prompt: "${options.prompt}"`));
       console.log(chalk.gray(`Batch size: ${batchSize}`));
       if (parallelism > 1) {
         console.log(chalk.gray(`Parallelism: ${parallelism} workers`));
@@ -173,6 +211,7 @@ run
   .action(async (runDir, options) => {
     try {
       console.log(chalk.blue('\n🔄 Resuming run...\n'));
+      console.log(chalk.gray(`Code version: ${await getCodeVersionLabel()}\n`));
 
       // Detect if this is a parallel run
       const isParallel = await ParallelRunner.isParallelRun(runDir);
@@ -224,18 +263,24 @@ run
       const manifestPath = path.join(runDir, 'manifest.json');
       const data = await fs.readFile(manifestPath, 'utf-8');
       const manifest = JSON.parse(data);
+      const items = Array.isArray(manifest.items) ? manifest.items : [];
+      const completedCount = items.length
+        ? items.filter(item => item.status === 'COMPLETED').length
+        : manifest.completedCount;
+      const failedCount = items.length
+        ? items.filter(item => item.status === 'FAILED').length
+        : manifest.failedCount;
 
       console.log(chalk.blue('\n📊 Run Status:\n'));
       console.log(chalk.gray(`  Job ID: ${manifest.id}`));
       console.log(chalk.gray(`  Job Name: ${manifest.jobName}`));
       console.log(chalk.gray(`  Account: ${manifest.accountAlias}`));
       console.log(chalk.gray(`  Permalink: ${manifest.permalink}`));
-      console.log(chalk.gray(`  Prompt: "${manifest.prompt}"`));
       console.log('');
       console.log(chalk.white(`  Status: ${manifest.status}`));
-      console.log(chalk.green(`  Completed: ${manifest.completedCount}/${manifest.batchSize}`));
-      console.log(chalk.red(`  Failed: ${manifest.failedCount}`));
-      console.log(chalk.yellow(`  Remaining: ${manifest.batchSize - manifest.completedCount - manifest.failedCount}`));
+      console.log(chalk.green(`  Completed: ${completedCount}/${manifest.batchSize}`));
+      console.log(chalk.red(`  Failed: ${failedCount}`));
+      console.log(chalk.yellow(`  Remaining: ${manifest.batchSize - completedCount - failedCount}`));
       console.log('');
       console.log(chalk.gray(`  Created: ${new Date(manifest.createdAt).toLocaleString()}`));
       console.log(chalk.gray(`  Updated: ${new Date(manifest.updatedAt).toLocaleString()}`));
@@ -284,6 +329,10 @@ run
       runs.sort((a, b) => new Date(b.manifest.createdAt) - new Date(a.manifest.createdAt));
 
       runs.forEach(({ dir, manifest }) => {
+        const items = Array.isArray(manifest.items) ? manifest.items : [];
+        const completedCount = items.length
+          ? items.filter(item => item.status === 'COMPLETED').length
+          : manifest.completedCount;
         const statusColor = manifest.status === 'COMPLETED' ? chalk.green :
                            manifest.status === 'FAILED' ? chalk.red :
                            manifest.status === 'STOPPED_RATE_LIMIT' ? chalk.yellow :
@@ -292,7 +341,7 @@ run
         console.log(chalk.white(`  ${manifest.jobName || dir}`));
         console.log(chalk.gray(`    Path: ${path.join(runsDir, dir)}`));
         console.log(statusColor(`    Status: ${manifest.status}`));
-        console.log(chalk.gray(`    Progress: ${manifest.completedCount}/${manifest.batchSize}`));
+        console.log(chalk.gray(`    Progress: ${completedCount}/${manifest.batchSize}`));
         console.log(chalk.gray(`    Created: ${new Date(manifest.createdAt).toLocaleString()}`));
         console.log('');
       });

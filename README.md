@@ -100,6 +100,8 @@ npm start run resume <run-directory> --parallel 20
 # Show run status
 npm start run status <run-directory>
 
+# Status/progress counts are derived from manifest item statuses.
+
 # List all runs
 npm start run list
 ```
@@ -171,7 +173,7 @@ The tool automatically detects Grok's rate limits by:
 - Detecting error states
 
 When rate-limited:
-- Run stops gracefully
+- In-flight video completes, no new work is claimed
 - Progress is saved
 - Resume when ready with `run resume`
 

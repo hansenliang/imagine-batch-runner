@@ -146,6 +146,7 @@ export class ParallelWorker {
    */
   async run() {
     this.isRunning = true;
+    let stoppedEarly = false;
     this.logger.info(`[Worker ${this.workerId}] Starting work loop`);
 
     try {
@@ -169,6 +170,7 @@ export class ParallelWorker {
             { status: 'PENDING' },
             this.workerId
           );
+          stoppedEarly = true;
           break;
         }
 
@@ -177,7 +179,7 @@ export class ParallelWorker {
         try {
           // Generate video (this will complete even if stop signal comes mid-generation)
           const startTime = Date.now();
-          await this.generator.generate(index, this.prompt, this.debugDir);
+          const result = await this.generator.generate(index, this.prompt, this.debugDir);
           const duration = Math.floor((Date.now() - startTime) / 1000);
 
           // Update manifest: COMPLETED
@@ -189,9 +191,18 @@ export class ParallelWorker {
 
           this.logger.success(`[Worker ${this.workerId}] Video ${index + 1} completed in ${duration}s`);
 
+          if (result?.rateLimitDetected) {
+            this.logger.warn(
+              `[Worker ${this.workerId}] Rate limit detected after generation started; stopping after current video`
+            );
+            await this.manifest.updateStatusAtomic('STOPPED_RATE_LIMIT', 'Rate limit detected');
+            this.shouldStop = true;
+          }
+
           // Check if we should stop AFTER completing work
           if (this.shouldStop) {
             this.logger.info(`[Worker ${this.workerId}] Stop signal received, exiting after completing video ${index + 1}`);
+            stoppedEarly = true;
             break;
           }
 
@@ -230,7 +241,9 @@ export class ParallelWorker {
         }
       }
 
-      this.logger.info(`[Worker ${this.workerId}] Work loop completed`);
+      if (!stoppedEarly) {
+        this.logger.info(`[Worker ${this.workerId}] Work loop completed`);
+      }
     } catch (error) {
       if (error.message === 'RATE_LIMIT_STOP') {
         throw error; // Propagate to coordinator
@@ -246,8 +259,10 @@ export class ParallelWorker {
    * Signal worker to stop
    */
   stop() {
-    this.logger.info(`[Worker ${this.workerId}] Stop signal received`);
-    this.shouldStop = true;
+    if (!this.shouldStop) {
+      this.logger.info(`[Worker ${this.workerId}] Stop signal received`);
+      this.shouldStop = true;
+    }
   }
 
   /**
