@@ -25,6 +25,7 @@ export class VideoGenerator {
   async generate(index, prompt, debugDir) {
     let lastError = null;
     const startTime = Date.now();
+    this.rateLimitAfterStart = false;
 
     try {
       // Step 1: Find and click the generation button
@@ -40,6 +41,7 @@ export class VideoGenerator {
       return {
         success: true,
         rateLimited: false,
+        rateLimitAfterStart: this.rateLimitAfterStart,
         attempted: true,
         durationMs: duration,
       };
@@ -51,6 +53,7 @@ export class VideoGenerator {
         return {
           success: false,
           rateLimited: true,
+          rateLimitAfterStart: false,
           attempted: false,
           error: error.message,
         };
@@ -67,6 +70,7 @@ export class VideoGenerator {
     return {
       success: false,
       rateLimited: false,
+      rateLimitAfterStart: this.rateLimitAfterStart,
       attempted: true,
       error: lastError?.message || 'Unknown error',
       durationMs: duration,

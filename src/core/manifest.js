@@ -62,6 +62,7 @@ export class ManifestManager {
     try {
       const data = await fs.readFile(this.manifestPath, 'utf-8');
       this.manifest = JSON.parse(data);
+      this._normalizeManifest();
       return this.manifest;
     } catch (error) {
       if (error.code === 'ENOENT') {
@@ -96,6 +97,7 @@ export class ManifestManager {
   async _reloadFromDisk() {
     const data = await fs.readFile(this.manifestPath, 'utf-8');
     this.manifest = JSON.parse(data);
+    this._normalizeManifest();
   }
 
   /**
@@ -109,6 +111,22 @@ export class ManifestManager {
       JSON.stringify(this.manifest, null, 2),
       'utf-8'
     );
+  }
+
+  /**
+   * Normalize manifests created by older versions.
+   * @private
+   */
+  _normalizeManifest() {
+    if (!this.manifest) {
+      return;
+    }
+
+    const numericFields = ['completedCount', 'failedCount', 'rateLimitedCount'];
+    for (const field of numericFields) {
+      const value = Number(this.manifest[field]);
+      this.manifest[field] = Number.isFinite(value) ? value : 0;
+    }
   }
 
   /**

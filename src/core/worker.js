@@ -243,6 +243,13 @@ export class ParallelWorker {
           );
         }
 
+        if (result.rateLimitAfterStart) {
+          this.logger.warn(
+            `[Worker ${this.workerId}] Rate limit detected after start, stopping after attempt ${index + 1}`
+          );
+          throw new Error('RATE_LIMIT_STOP');
+        }
+
         // Check if we should stop AFTER completing work
         if (this.shouldStop) {
           this.logger.info(`[Worker ${this.workerId}] Stop signal received, exiting after completing attempt ${index + 1}`);

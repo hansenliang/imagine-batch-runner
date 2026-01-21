@@ -2,7 +2,7 @@
 
 ## What Was Built
 
-A production-ready CLI tool for batch-generating videos from Grok Imagine image permalinks using browser automation (Playwright), with persistent account sessions, resilient error handling, and resume capability.
+A production-ready CLI tool for batch-generating videos from Grok Imagine image permalinks using browser automation (Playwright), with persistent account sessions and resilient error handling.
 
 ## Architecture Overview
 
@@ -31,7 +31,6 @@ A production-ready CLI tool for batch-generating videos from Grok Imagine image 
    - Run state persistence (JSON)
    - Per-item status tracking (PENDING, IN_PROGRESS, COMPLETED, FAILED)
    - Progress counters
-   - Resume capability
 
 5. **Batch Runner** (`src/core/runner.js`)
    - Main orchestration logic
@@ -71,7 +70,6 @@ Centralized configuration for:
 | Batch generation (N ≤ 100) | ✅ | Configurable batch size, default 10, max 100 |
 | Rate-limit detection | ✅ | UI toast/message detection + disabled button checks |
 | Graceful stop on rate limit | ✅ | STOPPED_RATE_LIMIT status, preserves state |
-| Resume capability | ✅ | Manifest-based resume from next pending item |
 | Retries for transient failures | ✅ | Exponential backoff with jitter, max 3 retries |
 | Debug artifacts | ✅ | Screenshots + HTML on errors |
 | Account setup & persistence | ✅ | Headed browser login, profile directory storage |
@@ -80,8 +78,6 @@ Centralized configuration for:
 ### 🚀 Beyond MVP (Bonus Features)
 
 - **Progress tracking**: Real-time progress bar in CLI
-- **Run listing**: View all runs with status
-- **Status command**: Check run progress without resuming
 - **Job naming**: Custom job names for organization
 - **Consecutive failure protection**: Stop after 5 consecutive failures
 - **Last used tracking**: Account usage timestamps
@@ -153,7 +149,6 @@ Imagine batch runner/
 ### State Management
 - **Manifest-driven**: Single source of truth
 - **Atomic updates**: Save after each item
-- **Resume-friendly**: Track next index, allow resume from any state
 
 ## Configuration Tuning
 
@@ -201,7 +196,6 @@ Before first use:
 - [ ] Account added (`npm start accounts add test`)
 - [ ] Small test run (`--count 5`)
 - [ ] Rate limit handling tested
-- [ ] Resume functionality tested
 
 ## Known Limitations
 
@@ -224,7 +218,6 @@ The tool is successful when:
 - ✅ User can add account and reuse session across runs
 - ✅ User can generate N videos (N ≤ 100) from one permalink
 - ✅ Tool detects rate limits and stops gracefully
-- ✅ User can resume a stopped run
 - ✅ Logs and debug artifacts help troubleshoot failures
 
 ## Credits

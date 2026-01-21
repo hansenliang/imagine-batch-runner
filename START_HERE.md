@@ -7,7 +7,6 @@ Automates batch video generation in Grok Imagine:
 - Uses **browser automation** (no API credits needed)
 - **Persistent login** - set up once, reuse forever
 - **Automatic rate-limit detection** and graceful stopping
-- **Resume capability** - pick up where you left off
 
 ## Installation (One-Time Setup)
 
@@ -83,11 +82,6 @@ npm run account:list            # List accounts
 
 # Run videos
 npm run run -- --account <name> --permalink <url> --prompt "<text>" --count <N>
-
-# Manage runs
-npm run list                    # List all runs
-npm run status <run-dir>        # Check run status
-npm run resume <run-dir>        # Resume stopped run
 ```
 
 ## Typical Workflow
@@ -95,7 +89,7 @@ npm run resume <run-dir>        # Resume stopped run
 1. **Setup** (once): `npm run account:add my-account`
 2. **Generate**: Use `npm run run` with your permalink
 3. **Monitor**: Videos appear in Grok UI as they're generated
-4. **If rate-limited**: Wait, then `npm run resume <dir>`
+4. **If rate-limited**: Wait before starting another run
 5. **Download**: Manually download from Grok UI (no auto-download yet)
 
 ## Important Notes
@@ -103,7 +97,6 @@ npm run resume <run-dir>        # Resume stopped run
 - ✅ **No downloads yet**: Videos are generated but not auto-downloaded (coming in v1.1)
 - ✅ **Rate limits**: Grok allows ~100 videos per 4 hours per account
 - ✅ **Multiple accounts**: Run multiple instances in parallel for higher throughput
-- ✅ **Resume anytime**: Interrupted runs can always be resumed
 
 ## Troubleshooting
 
@@ -112,7 +105,7 @@ npm run resume <run-dir>        # Resume stopped run
 | "npm not found" | Install Node.js ([SETUP.md](./SETUP.md)) |
 | "Account not found" | Run `npm run account:add <name>` first |
 | Videos timeout | Increase timeout in [src/config.js](./src/config.js) |
-| Rate limited | Wait ~4 hours, then resume run |
+| Rate limited | Wait ~4 hours before starting another run |
 | Session expired | Re-run `npm run account:add <name>` to re-login |
 
 ## Example: Generate 100 Videos
@@ -129,8 +122,6 @@ npm run run -- \
   --count 100 \
   --job-name "cinematic-batch-001"
 
-# Step 3: If rate-limited, resume later
-npm run resume ~/GrokBatchRuns/cinematic-batch-001
 ```
 
 ## What Happens When You Run
@@ -143,7 +134,7 @@ npm run resume ~/GrokBatchRuns/cinematic-batch-001
    - Waits for video to complete (~15-30s)
    - Repeats
 4. Stops gracefully on rate limit
-5. Saves all progress for resuming
+5. Saves logs and a manifest for inspection
 
 ## Performance
 

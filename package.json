@@ -13,10 +13,7 @@
     "account:add": "node src/cli.js accounts add",
     "account:list": "node src/cli.js accounts list",
     "run": "node src/cli.js run start",
-    "run:config": "node src/cli.js run start --config",
-    "resume": "node src/cli.js run resume",
-    "status": "node src/cli.js run status",
-    "list": "node src/cli.js run list"
+    "run:config": "node src/cli.js run start --config"
   },
   "keywords": [
     "grok",

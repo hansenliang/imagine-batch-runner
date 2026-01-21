@@ -93,15 +93,6 @@ The videos are now visible in the Grok UI at your permalink! Open it in a browse
 ```bash
 # List your accounts
 npm run account:list
-
-# List all runs
-npm run list
-
-# Check status of a run
-npm run status ~/GrokBatchRuns/job_1234567890
-
-# Resume a stopped run
-npm run resume ~/GrokBatchRuns/job_1234567890
 ```
 
 ## Next Steps
