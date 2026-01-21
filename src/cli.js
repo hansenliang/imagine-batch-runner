@@ -5,7 +5,6 @@ import chalk from 'chalk';
 import fs from 'fs/promises';
 import path from 'path';
 import { AccountManager } from './core/accounts.js';
-import { BatchRunner } from './core/runner.js';
 import { ParallelRunner } from './core/parallel-runner.js';
 import config from './config.js';
 
@@ -132,13 +131,13 @@ run
 
       // Validate inputs
       const batchSize = parseInt(options.count, 10);
-      if (isNaN(batchSize) || batchSize < 1 || batchSize > config.MAX_BATCH_SIZE) {
-        throw new Error(`Count must be between 1 and ${config.MAX_BATCH_SIZE}`);
+      if (isNaN(batchSize) || batchSize < 1 || batchSize > 1000) {
+        throw new Error('Count must be between 1 and 1000');
       }
 
       const parallelism = parseInt(options.parallel, 10);
-      if (isNaN(parallelism) || parallelism < 1 || parallelism > config.MAX_PARALLELISM) {
-        throw new Error(`Parallel must be between 1 and ${config.MAX_PARALLELISM}`);
+      if (isNaN(parallelism) || parallelism < 1 || parallelism > 100) {
+        throw new Error('Parallel must be between 1 and 100');
       }
 
       if (!options.permalink.includes('grok.com/imagine')) {
@@ -157,37 +156,32 @@ run
       console.log(chalk.gray(`Account: ${options.account}`));
       console.log(chalk.gray(`Permalink: ${options.permalink}`));
       console.log(chalk.gray(`Batch size: ${batchSize}`));
-      if (parallelism > 1) {
-        console.log(chalk.gray(`Parallelism: ${parallelism} workers`));
-      }
+      console.log(chalk.gray(`Parallelism: ${parallelism} workers`));
       console.log('');
 
-      // Create and start runner (parallel if parallelism > 1)
-      const runner = parallelism > 1
-        ? new ParallelRunner({
-            accountAlias: options.account,
-            permalink: options.permalink,
-            prompt: options.prompt,
-            batchSize,
-            jobName: options.jobName,
-            parallelism,
-          })
-        : new BatchRunner({
-            accountAlias: options.account,
-            permalink: options.permalink,
-            prompt: options.prompt,
-            batchSize,
-            jobName: options.jobName,
-          });
+      // Create and start runner (always use ParallelRunner, parallelism=1 runs sequentially)
+      const runner = new ParallelRunner({
+        accountAlias: options.account,
+        permalink: options.permalink,
+        prompt: options.prompt,
+        batchSize,
+        jobName: options.jobName,
+        parallelism,
+      });
 
       await runner.init();
       const summary = await runner.start();
 
       // Print summary
       console.log(chalk.blue('\n📊 Run Summary:\n'));
-      console.log(chalk.green(`  ✓ Completed: ${summary.completed}/${summary.total}`));
-      if (summary.failed > 0) {
-        console.log(chalk.red(`  ✗ Failed: ${summary.failed}`));
+      console.log(chalk.gray(`  Workers: ${parallelism}`));
+      console.log(chalk.gray(`  Total attempts: ${summary.totalAttempts}`));
+      console.log(chalk.green(`    ✓ Successful: ${summary.successfulAttempts} (${summary.videosCompleted} videos)`));
+      if (summary.failedAttempts > 0) {
+        console.log(chalk.red(`    ✗ Failed: ${summary.failedAttempts} (${summary.videosFailed} videos)`));
+      }
+      if (summary.videosRateLimited > 0) {
+        console.log(chalk.yellow(`  Rate limited: ${summary.videosRateLimited} videos (not attempted)`));
       }
       console.log(chalk.gray(`  Status: ${summary.status}`));
       if (summary.stopReason) {
@@ -213,35 +207,35 @@ run
       console.log(chalk.blue('\n🔄 Resuming run...\n'));
       console.log(chalk.gray(`Code version: ${await getCodeVersionLabel()}\n`));
 
-      // Detect if this is a parallel run
-      const isParallel = await ParallelRunner.isParallelRun(runDir);
+      // Always use ParallelRunner for resume (handles both parallel and sequential)
+      const runner = new ParallelRunner({});
+      await runner.resume(runDir);
 
-      let runner;
-      if (isParallel) {
-        console.log(chalk.gray('Detected parallel run\n'));
-        runner = new ParallelRunner({});
-        await runner.resume(runDir);
-        // Override parallelism if specified
-        if (options.parallel) {
-          const newParallelism = parseInt(options.parallel, 10);
-          if (newParallelism > 0 && newParallelism <= config.MAX_PARALLELISM) {
-            runner.parallelism = newParallelism;
-            console.log(chalk.gray(`Overriding parallelism to ${newParallelism} workers\n`));
-          }
+      const parallelism = runner.parallelism || 1;
+      console.log(chalk.gray(`Detected run with ${parallelism} workers\n`));
+
+      // Override parallelism if specified
+      if (options.parallel) {
+        const newParallelism = parseInt(options.parallel, 10);
+        if (newParallelism > 0 && newParallelism <= 100) {
+          runner.parallelism = newParallelism;
+          console.log(chalk.gray(`Overriding parallelism to ${newParallelism} workers\n`));
         }
-      } else {
-        console.log(chalk.gray('Detected sequential run\n'));
-        runner = new BatchRunner({});
-        await runner.resume(runDir);
       }
 
       const summary = await runner.start();
+      const finalParallelism = runner.parallelism || 1;
 
       // Print summary
       console.log(chalk.blue('\n📊 Run Summary:\n'));
-      console.log(chalk.green(`  ✓ Completed: ${summary.completed}/${summary.total}`));
-      if (summary.failed > 0) {
-        console.log(chalk.red(`  ✗ Failed: ${summary.failed}`));
+      console.log(chalk.gray(`  Workers: ${finalParallelism}`));
+      console.log(chalk.gray(`  Total attempts: ${summary.totalAttempts}`));
+      console.log(chalk.green(`    ✓ Successful: ${summary.successfulAttempts} (${summary.videosCompleted} videos)`));
+      if (summary.failedAttempts > 0) {
+        console.log(chalk.red(`    ✗ Failed: ${summary.failedAttempts} (${summary.videosFailed} videos)`));
+      }
+      if (summary.videosRateLimited > 0) {
+        console.log(chalk.yellow(`  Rate limited: ${summary.videosRateLimited} videos (not attempted)`));
       }
       console.log(chalk.gray(`  Status: ${summary.status}`));
       if (summary.stopReason) {

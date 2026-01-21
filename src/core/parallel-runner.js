@@ -33,6 +33,7 @@ export class ParallelRunner {
     this.logger = null;
     this.workers = [];
     this.rateLimitDetected = false;
+    this.summaryPrinted = false;
   }
 
   /**
@@ -114,8 +115,6 @@ export class ParallelRunner {
   async start() {
     try {
       await this.manifest.updateStatusAtomic('IN_PROGRESS');
-
-      await this.logger.info(`Launching ${this.parallelism} workers...`);
 
       // Create workers
       for (let i = 0; i < this.parallelism; i++) {
@@ -227,6 +226,7 @@ export class ParallelRunner {
 
       // Print final summary
       await this._printSummary();
+      this.summaryPrinted = true;
 
       // Return summary for CLI
       return this.manifest.getSummary();
@@ -236,6 +236,10 @@ export class ParallelRunner {
       await this.manifest.updateStatusAtomic('FAILED', error.message);
       throw error;
     } finally {
+      if (!this.summaryPrinted) {
+        await this._printSummary();
+        this.summaryPrinted = true;
+      }
       await this.cleanup();
     }
   }
@@ -244,7 +248,8 @@ export class ParallelRunner {
    * Cleanup: shutdown all workers
    */
   async cleanup() {
-    await this.logger.info('Cleaning up workers...');
+    await this.logger.info(`Cleaning up workers (${this.workers.length})...`);
+    const cleanupStart = Date.now();
 
     const shutdownPromises = this.workers.map(async worker => {
       try {
@@ -268,21 +273,25 @@ export class ParallelRunner {
       // Ignore cleanup errors
     }
 
-    await this.logger.success('Cleanup complete');
+    const cleanupDurationMs = Date.now() - cleanupStart;
+    await this.logger.success(`Cleanup complete in ${cleanupDurationMs}ms`);
   }
 
   /**
-   * Print final summary
+   * Print final summary with attempt-based reporting
    * @private
    */
   async _printSummary() {
     const summary = this.manifest.getSummary();
 
     await this.logger.info('=== Run Summary ===');
-    await this.logger.info(`Total: ${summary.total}`);
-    await this.logger.info(`Completed: ${summary.completed}`);
-    await this.logger.info(`Failed: ${summary.failed}`);
-    await this.logger.info(`Remaining: ${summary.remaining}`);
+    await this.logger.info(`Workers: ${this.parallelism}`);
+    await this.logger.info(`Total attempts: ${summary.totalAttempts}`);
+    await this.logger.info(`  Successful: ${summary.successfulAttempts} (${summary.videosCompleted} videos)`);
+    await this.logger.info(`  Failed: ${summary.failedAttempts} (${summary.videosFailed} videos)`);
+    if (summary.videosRateLimited > 0) {
+      await this.logger.info(`Rate limited: ${summary.videosRateLimited} videos (not attempted)`);
+    }
     await this.logger.info(`Status: ${summary.status}`);
 
     if (summary.stopReason) {

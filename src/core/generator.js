@@ -1,6 +1,12 @@
 import config, { selectors } from '../config.js';
-import { retryWithCooldown, sleep } from '../utils/retry.js';
 import path from 'path';
+
+/**
+ * Sleep utility
+ */
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 /**
  * Video generator - handles the generation state machine
@@ -10,56 +16,84 @@ export class VideoGenerator {
     this.browser = browser;
     this.logger = logger;
     this.page = browser.page;
-    this.rateLimitAfterStart = false;
   }
 
   /**
    * Generate a single video from the current permalink with internal retry for content moderation
+   * Returns: { success, rateLimited, attempts, error }
    */
   async generate(index, prompt, debugDir) {
-    this.logger.info(`[Video ${index + 1}] Starting generation`);
-    this.rateLimitAfterStart = false;
+    let attemptCount = 0;
+    let lastError = null;
+    const startTime = Date.now();
 
-    try {
-      // Wrap the entire generation process with retry logic for content moderation
-      await retryWithCooldown(
-        async () => {
-          // Step 1: Find and click the generation button
-          await this._clickGenerationButton(index);
+    // Content moderation retry loop
+    for (let i = 0; i < config.MODERATION_RETRY_MAX; i++) {
+      attemptCount++;
+      const attemptStart = Date.now();
 
-          // Step 2: Enter prompt (if needed)
-          await this._enterPrompt(prompt, index);
+      try {
+        // Step 1: Find and click the generation button
+        await this._clickGenerationButton(index);
 
-          // Step 3: Wait for video generation to complete (with real-time failure detection)
-          await this._waitForCompletion(index);
+        // Step 2: Enter prompt (if needed)
+        await this._enterPrompt(prompt, index);
 
-          return { success: true };
-        },
-        {
-          maxRetries: config.MODERATION_RETRY_MAX,
-          cooldown: config.MODERATION_RETRY_COOLDOWN,
-          errorPattern: 'CONTENT_MODERATED',
-          onRetry: async (attempt, maxRetries, cooldown, error) => {
-            this.logger.warn(
-              `[Video ${index + 1}] Content moderated (attempt ${attempt}/${maxRetries}). Retrying in ${cooldown / 1000}s...`
-            );
-            // Reload the page to reset state for retry
-            await this.reloadPermalink(this.browser.page.url());
-          },
+        // Step 3: Wait for video generation to complete
+        await this._waitForCompletion(index);
+
+        const duration = Date.now() - startTime;
+        return {
+          success: true,
+          rateLimited: false,
+          attempts: attemptCount,
+          durationMs: duration,
+        };
+
+      } catch (error) {
+        // Rate limit detected - doesn't count as attempt per user requirements
+        if (error.message?.includes('RATE_LIMIT')) {
+          this.logger.warn(`[Video ${index + 1}] Rate limit detected (not attempted)`);
+          await this._saveDebugArtifacts(index, debugDir, error);
+          return {
+            success: false,
+            rateLimited: true,
+            attempts: 0,
+            error: error.message,
+          };
         }
-      );
 
-      this.logger.success(`[Video ${index + 1}] Generation completed`);
-      return { success: true, rateLimitDetected: this.rateLimitAfterStart };
+        // Content moderation - retry
+        if (error.message?.includes('CONTENT_MODERATED')) {
+          lastError = error;
+          this.logger.warn(
+            `[Video ${index + 1}] Attempt ${attemptCount}: Content moderated, retrying in 1s... (max ${config.MODERATION_RETRY_MAX})`
+          );
 
-    } catch (error) {
-      this.logger.error(`[Video ${index + 1}] Generation failed: ${error.message}`);
+          // Reload the page to reset state for retry
+          await sleep(config.MODERATION_RETRY_COOLDOWN);
+          await this.reloadPermalink(this.browser.page.url());
+          continue;
+        }
 
-      // Save debug artifacts
-      await this._saveDebugArtifacts(index, debugDir, error);
-
-      throw error;
+        // Other error - fail immediately
+        lastError = error;
+        break;
+      }
     }
+
+    // All retries exhausted or non-retryable error
+    const duration = Date.now() - startTime;
+    this.logger.error(`[Video ${index + 1}] Failed after ${attemptCount} attempts: ${lastError?.message}`);
+    await this._saveDebugArtifacts(index, debugDir, lastError);
+
+    return {
+      success: false,
+      rateLimited: false,
+      attempts: attemptCount,
+      error: lastError?.message || 'Unknown error',
+      durationMs: duration,
+    };
   }
 
   /**

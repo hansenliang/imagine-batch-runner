@@ -6,6 +6,22 @@ import fs from 'fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function parseBooleanEnv(value, defaultValue) {
+  if (value === undefined) {
+    return defaultValue;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) {
+    return false;
+  }
+
+  return defaultValue;
+}
+
 /**
  * Auto-detect Chrome user data directory based on platform
  */
@@ -50,35 +66,20 @@ export const config = {
   RUNS_DIR: path.join(os.homedir(), 'GrokBatchRuns'),
 
   // Timeouts (milliseconds)
-  VIDEO_GENERATION_TIMEOUT: 60000, // 60 seconds (you mentioned 10-30s typical)
+  VIDEO_GENERATION_TIMEOUT: 60000, // 60 seconds
   PAGE_LOAD_TIMEOUT: 30000,
   ELEMENT_WAIT_TIMEOUT: 10000,
-
-  // Retry configuration
-  MAX_RETRIES: 3,
-  RETRY_DELAY_BASE: 2000, // 2 seconds base delay
-  RETRY_DELAY_MAX: 30000, // 30 seconds max delay
 
   // Content moderation retry configuration
   MODERATION_RETRY_MAX: 100, // Max retries for content moderation errors
   MODERATION_RETRY_COOLDOWN: 1000, // 1 second cooldown between moderation retries
-  SUCCESS_VERIFICATION_TIMEOUT: 5000, // 5 seconds to verify video success
-
-  // Rate limiting
-  DEFAULT_RATE_LIMIT: 100, // videos per period
-  DEFAULT_RATE_PERIOD: 4 * 60 * 60 * 1000, // 4 hours in milliseconds
-  RATE_LIMIT_COOLDOWN: 5 * 60 * 1000, // 5 minutes wait on rate limit
 
   // Generation settings
   DEFAULT_BATCH_SIZE: 10,
-  MAX_BATCH_SIZE: 100,
 
   // Parallel execution
   DEFAULT_PARALLELISM: 10,
-  MAX_PARALLELISM: 100,
   WORKER_SHUTDOWN_TIMEOUT: 60000, // 60s grace period for shutdown
-  CLAIM_RETRY_INTERVAL: 2000, // 2s between work claim attempts
-  WORKER_PROFILE_CLEANUP: true, // Delete worker profiles after run
 
   // Browser settings
   HEADED_MODE: true, // Default to headed for debugging

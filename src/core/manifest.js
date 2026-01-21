@@ -41,9 +41,10 @@ export class ManifestManager {
       nextIndex: 0,
       completedCount: 0,
       failedCount: 0,
+      rateLimitedCount: 0,
       items: Array.from({ length: batchSize }, (_, i) => ({
         index: i,
-        status: 'PENDING', // PENDING, IN_PROGRESS, COMPLETED, FAILED
+        status: 'PENDING', // PENDING, IN_PROGRESS, COMPLETED, FAILED, RATE_LIMITED
         attempts: 0,
         createdAt: null,
         completedAt: null,
@@ -123,6 +124,8 @@ export class ManifestManager {
       this.manifest.completedCount = Math.max(0, this.manifest.completedCount - 1);
     } else if (prevStatus === 'FAILED') {
       this.manifest.failedCount = Math.max(0, this.manifest.failedCount - 1);
+    } else if (prevStatus === 'RATE_LIMITED') {
+      this.manifest.rateLimitedCount = Math.max(0, this.manifest.rateLimitedCount - 1);
     }
 
     if (nextStatus === 'COMPLETED') {
@@ -130,6 +133,8 @@ export class ManifestManager {
       item.completedAt = new Date().toISOString();
     } else if (nextStatus === 'FAILED') {
       this.manifest.failedCount++;
+    } else if (nextStatus === 'RATE_LIMITED') {
+      this.manifest.rateLimitedCount++;
     }
   }
 
@@ -198,17 +203,25 @@ export class ManifestManager {
   }
 
   /**
-   * Get summary
+   * Get summary with attempt-based counting
+   * Rate limited items don't count as attempts per user requirements
    */
   getSummary() {
-    const { batchSize, status, stopReason, items } = this.manifest;
-    const completedCount = items.filter(item => item.status === 'COMPLETED').length;
-    const failedCount = items.filter(item => item.status === 'FAILED').length;
+    const { status, stopReason, items } = this.manifest;
+
+    const completed = items.filter(i => i.status === 'COMPLETED');
+    const failed = items.filter(i => i.status === 'FAILED');
+    const rateLimited = items.filter(i => i.status === 'RATE_LIMITED');
+    const pending = items.filter(i => i.status === 'PENDING');
+
     return {
-      total: batchSize,
-      completed: completedCount,
-      failed: failedCount,
-      remaining: batchSize - completedCount - failedCount,
+      totalAttempts: [...completed, ...failed].reduce((sum, i) => sum + i.attempts, 0),
+      successfulAttempts: completed.reduce((sum, i) => sum + i.attempts, 0),
+      failedAttempts: failed.reduce((sum, i) => sum + i.attempts, 0),
+      videosCompleted: completed.length,
+      videosFailed: failed.length,
+      videosRateLimited: rateLimited.length,
+      videosRemaining: pending.length,
       status,
       stopReason,
     };

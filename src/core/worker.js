@@ -3,7 +3,13 @@ import path from 'path';
 import fs from 'fs/promises';
 import config from '../config.js';
 import { VideoGenerator } from './generator.js';
-import { sleep } from '../utils/retry.js';
+
+/**
+ * Sleep utility
+ */
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 /**
  * Worker - handles video generation in a dedicated browser context
@@ -37,8 +43,6 @@ export class ParallelWorker {
    * Initialize worker: create profile copy and launch browser context
    */
   async initialize() {
-    this.logger.info(`[Worker ${this.workerId}] Initializing...`);
-
     try {
       // Create worker profile directory
       await fs.mkdir(this.workerProfileDir, { recursive: true });
@@ -48,14 +52,12 @@ export class ParallelWorker {
 
       try {
         await fs.access(sourceProfileDir);
-        this.logger.debug(`[Worker ${this.workerId}] Copying profile from ${sourceProfileDir}`);
         await fs.cp(sourceProfileDir, this.workerProfileDir, {
           recursive: true,
           force: true
         });
       } catch (error) {
         if (error.code === 'ENOENT') {
-          this.logger.warn(`[Worker ${this.workerId}] Source profile not found, creating empty profile`);
           // Profile will be created by Playwright
         } else {
           throw error;
@@ -82,12 +84,11 @@ export class ParallelWorker {
       this.page.setDefaultNavigationTimeout(config.PAGE_LOAD_TIMEOUT);
 
       // Navigate to permalink once
-      this.logger.info(`[Worker ${this.workerId}] Navigating to permalink...`);
       await this.page.goto(this.permalink, {
-        waitUntil: 'domcontentloaded',  // Less strict than networkidle
+        waitUntil: 'domcontentloaded',
         timeout: config.PAGE_LOAD_TIMEOUT,
       });
-      await sleep(3000);  // Give time for dynamic content to load
+      await sleep(3000);
 
       // Check authentication
       const authenticated = await this._isAuthenticated();
@@ -95,13 +96,12 @@ export class ParallelWorker {
         throw new Error('AUTH_REQUIRED: Not authenticated. Worker cannot proceed.');
       }
 
-      // Create video generator with mock browser object
+      // Create video generator
       const mockBrowser = {
         page: this.page,
         screenshot: async (filepath) => {
           try {
             await this.page.screenshot({ path: filepath, fullPage: true });
-            this.logger.debug(`[Worker ${this.workerId}] Screenshot saved: ${filepath}`);
           } catch (error) {
             this.logger.warn(`[Worker ${this.workerId}] Failed to take screenshot: ${error.message}`);
           }
@@ -110,7 +110,6 @@ export class ParallelWorker {
           try {
             const html = await this.page.content();
             await fs.writeFile(filepath, html, 'utf-8');
-            this.logger.debug(`[Worker ${this.workerId}] HTML saved: ${filepath}`);
           } catch (error) {
             this.logger.warn(`[Worker ${this.workerId}] Failed to save HTML: ${error.message}`);
           }
@@ -119,7 +118,7 @@ export class ParallelWorker {
 
       this.generator = new VideoGenerator(mockBrowser, this.logger);
 
-      this.logger.success(`[Worker ${this.workerId}] Initialized successfully`);
+      this.logger.success(`[Worker ${this.workerId}] Ready`);
     } catch (error) {
       this.logger.error(`[Worker ${this.workerId}] Initialization failed`, error);
       await this.shutdown();
@@ -147,7 +146,6 @@ export class ParallelWorker {
   async run() {
     this.isRunning = true;
     let stoppedEarly = false;
-    this.logger.info(`[Worker ${this.workerId}] Starting work loop`);
 
     try {
       while (!this.shouldStop) {
@@ -174,71 +172,67 @@ export class ParallelWorker {
           break;
         }
 
-        this.logger.info(`[Worker ${this.workerId}] Processing video ${index + 1}`);
+        this.logger.info(`[Worker ${this.workerId}] Attempting video ${index + 1}`);
 
-        try {
-          // Generate video (this will complete even if stop signal comes mid-generation)
-          const startTime = Date.now();
-          const result = await this.generator.generate(index, this.prompt, this.debugDir);
-          const duration = Math.floor((Date.now() - startTime) / 1000);
+        // Generate video (returns result with success, rateLimited, attempts)
+        const result = await this.generator.generate(index, this.prompt, this.debugDir);
+        const duration = Math.round((result.durationMs || 0) / 1000);
 
-          // Update manifest: COMPLETED
-          await this.manifest.updateItemAtomic(
-            index,
-            { status: 'COMPLETED' },
-            this.workerId
-          );
-
-          this.logger.success(`[Worker ${this.workerId}] Video ${index + 1} completed in ${duration}s`);
-
-          if (result?.rateLimitDetected) {
-            this.logger.warn(
-              `[Worker ${this.workerId}] Rate limit detected after generation started; stopping after current video`
-            );
-            await this.manifest.updateStatusAtomic('STOPPED_RATE_LIMIT', 'Rate limit detected');
-            this.shouldStop = true;
-          }
-
-          // Check if we should stop AFTER completing work
-          if (this.shouldStop) {
-            this.logger.info(`[Worker ${this.workerId}] Stop signal received, exiting after completing video ${index + 1}`);
-            stoppedEarly = true;
-            break;
-          }
-
-          // Small delay between generations
-          await sleep(config.CLAIM_RETRY_INTERVAL || 2000);
-
-        } catch (error) {
-          this.logger.error(`[Worker ${this.workerId}] Video ${index + 1} failed`, error);
-
-          // Check if rate limit
-          if (error.message?.includes('RATE_LIMIT')) {
-            this.logger.warn(`[Worker ${this.workerId}] Rate limit detected during video ${index + 1}`);
-            await this.manifest.updateItemAtomic(
-              index,
-              {
-                status: 'FAILED',
-                error: error.message
-              },
-              this.workerId
-            );
-            throw new Error('RATE_LIMIT_STOP'); // Signal to coordinator
-          }
-
-          // Update manifest: FAILED (will retry if attempts < 3)
+        // Handle rate limit
+        if (result.rateLimited) {
+          this.logger.warn(`[Worker ${this.workerId}] Rate limit detected during video ${index + 1}`);
           await this.manifest.updateItemAtomic(
             index,
             {
-              status: 'FAILED',
-              error: error.message
+              status: 'RATE_LIMITED',
+              error: result.error,
+              attempts: 0
+            },
+            this.workerId
+          );
+          throw new Error('RATE_LIMIT_STOP'); // Signal to coordinator
+        }
+
+        // Handle success
+        if (result.success) {
+          await this.manifest.updateItemAtomic(
+            index,
+            {
+              status: 'COMPLETED',
+              attempts: result.attempts
             },
             this.workerId
           );
 
-          // Continue to next item
-          await sleep(config.CLAIM_RETRY_INTERVAL || 2000);
+          this.logger.success(
+            `[Worker ${this.workerId}] Video ${index + 1}: Success after ${result.attempts} attempts in ${duration}s`
+          );
+        } else {
+          // Handle failure
+          await this.manifest.updateItemAtomic(
+            index,
+            {
+              status: 'FAILED',
+              error: result.error,
+              attempts: result.attempts
+            },
+            this.workerId
+          );
+
+          this.logger.error(
+            `[Worker ${this.workerId}] Video ${index + 1}: Failed after ${result.attempts} attempts`
+          );
         }
+
+        // Check if we should stop AFTER completing work
+        if (this.shouldStop) {
+          this.logger.info(`[Worker ${this.workerId}] Stop signal received, exiting after completing video ${index + 1}`);
+          stoppedEarly = true;
+          break;
+        }
+
+        // Small delay between generations
+        await sleep(2000);
       }
 
       if (!stoppedEarly) {
@@ -269,7 +263,7 @@ export class ParallelWorker {
    * Shutdown worker and cleanup resources
    */
   async shutdown() {
-    this.logger.info(`[Worker ${this.workerId}] Shutting down...`);
+    const shutdownStart = Date.now();
 
     try {
       if (this.context) {
@@ -279,17 +273,17 @@ export class ParallelWorker {
         this.generator = null;
       }
 
-      // Cleanup worker profile if configured
-      if (config.WORKER_PROFILE_CLEANUP !== false) {
-        try {
-          await fs.rm(this.workerProfileDir, { recursive: true, force: true });
-          this.logger.debug(`[Worker ${this.workerId}] Profile cleanup completed`);
-        } catch (error) {
-          this.logger.warn(`[Worker ${this.workerId}] Profile cleanup failed: ${error.message}`);
-        }
+      // Cleanup worker profile
+      try {
+        await fs.rm(this.workerProfileDir, { recursive: true, force: true });
+      } catch (error) {
+        this.logger.warn(`[Worker ${this.workerId}] Profile cleanup failed: ${error.message}`);
       }
 
-      this.logger.info(`[Worker ${this.workerId}] Shutdown complete`);
+      const shutdownDurationMs = Date.now() - shutdownStart;
+      this.logger.info(
+        `[Worker ${this.workerId}] Shutdown complete in ${shutdownDurationMs}ms`
+      );
     } catch (error) {
       this.logger.error(`[Worker ${this.workerId}] Shutdown error`, error);
     }
