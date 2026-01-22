@@ -432,18 +432,11 @@ export class VideoGenerator {
       const video = await this.page.$(selectors.VIDEO_CONTAINER);
       const percentageProgress = await this._detectProgressPercentage();
 
-      // Check for generation signals (only log once when first detected)
+      // Check for generation signals
       // A video element alone could be stale from a previous session
       if (!sawGenerationSignal) {
-        if (loading) {
+        if (loading || progress || percentageProgress.detected) {
           sawGenerationSignal = true;
-          this.logger.info(`[Attempt ${index + 1}] Generation signal: loading indicator detected`);
-        } else if (progress) {
-          sawGenerationSignal = true;
-          this.logger.info(`[Attempt ${index + 1}] Generation signal: progress bar detected`);
-        } else if (percentageProgress.detected) {
-          sawGenerationSignal = true;
-          this.logger.info(`[Attempt ${index + 1}] Generation signal: percentage detected (${percentageProgress.text})`);
         }
       }
 
