@@ -1,39 +1,97 @@
+# Grok Batch Video Generator - AI Agent Context
+
 ## Project Overview
 
-Grok Batch Video Generator automates Grok Imagine video generation via Playwright.
-Primary workflow is `run start` with optional JSON config, running 1-100 workers.
-Each worker uses its own Chrome profile copy and writes logs to a run directory.
+Automates video generation from Grok Imagine image permalinks using Playwright browser automation. Supports parallel execution (1-100 workers), each with isolated Chrome profiles. Node.js CLI tool with file-locked state management.
 
-## Primary Commands
+## Commands
 
-- Add account: `npm start accounts add <alias>`
-- List accounts: `npm start accounts list`
-- Start run (config): `node src/cli.js run start --config batch-config.json`
-- Start run (flags): `npm start run start --account <alias> --permalink <url> --prompt "<text>" --count <n> --parallel <n>`
+```bash
+# Account management
+npm start -- accounts add <alias>
+npm start -- accounts list
 
-## Expected Behavior
+# Start run with config (recommended)
+npm start -- run start --config batch-config.json
 
-- `--config` should work without extra required flags.
-- Workers initialize in parallel (no startup stagger).
-- CLI and run logs must not print the prompt text.
-- Rate limits stop new work; rerun later with the same config if needed.
+# Start run with flags
+npm start -- run start --account <alias> --permalink <url> --prompt "<text>" --count <n> --parallel <n>
 
-## Key Files
+# Testing
+npm test  # Import validation
+```
 
-- `src/cli.js`: CLI parsing and run start command.
-- `src/core/parallel-runner.js`: Orchestration, worker lifecycle, final summary.
-- `src/core/worker.js`: Worker initialization and generation loop.
-- `src/core/generator.js`: UI automation for generation steps.
-- `src/core/manifest.js`: Run state + atomic updates.
-- `src/utils/logger.js`: Log formatting + run.log writes.
-- `src/config.js`: Defaults and selectors.
+**Note**: `--` separator required for npm scripts when passing flags.
+
+## Architecture
+
+Entry: `src/cli.js` → parse commands, validate
+Orchestration: `src/core/parallel-runner.js` → spawn workers, aggregate results
+Worker: `src/core/worker.js` → isolated Chrome context per worker
+Generator: `src/core/generator.js` → UI automation state machine
+State: `src/core/manifest.js` → file-locked atomic updates
+Config: `src/config.js` → defaults and UI selectors
+
+**For detailed architecture**: @docs/ARCHITECTURE.md
+
+## Critical Rules
+
+**IMPORTANT: Before making ANY changes**:
+1. Fully understand the problem by reading relevant code
+2. Review @docs/ARCHITECTURE.md for system design
+3. Create a thoughtful plan explaining your approach
+4. Present plan to user for review BEFORE implementing
+5. Avoid surface-level fixes that add complexity
+
+**Code Behavior**:
+- Never log prompt text (privacy) - logs show "prompt provided" instead
+- Workers initialize in parallel with no startup delay
+- Each worker uses isolated Chrome profile copy (prevents conflicts)
+- Manifest updates are atomic via file locking
+- Rate limits stop new work gracefully (no resume, rerun with same config)
+- Parallel default: 10 workers (configurable 1-100)
+
+**Development Workflow**:
+- Read existing code before proposing changes
+- Understand data flow and state management
+- Simple solutions over complex abstractions
+- Test with `npm test` before committing
+
+## Common Patterns
+
+**Run Directory Structure**:
+```
+~/GrokBatchRuns/<job-name>/
+  ├── manifest.json       # Shared state (file-locked)
+  ├── manifest.lock       # Lock file (auto-managed)
+  ├── run.log            # Combined logs
+  ├── debug/             # Screenshots on errors
+  └── worker-profiles/   # Temp profiles (auto-cleaned)
+```
+
+**Manifest States**:
+- Run: PENDING → IN_PROGRESS → COMPLETED | STOPPED_RATE_LIMIT | FAILED
+- Item: PENDING → IN_PROGRESS → COMPLETED | FAILED | RATE_LIMITED
+
+**Error Handling**:
+- RATE_LIMIT: Stop new work, finish in-flight, exit gracefully
+- AUTH_REQUIRED: Stop all workers immediately
+- CONTENT_MODERATED, NETWORK_ERROR, TIMEOUT: Mark failed, continue
+
+## Examples Reference
+
+For config file examples and advanced usage: @EXAMPLES.md
 
 ## Testing
 
-- Import check: `npm test`
-- Manual run: `node src/cli.js run start --config batch-config-es.json`
+```bash
+npm test                                            # Import validation
+node src/cli.js run start --config test-config.json # Manual test
+```
 
 ## Notes
 
-- Run outputs: `~/GrokBatchRuns/<job-name>/`
-- Manifests track attempts and rate-limit stops; there is no resume command.
+- No resume command: Rerun with same config creates fresh batch
+- Videos not auto-downloaded (manual from Grok UI)
+- UI selectors in `src/config.js` (update if Grok UI changes)
+- High parallelism increases rate limit risk

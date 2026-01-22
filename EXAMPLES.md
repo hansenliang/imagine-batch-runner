@@ -5,7 +5,7 @@
 ### Step 1: Setup Your First Account
 
 ```bash
-npm start accounts add primary-account
+npm start -- accounts add primary-account
 ```
 
 A Chrome window will open. Log in to Grok (x.com), navigate to Grok Imagine if needed, then close the browser.
@@ -15,7 +15,16 @@ A Chrome window will open. Log in to Grok (x.com), navigate to Grok Imagine if n
 Generate 10 videos from a Grok image permalink:
 
 ```bash
-npm start run start \
+# Option 1: Direct execution (clearest, no npm wrapper)
+node src/cli.js run start \
+  --account primary-account \
+  --permalink "https://grok.com/imagine/post/060ec750-c502-4fb2-9de0-562bdd2e599e" \
+  --prompt "camera pans into a detail of the dandelions softly moving in the wind" \
+  --count 10 \
+  --job-name "dandelion-test"
+
+# Option 2: Via npm script (requires -- separator)
+npm start -- run start \
   --account primary-account \
   --permalink "https://grok.com/imagine/post/060ec750-c502-4fb2-9de0-562bdd2e599e" \
   --prompt "camera pans into a detail of the dandelions softly moving in the wind" \
@@ -58,40 +67,108 @@ If the run stops due to rate limiting:
 
 Wait for the rate limit to reset (typically 4 hours), then rerun with the same config or flags.
 
+### Step 3: Using Config Files (Recommended)
+
+For easier reruns and tracking, create a config file `batch-config.json`:
+
+```json
+{
+  "account": "primary-account",
+  "permalink": "https://grok.com/imagine/post/060ec750-c502-4fb2-9de0-562bdd2e599e",
+  "prompt": "camera pans into a detail of the dandelions softly moving in the wind",
+  "count": 20,
+  "parallel": 10,
+  "jobName": "dandelion-batch"
+}
+```
+
+Then run with:
+
+```bash
+node src/cli.js run start --config batch-config.json
+```
+
+**Benefits**: Track what you ran, rerun easily after rate limits, share configs with team.
+
 ## Advanced Examples
+
+### Parallel Execution (Recommended)
+
+Generate videos faster using multiple workers:
+
+```bash
+# Conservative: 2 workers
+npm start -- run start \
+  --account primary-account \
+  --permalink "https://grok.com/imagine/post/POST_ID" \
+  --prompt "cinematic camera movement" \
+  --count 20 \
+  --parallel 2
+
+# Balanced: 10 workers (default, recommended)
+npm start -- run start \
+  --account primary-account \
+  --permalink "https://grok.com/imagine/post/POST_ID" \
+  --prompt "cinematic camera movement" \
+  --count 50 \
+  --parallel 10
+
+# Aggressive: 50 workers (5x faster, higher rate limit risk)
+npm start -- run start \
+  --account primary-account \
+  --permalink "https://grok.com/imagine/post/POST_ID" \
+  --prompt "cinematic camera movement" \
+  --count 100 \
+  --parallel 50
+
+# Maximum: 100 workers (100x faster, will hit rate limits)
+npm start -- run start \
+  --account primary-account \
+  --permalink "https://grok.com/imagine/post/POST_ID" \
+  --prompt "cinematic camera movement" \
+  --count 100 \
+  --parallel 100
+```
+
+**How it works**: Workers initialize in parallel (no startup delay) and claim videos from a shared queue atomically. All workers start simultaneously for maximum efficiency.
 
 ### Large Batch (100 videos)
 
 ```bash
-npm start run start \
+npm start -- run start \
   --account primary-account \
   --permalink "https://grok.com/imagine/post/YOUR_POST_ID" \
   --prompt "slow zoom on the subject with cinematic lighting" \
   --count 100 \
+  --parallel 10 \
   --job-name "large-batch-001"
 ```
+
+**Performance**: With 10 workers, 100 videos complete in ~2.5-5 minutes instead of 25-50 minutes sequentially.
 
 ### Multiple Accounts in Parallel
 
 **Terminal 1:**
 ```bash
-npm start run start \
+npm start -- run start \
   --account account1 \
   --permalink "https://grok.com/imagine/post/POST_ID" \
   --prompt "dramatic camera movement" \
-  --count 50
+  --count 50 \
+  --parallel 10
 ```
 
 **Terminal 2:**
 ```bash
-npm start run start \
+npm start -- run start \
   --account account2 \
   --permalink "https://grok.com/imagine/post/POST_ID" \
   --prompt "dramatic camera movement" \
-  --count 50
+  --count 50 \
+  --parallel 10
 ```
 
-This way you can generate 100 videos using two accounts' quotas.
+This way you can generate 100 videos using two accounts' quotas, with each account using 10 parallel workers for faster completion.
 
 ### Different Prompts, Same Image
 
@@ -99,7 +176,7 @@ To generate variations with different prompts, run multiple jobs:
 
 ```bash
 # Job 1: Zoom effect
-npm start run start \
+npm start -- run start \
   --account primary-account \
   --permalink "https://grok.com/imagine/post/POST_ID" \
   --prompt "slow zoom in on the subject" \
@@ -107,7 +184,7 @@ npm start run start \
   --job-name "zoom-variations"
 
 # Job 2: Pan effect
-npm start run start \
+npm start -- run start \
   --account primary-account \
   --permalink "https://grok.com/imagine/post/POST_ID" \
   --prompt "camera pans left to right" \
@@ -138,20 +215,28 @@ Effective video generation prompts:
 
 ### Optimal Batch Sizes
 
-- **Testing**: Start with `--count 5` to verify the permalink works
-- **Production**: Use `--count 50` or `--count 100` for full runs
-- **Rate limit aware**: If you hit limits often, use smaller batches
+- **Testing**: Start with `--count 5 --parallel 2` to verify the permalink works
+- **Production**: Use `--count 50 --parallel 10` or `--count 100 --parallel 10` for full runs
+- **Rate limit aware**: If you hit limits often, reduce `--parallel` value (e.g., `--parallel 2` or `--parallel 5`)
+
+### Parallelism Guidelines
+
+- **`--parallel 1`**: Sequential mode (slowest, no rate limit risk)
+- **`--parallel 2-5`**: Conservative (low rate limit risk)
+- **`--parallel 10`**: Recommended default (good balance)
+- **`--parallel 20-50`**: Aggressive (faster but higher rate limit risk)
+- **`--parallel 100`**: Maximum speed (will hit rate limits quickly)
 
 ### Managing Multiple Accounts
 
 ```bash
 # Setup all accounts first
-npm start accounts add work-account
-npm start accounts add personal-account
-npm start accounts add test-account
+npm start -- accounts add work-account
+npm start -- accounts add personal-account
+npm start -- accounts add test-account
 
 # List to verify
-npm start accounts list
+npm start -- accounts list
 ```
 
 ### Checking Runs
@@ -164,7 +249,7 @@ Each run writes a `manifest.json` and `run.log` under `~/GrokBatchRuns/<job-name
 
 **Solution:**
 ```bash
-npm start accounts add your-account
+npm start -- accounts add your-account
 ```
 
 ### Issue: Videos timing out
@@ -187,6 +272,6 @@ Review error screenshots to see what went wrong in the UI.
 
 **Re-authenticate:**
 ```bash
-npm start accounts add your-account  # Re-login
+npm start -- accounts add your-account  # Re-login
 npm start run start --config batch-config.json  # Rerun later
 ```

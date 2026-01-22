@@ -27,7 +27,7 @@ npx playwright install chromium
 First, set up a Grok account profile. A browser will open for you to log in:
 
 ```bash
-npm start accounts add my-account
+npm start -- accounts add my-account
 ```
 
 Follow the browser prompts to log in to Grok, then close the browser when done.
@@ -37,7 +37,7 @@ Follow the browser prompts to log in to Grok, then close the browser when done.
 Generate videos from a Grok image permalink:
 
 ```bash
-npm start run start \
+npm start -- run start \
   --account my-account \
   --permalink "https://grok.com/imagine/post/060ec750-c502-4fb2-9de0-562bdd2e599e" \
   --prompt "camera pans into a detail of the dandelions softly moving in the wind" \
@@ -46,13 +46,13 @@ npm start run start \
 ```
 
 The tool will:
-- Launch 10 parallel browser contexts (workers) - each in its own Chrome window
-- Open the permalink in each authenticated browser session
-- Generate 20 video variations using the same image + prompt
+- Launch 10 parallel browser contexts (workers)
+- Initialize all workers simultaneously (no startup delay)
+- Each worker claims and generates videos independently
 - Automatically detect rate limits and stop gracefully
 - Save progress to `~/GrokBatchRuns/<job-name>/`
 
-**Note**: Each worker runs in a separate Chrome window for isolation. This is normal behavior.
+**Note**: Workers initialize in parallel for maximum efficiency. All workers start simultaneously without staggered delays.
 
 **Tip**: Start with `--parallel 10` (default). You can go up to `--parallel 100` for maximum speed, but you'll likely hit rate limits quickly.
 
@@ -62,20 +62,20 @@ The tool will:
 
 ```bash
 # Add a new account (opens browser for login)
-npm start accounts add <alias>
+npm start -- accounts add <alias>
 
 # List all configured accounts
-npm start accounts list
+npm start -- accounts list
 ```
 
 ### Run Management
 
 ```bash
 # Start a new batch run with config file (recommended)
-npm start run start --config batch-config.json
+npm start -- run start --config batch-config.json
 
 # Or start with command-line options
-npm start run start \
+npm start -- run start \
   --account <alias> \
   --permalink <url> \
   --prompt "<text>" \
@@ -104,14 +104,14 @@ Create a `batch-config.json` file (see `batch-config.example.json`):
 Then run:
 
 ```bash
-# Option 1: Use the npm script (easiest)
-npm run run:config batch-config.json
-
-# Option 2: Direct node execution
+# Option 1: Direct execution (recommended, clearest)
 node src/cli.js run start --config batch-config.json
 
-# Option 3: With npm start (requires -- separator)
+# Option 2: With npm start (requires -- separator)
 npm start -- run start --config batch-config.json
+
+# Option 3: Use the npm script shorthand
+npm run run:config batch-config.json
 ```
 
 **Benefits**: Easier to reuse settings, track what you ran, and share configs.
@@ -181,7 +181,7 @@ Each run creates a directory at `~/GrokBatchRuns/<job-name>/`:
 Your session expired. Re-run account setup:
 
 ```bash
-npm start accounts add <alias>
+npm start -- accounts add <alias>
 ```
 
 ### Generation Timeout
@@ -208,7 +208,7 @@ DEFAULT_RATE_PERIOD: 2 * 60 * 60 * 1000  // 2 hours instead of 4
 Generate multiple videos simultaneously with one account:
 
 ```bash
-npm start run start \
+npm start -- run start \
   --account my-account \
   --permalink <url> \
   --prompt "<text>" \
@@ -221,7 +221,7 @@ npm start run start \
 - **50 workers**: 5x faster, higher rate limit risk
 - **100 workers**: Maximum speed (100 videos in ~30s), will likely hit rate limits
 
-**How it works**: Each worker runs in its own isolated browser context (separate Chrome window). Workers process videos from a shared queue, automatically claiming the next available task. No page reloads means uninterrupted video generation.
+**How it works**: Each worker runs in its own isolated browser context with a copied Chrome profile. Workers initialize in parallel (no startup delay) and process videos from a shared queue using atomic work claiming. All workers start simultaneously for maximum efficiency.
 
 ### Multi-Account Parallelism
 
@@ -229,10 +229,10 @@ To utilize multiple subscriptions, run multiple instances in parallel:
 
 ```bash
 # Terminal 1
-npm start run start --account account1 --permalink <url> --prompt "<text>" --count 100 --parallel 10
+npm start -- run start --account account1 --permalink <url> --prompt "<text>" --count 100 --parallel 10
 
 # Terminal 2
-npm start run start --account account2 --permalink <url> --prompt "<text>" --count 100 --parallel 10
+npm start -- run start --account account2 --permalink <url> --prompt "<text>" --count 100 --parallel 10
 ```
 
 Each instance uses a separate browser profile and can run concurrently.
