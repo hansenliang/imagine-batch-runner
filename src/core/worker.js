@@ -206,8 +206,19 @@ export class ParallelWorker {
           this.logger.success(
             `[Worker ${this.workerId}] Attempt ${index + 1}: Success in ${duration}s - ${this.page.url()}`
           );
+        } else if (result.contentModerated) {
+          // Content moderation - already logged as warning by generator
+          await this.manifest.updateItemAtomic(
+            index,
+            {
+              status: 'FAILED',
+              error: result.error,
+              attempts: result.attempted ? 1 : 0
+            },
+            this.workerId
+          );
         } else {
-          // Handle failure
+          // Handle other failures
           await this.manifest.updateItemAtomic(
             index,
             {
@@ -219,7 +230,7 @@ export class ParallelWorker {
           );
 
           this.logger.error(
-            `[Worker ${this.workerId}] Attempt ${index + 1}: Failed`
+            `[Worker ${this.workerId}] Attempt ${index + 1}: Failed - ${result.error || 'Unknown error'}`
           );
         }
 

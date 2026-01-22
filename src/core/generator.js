@@ -53,6 +53,18 @@ export class VideoGenerator {
         };
       }
 
+      // Content moderation - already logged as warning in _waitForCompletion
+      if (error.message?.includes('CONTENT_MODERATED')) {
+        return {
+          success: false,
+          rateLimited: false,
+          contentModerated: true,
+          attempted: true,
+          error: error.message,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
       lastError = error;
     }
 
