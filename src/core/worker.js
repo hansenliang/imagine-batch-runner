@@ -177,9 +177,8 @@ export class ParallelWorker {
         const result = await this.generator.generate(index, this.prompt);
         const duration = Math.round((result.durationMs || 0) / 1000);
 
-        // Handle rate limit
+        // Handle rate limit (already logged in generator)
         if (result.rateLimited) {
-          this.logger.warn(`[Worker ${this.workerId}] Rate limit detected during attempt ${index + 1}`);
           await this.manifest.updateItemAtomic(
             index,
             {
