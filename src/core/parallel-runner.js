@@ -218,18 +218,18 @@ export class ParallelRunner {
     }
     console.log('');
 
-    // File log: plain text for run.log
-    await this.logger.info('=== Run Summary ===');
-    await this.logger.info(`Workers: ${this.parallelism}`);
-    await this.logger.info(`Total attempts: ${summary.totalAttempts} (successes + failures)`);
-    await this.logger.info(`  Successful: ${summary.successfulAttempts} (${summary.videosCompleted} videos)`);
-    await this.logger.info(`  Failed: ${summary.failedAttempts} (${summary.videosFailed} videos)`);
+    // File log only (console already has emoji summary above)
+    await this.logger.logToFileOnly('=== Run Summary ===');
+    await this.logger.logToFileOnly(`Workers: ${this.parallelism}`);
+    await this.logger.logToFileOnly(`Total attempts: ${summary.totalAttempts} (successes + failures)`);
+    await this.logger.logToFileOnly(`  Successful: ${summary.successfulAttempts} (${summary.videosCompleted} videos)`);
+    await this.logger.logToFileOnly(`  Failed: ${summary.failedAttempts} (${summary.videosFailed} videos)`);
     if (summary.videosRateLimited > 0) {
-      await this.logger.info(`Rate limited: ${summary.videosRateLimited} videos (not attempted)`);
+      await this.logger.logToFileOnly(`Rate limited: ${summary.videosRateLimited} videos (not attempted)`);
     }
-    await this.logger.info(`Status: ${summary.status}`);
+    await this.logger.logToFileOnly(`Status: ${summary.status}`);
     if (summary.stopReason) {
-      await this.logger.info(`Stop reason: ${summary.stopReason}`);
+      await this.logger.logToFileOnly(`Stop reason: ${summary.stopReason}`);
     }
   }
 

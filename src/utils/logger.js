@@ -64,6 +64,10 @@ export class Logger {
     }
   }
 
+  async logToFileOnly(message) {
+    await this._writeToFile(message);
+  }
+
   async progress(current, total, message = '') {
     const percentage = Math.round((current / total) * 100);
     const bar = '█'.repeat(Math.floor(percentage / 5)) + '░'.repeat(20 - Math.floor(percentage / 5));
