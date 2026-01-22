@@ -79,6 +79,13 @@ export class VideoGenerator {
   async _clickGenerationButton(index) {
     this.logger.debug(`[Attempt ${index + 1}] Looking for generation button`);
 
+    const waitTimeout = Math.max(3000, config.ELEMENT_WAIT_TIMEOUT);
+    await Promise.race([
+      this.page.waitForSelector(selectors.MAKE_VIDEO_BUTTON, { timeout: waitTimeout }),
+      this.page.waitForSelector(selectors.REDO_BUTTON, { timeout: waitTimeout }),
+      this.page.waitForSelector(selectors.PROMPT_INPUT, { timeout: waitTimeout }),
+    ]).catch(() => null);
+
     const makeVideoBtn = await this.page.$(selectors.MAKE_VIDEO_BUTTON);
     const redoBtn = await this.page.$(selectors.REDO_BUTTON);
 

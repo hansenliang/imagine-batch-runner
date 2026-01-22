@@ -7,7 +7,7 @@ Local batch image-to-video generator for Grok Imagine. Automate high-volume vide
 - **Parallel video generation**: Generate up to 100 videos simultaneously using multiple browser contexts
 - **Per-account batch generation**: Generate up to 100 videos from a single image permalink
 - **Persistent sessions**: Set up multiple account profiles, reuse without re-login
-- **Resilient automation**: Automatic retries, rate-limit detection, resume capability
+- **Resilient automation**: Rate-limit detection and graceful stopping
 - **Config file support**: Save your settings in JSON for easy reuse
 - **No API credits**: Uses browser automation (Playwright) instead of API
 - **Permalink-based**: No local image uploads needed
@@ -56,14 +56,6 @@ The tool will:
 
 **Tip**: Start with `--parallel 10` (default). You can go up to `--parallel 100` for maximum speed, but you'll likely hit rate limits quickly.
 
-### 3. Resume a Stopped Run
-
-If a run was stopped (rate limit, failure, etc.), resume it:
-
-```bash
-npm start run resume ~/GrokBatchRuns/job_1234567890
-```
-
 ## Commands
 
 ### Account Management
@@ -91,19 +83,7 @@ npm start run start \
   --parallel <workers> \
   [--job-name <name>]
 
-# Resume a stopped run
-npm start run resume <run-directory>
-
-# Resume with different parallelism
-npm start run resume <run-directory> --parallel 20
-
-# Show run status
-npm start run status <run-directory>
-
-# Status/progress counts are derived from manifest item statuses.
-
-# List all runs
-npm start run list
+# Runs can be restarted with the same config if needed.
 ```
 
 ### Using Config Files
@@ -141,7 +121,6 @@ npm start -- run start --config batch-config.json
 Edit `src/config.js` to customize:
 
 - **Timeouts**: Video generation timeout (default: 60s)
-- **Retries**: Max retries per video (default: 3)
 - **Rate limits**: Videos per period (default: 100 per 4 hours)
 - **Browser mode**: Headed vs headless (default: headed for debugging)
 - **Chrome profile**: Auto-detected and copied for bot detection avoidance
@@ -174,8 +153,8 @@ The tool automatically detects Grok's rate limits by:
 
 When rate-limited:
 - In-flight video completes, no new work is claimed
-- Progress is saved
-- Resume when ready with `run resume`
+- Progress is saved in the manifest and run log
+- Restart later with the same config to continue fresh
 
 ## Output Structure
 

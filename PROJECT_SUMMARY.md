@@ -2,7 +2,7 @@
 
 ## What Was Built
 
-A production-ready CLI tool for batch-generating videos from Grok Imagine image permalinks using browser automation (Playwright), with persistent account sessions, resilient error handling, and resume capability.
+A production-ready CLI tool for batch-generating videos from Grok Imagine image permalinks using browser automation (Playwright), with persistent account sessions and rate-limit aware execution.
 
 ## Architecture Overview
 
@@ -13,49 +13,43 @@ A production-ready CLI tool for batch-generating videos from Grok Imagine image 
    - Headed browser login flow for authentication
    - Account listing and tracking
 
-2. **Browser Manager** (`src/core/browser.js`)
-   - Playwright-based browser automation
-   - Persistent context management
-   - Authentication detection
-   - Rate-limit detection from UI signals
-   - Screenshot/HTML snapshot for debugging
-
-3. **Video Generator** (`src/core/generator.js`)
+2. **Video Generator** (`src/core/generator.js`)
    - State machine for video generation workflow
    - Handles "Make video" vs "Redo" button scenarios
    - Prompt entry and submission
    - Wait for completion with timeout
    - Debug artifact capture on failures
 
-4. **Manifest Manager** (`src/core/manifest.js`)
+3. **Manifest Manager** (`src/core/manifest.js`)
    - Run state persistence (JSON)
    - Per-item status tracking (PENDING, IN_PROGRESS, COMPLETED, FAILED)
    - Progress counters
-   - Resume capability
+   - Atomic updates for parallel workers
 
-5. **Batch Runner** (`src/core/runner.js`)
-   - Main orchestration logic
-   - Item processing loop
-   - Rate-limit detection and graceful stop
-   - Retry logic with exponential backoff
-   - Summary reporting
+4. **Parallel Runner** (`src/core/parallel-runner.js`)
+   - Orchestrates 1-100 workers (parallelism=1 runs sequentially)
+   - Worker lifecycle and cleanup
+   - Rate-limit coordination and final summary reporting
+
+5. **Parallel Worker** (`src/core/worker.js`)
+   - Dedicated browser context per worker
+   - Claims work items atomically
+   - Handles success/failure/rate-limit signaling
 
 6. **CLI Interface** (`src/cli.js`)
    - Commander.js-based command structure
    - Account management commands
-   - Run management commands
+   - Run start command with config support
    - Colorful terminal output (Chalk)
 
 7. **Utilities**
    - **Logger** (`src/utils/logger.js`): File + console logging with levels
-   - **Retry** (`src/utils/retry.js`): Exponential backoff, jitter, retry logic
 
 ### Configuration (`src/config.js`)
 
 Centralized configuration for:
 - Paths (profiles, runs directory)
 - Timeouts (video generation, page load, element wait)
-- Retry settings (max retries, delays)
 - Rate limiting (100 videos per 4 hours, configurable)
 - Browser settings (headed mode, viewport)
 - **UI Selectors**: Centralized for easy updates when Grok UI changes
@@ -71,8 +65,6 @@ Centralized configuration for:
 | Batch generation (N ≤ 100) | ✅ | Configurable batch size, default 10, max 100 |
 | Rate-limit detection | ✅ | UI toast/message detection + disabled button checks |
 | Graceful stop on rate limit | ✅ | STOPPED_RATE_LIMIT status, preserves state |
-| Resume capability | ✅ | Manifest-based resume from next pending item |
-| Retries for transient failures | ✅ | Exponential backoff with jitter, max 3 retries |
 | Debug artifacts | ✅ | Screenshots + HTML on errors |
 | Account setup & persistence | ✅ | Headed browser login, profile directory storage |
 | Run logs and metadata | ✅ | run.log + manifest.json per run |
@@ -80,8 +72,6 @@ Centralized configuration for:
 ### 🚀 Beyond MVP (Bonus Features)
 
 - **Progress tracking**: Real-time progress bar in CLI
-- **Run listing**: View all runs with status
-- **Status command**: Check run progress without resuming
 - **Job naming**: Custom job names for organization
 - **Consecutive failure protection**: Stop after 5 consecutive failures
 - **Last used tracking**: Account usage timestamps
@@ -104,14 +94,14 @@ Imagine batch runner/
 │   │
 │   ├── core/
 │   │   ├── accounts.js          # Account management
-│   │   ├── browser.js           # Browser automation
+│   │   ├── browser.js           # Legacy browser utilities
 │   │   ├── generator.js         # Video generation logic
 │   │   ├── manifest.js          # State persistence
-│   │   └── runner.js            # Main orchestration
+│   │   ├── parallel-runner.js   # Orchestration
+│   │   └── worker.js            # Worker logic
 │   │
 │   └── utils/
-│       ├── logger.js            # Logging utility
-│       └── retry.js             # Retry/backoff utilities
+│       └── logger.js            # Logging utility
 │
 ├── profiles/                    # (Created at runtime) Browser profiles per account
 │   ├── accounts.json            # Account registry
@@ -146,14 +136,13 @@ Imagine batch runner/
 ### Resilience Strategies
 1. **Centralized selectors**: Easy to update when UI changes
 2. **Multiple detection methods**: Check for buttons, toasts, disabled states
-3. **Retry with backoff**: Handle transient failures
-4. **Debug artifacts**: Always capture state on failure
-5. **Graceful degradation**: Continue on single-item failures
+3. **Debug artifacts**: Always capture state on failure
+4. **Graceful degradation**: Continue on single-item failures
 
 ### State Management
 - **Manifest-driven**: Single source of truth
 - **Atomic updates**: Save after each item
-- **Resume-friendly**: Track next index, allow resume from any state
+- **Manifest-driven**: Track status and attempts per item
 
 ## Configuration Tuning
 
@@ -201,7 +190,6 @@ Before first use:
 - [ ] Account added (`npm start accounts add test`)
 - [ ] Small test run (`--count 5`)
 - [ ] Rate limit handling tested
-- [ ] Resume functionality tested
 
 ## Known Limitations
 

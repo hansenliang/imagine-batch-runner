@@ -41,17 +41,7 @@ Batch size: 10
 ...
 ```
 
-### Step 3: Monitor Progress
-
-In another terminal, check status:
-
-```bash
-npm start run status ~/GrokBatchRuns/dandelion-test
-```
-
-Status counts are computed from manifest item statuses.
-
-### Step 4: Handle Rate Limiting
+### Step 3: Handle Rate Limiting
 
 If the run stops due to rate limiting:
 
@@ -66,11 +56,7 @@ If the run stops due to rate limiting:
   Stop reason: Rate limit detected - try again later
 ```
 
-Wait for the rate limit to reset (typically 4 hours), then resume:
-
-```bash
-npm start run resume ~/GrokBatchRuns/dandelion-test
-```
+Wait for the rate limit to reset (typically 4 hours), then rerun with the same config or flags.
 
 ## Advanced Examples
 
@@ -168,28 +154,9 @@ npm start accounts add test-account
 npm start accounts list
 ```
 
-### Checking All Runs
+### Checking Runs
 
-```bash
-npm start run list
-```
-
-Output:
-```
-📁 All Runs:
-
-  dandelion-test
-    Path: /Users/you/GrokBatchRuns/dandelion-test
-    Status: COMPLETED
-    Progress: 10/10
-    Created: 1/20/2026, 12:34:56 PM
-
-  zoom-variations
-    Path: /Users/you/GrokBatchRuns/zoom-variations
-    Status: STOPPED_RATE_LIMIT
-    Progress: 8/20
-    Created: 1/20/2026, 2:15:30 PM
-```
+Each run writes a `manifest.json` and `run.log` under `~/GrokBatchRuns/<job-name>/` for progress and debugging.
 
 ## Troubleshooting Common Issues
 
@@ -221,5 +188,5 @@ Review error screenshots to see what went wrong in the UI.
 **Re-authenticate:**
 ```bash
 npm start accounts add your-account  # Re-login
-npm start run resume ~/GrokBatchRuns/your-job  # Resume
+npm start run start --config batch-config.json  # Rerun later
 ```

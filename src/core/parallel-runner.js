@@ -75,47 +75,6 @@ export class ParallelRunner {
   }
 
   /**
-   * Resume an existing parallel run
-   */
-  async resume(runDir) {
-    this.runDir = runDir;
-
-    // Initialize logger
-    this.logger = new Logger(this.runDir);
-    await this.logger.info('=== Resuming Parallel Run ===');
-
-    // Load manifest
-    this.manifest = new ManifestManager(this.runDir);
-    const manifest = await this.manifest.load();
-
-    if (!manifest) {
-      throw new Error(`No manifest found in ${this.runDir}`);
-    }
-
-    // Restore state from manifest
-    this.accountAlias = manifest.accountAlias;
-    this.permalink = manifest.permalink;
-    this.prompt = manifest.prompt;
-    this.batchSize = manifest.batchSize;
-    this.jobName = manifest.jobName;
-
-    // Reset IN_PROGRESS items to PENDING (they were interrupted)
-    const inProgressItems = manifest.items.filter(i => i.status === 'IN_PROGRESS');
-    if (inProgressItems.length > 0) {
-      await this.logger.info(`Resetting ${inProgressItems.length} interrupted items to PENDING`);
-      for (const item of inProgressItems) {
-        await this.manifest.updateItem(item.index, { status: 'PENDING' });
-      }
-    }
-
-    await this.manifest.updateStatus('IN_PROGRESS');
-
-    const summary = this.manifest.getSummary();
-    await this.logger.info(`Progress: ${summary.videosCompleted} completed, ${summary.videosFailed} failed, ${summary.videosRemaining} remaining`);
-    await this.logger.success('Resume initialized');
-  }
-
-  /**
    * Start parallel execution
    */
   async start() {
@@ -261,18 +220,6 @@ export class ParallelRunner {
     await this.logger.info(`Run directory: ${this.runDir}`);
   }
 
-  /**
-   * Static helper: detect if a run directory contains a parallel run
-   */
-  static async isParallelRun(runDir) {
-    try {
-      const workerProfilesDir = path.join(runDir, 'worker-profiles');
-      await fs.access(workerProfilesDir);
-      return true;
-    } catch {
-      return false;
-    }
-  }
 }
 
 export default ParallelRunner;

@@ -1,7 +1,7 @@
 import { chromium } from 'playwright';
 import path from 'path';
 import fs from 'fs/promises';
-import config from '../config.js';
+import config, { selectors } from '../config.js';
 import { VideoGenerator } from './generator.js';
 
 /**
@@ -89,6 +89,7 @@ export class ParallelWorker {
         timeout: config.PAGE_LOAD_TIMEOUT,
       });
       await sleep(3000);
+      await this._waitForReadyUI();
 
       // Check authentication
       const authenticated = await this._isAuthenticated();
@@ -137,6 +138,24 @@ export class ParallelWorker {
       return !loginButton;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Wait for page UI to be ready for generation.
+   * @private
+   */
+  async _waitForReadyUI() {
+    try {
+      const timeout = Math.max(5000, config.ELEMENT_WAIT_TIMEOUT);
+      await Promise.race([
+        this.page.waitForSelector(selectors.PROMPT_INPUT, { timeout }),
+        this.page.waitForSelector(selectors.MAKE_VIDEO_BUTTON, { timeout }),
+        this.page.waitForSelector(selectors.REDO_BUTTON, { timeout }),
+      ]);
+      await sleep(500);
+    } catch (error) {
+      this.logger.warn(`[Worker ${this.workerId}] UI readiness check timed out: ${error.message}`);
     }
   }
 

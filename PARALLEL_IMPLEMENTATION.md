@@ -23,10 +23,9 @@ Successfully implemented parallel video generation for the Grok Batch Video Gene
 
 3. **Parallel Runner** (`src/core/parallel-runner.js`)
    - Coordinates multiple workers (1-100)
-   - Batched worker startup with light stagger
+   - Parallel worker startup
    - Aggregate progress tracking
    - Rate limit coordination (stops new work, lets in-flight finish)
-   - Resume capability for interrupted runs
 
 4. **Enhanced Manifest Manager** (`src/core/manifest.js`)
    - Added file locking to all write operations
@@ -38,7 +37,6 @@ Successfully implemented parallel video generation for the Grok Batch Video Gene
 5. **CLI Enhancements** (`src/cli.js`)
    - Added `--config <path>` option for JSON config files
    - Added `--parallel <count>` option (1-100 workers)
-   - Auto-detection of parallel vs sequential runs on resume
    - Config file values + CLI overrides
 
 6. **Configuration Updates** (`src/config.js`)
@@ -112,17 +110,9 @@ npm start run start \
 npm start run start --config batch-config.json
 ```
 
-### Resume Parallel Run
+### Rate Limit Recovery
 
-```bash
-npm start run resume ~/GrokBatchRuns/job_1234567890
-```
-
-### Resume with Different Parallelism
-
-```bash
-npm start run resume ~/GrokBatchRuns/job_1234567890 --parallel 20
-```
+If a run stops due to rate limiting, wait for the limit to reset, then start a new run using the same config or flags.
 
 ## Performance
 
@@ -219,7 +209,7 @@ await manifest.updateItemAtomic(
 - Workers finish current video, then stop claiming new work
 - Coordinator signals workers to stop after current item
 - Manifest status: `STOPPED_RATE_LIMIT`
-- Can resume later
+- Rerun later with the same config after cooldown
 
 ### Worker Failures
 - Individual worker errors logged but don't stop others
@@ -263,26 +253,18 @@ Expected output:
    - Confirm no profile conflicts
    - Validate manifest updates are consistent
 
-2. **Resume Test**
-   - Start run, kill mid-execution (Ctrl+C)
-   - Resume: `npm start run resume <run-dir>`
-   - Verify it picks up where it left off
-
-3. **Rate Limit Test**
+2. **Rate Limit Test**
    - Run with high parallelism (50 workers)
    - Confirm graceful stop on rate limit
    - Check manifest status: `STOPPED_RATE_LIMIT`
 
-4. **Sequential Compatibility**
+3. **Sequential Compatibility**
    - Run with `--parallel 1` (or omit --parallel)
-   - Verify it uses BatchRunner (not ParallelRunner)
-   - Confirm backward compatibility
+   - Verify it uses a single worker without parallel coordination issues
 
 ## Backward Compatibility
 
 - **Default behavior unchanged**: `--parallel 1` (sequential) if not specified
-- **Existing commands work**: No breaking changes to CLI
-- **Resume auto-detects**: Parallel vs sequential based on run directory
 - **Config is optional**: CLI options still work without config file
 
 ## Configuration Options
@@ -294,9 +276,7 @@ Expected output:
 {
   DEFAULT_PARALLELISM: 10,        // Safe default
   MAX_PARALLELISM: 100,           // Maximum workers
-  WORKER_SHUTDOWN_TIMEOUT: 60000, // 60s grace period
-  CLAIM_RETRY_INTERVAL: 2000,     // 2s between claims
-  WORKER_PROFILE_CLEANUP: true    // Auto-delete profiles
+  WORKER_SHUTDOWN_TIMEOUT: 60000  // 60s grace period
 }
 ```
 
@@ -315,7 +295,7 @@ Expected output:
 
 2. **Rate Limits**: High parallelism increases rate limit risk
    - System detects and stops gracefully
-   - Can resume after cooldown
+   - Rerun after cooldown
 
 3. **No Video Downloads**: Videos generated but not downloaded
    - Future enhancement opportunity
