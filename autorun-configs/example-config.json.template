@@ -1,7 +1,0 @@
-{
-  "account": "your-account-alias",
-  "permalink": "https://grok.com/imagine/post/YOUR_IMAGE_ID_HERE",
-  "prompt": "Your video generation prompt here",
-  "count": 20,
-  "parallel": 5
-}
