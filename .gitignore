@@ -5,6 +5,7 @@ GrokBatchRuns/
 .DS_Store
 debug/
 logs/
+autorun-configs/
 
 # User-specific config files (may contain account info, permalinks, prompts)
 batch-config.json
