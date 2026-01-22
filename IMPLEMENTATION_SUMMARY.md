@@ -133,6 +133,26 @@ VIDEO_DOWNLOAD_BUTTON: 'button:has-text("Download"), button:has-text("Save"), a[
    - If still fails → Mark as FAILED
    - Continue to next item
 
+### Generation Outcome Classification
+
+Each generation attempt falls into one of these categories:
+
+- **Success**: Video was generated successfully.
+  - `attempted: true`, `success: true`
+  - Log level: SUCCESS
+
+- **Content Moderation**: Generation started but was blocked by content moderation. This is an expected/common failure mode, not an error.
+  - `attempted: true`, `success: false`
+  - Log level: WARN (not ERROR)
+
+- **Other Failures** (timeout, network, generation error): Generation started but failed for technical reasons.
+  - `attempted: true`, `success: false`
+  - Log level: ERROR
+
+- **Rate Limited**: Generation never started because rate limit was detected before generation began.
+  - `attempted: false`, `success: false`, `rateLimited: true`
+  - Log level: WARN (not ERROR)
+
 ### Error Handling Strategy
 
 | Error Type | Internal Retries | Outer Retries | Behavior |

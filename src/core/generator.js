@@ -23,6 +23,8 @@ export class VideoGenerator {
   /**
    * Generate a single video from the current permalink (single attempt)
    * Returns: { success, rateLimited, attempted, error }
+   *
+   * See claude.md "Generation Outcome Classification" for outcome definitions and logging levels.
    */
   async generate(index, prompt) {
     let lastError = null;
@@ -54,6 +56,17 @@ export class VideoGenerator {
           rateLimited: true,
           attempted: false,
           error: error.message,
+        };
+      }
+
+      // Content moderation is an expected failure mode - already logged as WARN
+      if (error.message?.includes('CONTENT_MODERATED')) {
+        return {
+          success: false,
+          rateLimited: false,
+          attempted: true,
+          error: error.message,
+          durationMs: Date.now() - startTime,
         };
       }
 

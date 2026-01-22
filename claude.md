@@ -38,6 +38,16 @@ Each worker uses its own Chrome profile copy and writes logs to a run directory.
 - CLI and run logs must not print the prompt text
 - Rate limits stop new work; rerun later with the same config if needed
 
+## Generation Outcome Classification
+Each generation attempt returns `{ success, attempted, rateLimited }`. The outcome determines logging:
+
+- **Success** (`attempted: true`, `success: true`): Video generated. Log: SUCCESS
+- **Content Moderation** (`attempted: true`, `success: false`): Expected failure, not an error. Log: WARN only
+- **Other Failures** (`attempted: true`, `success: false`): Technical failures (timeout, network). Log: ERROR
+- **Rate Limited** (`attempted: false`, `rateLimited: true`): Never started. Log: WARN only
+
+Content moderation is common and expected — do NOT log it as ERROR.
+
 ---
 
 # Working Guidelines
