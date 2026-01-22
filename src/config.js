@@ -68,7 +68,7 @@ export const config = {
   // Timeouts (milliseconds)
   VIDEO_GENERATION_TIMEOUT: 60000, // 60 seconds
   PAGE_LOAD_TIMEOUT: 30000,
-  ELEMENT_WAIT_TIMEOUT: 10000,
+  ELEMENT_WAIT_TIMEOUT: parseInt(process.env.ELEMENT_WAIT_TIMEOUT, 10) || 30000, // 30 seconds (configurable via env var)
 
   // Content moderation retry configuration
   MODERATION_RETRY_MAX: 100, // Max retries for content moderation errors
