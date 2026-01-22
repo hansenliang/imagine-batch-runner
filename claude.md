@@ -35,5 +35,7 @@ Each worker uses its own Chrome profile copy and writes logs to a run directory.
 
 ## Notes
 
-- Run outputs: `~/GrokBatchRuns/<job-name>/`
+- Run outputs: `./logs/<job-name>/` (CLI runs) and `./logs/autorun/` (autorun sessions)
+- Autorun summary logs: `./logs/autorun-<timestamp>.log`
 - Manifests track attempts and rate-limit stops; there is no resume command.
+- Operational files (manifest.json, worker-profiles) are cleaned up after each run; only run.log persists.

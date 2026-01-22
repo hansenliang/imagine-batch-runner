@@ -1,6 +1,8 @@
 # Grok Batch Video Generator
 
-Local batch image-to-video generator for Grok Imagine. Automate high-volume video generation using your Grok subscription.
+Local batch image-to-video generator for Grok Imagine. 
+
+AI generation is inherently random, so to get the best results, you often need to run jobs in batches. Grok does not make this easy today. This tool helps you change that. 
 
 ## Features
 
