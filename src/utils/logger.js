@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import path from 'path';
 import chalk from 'chalk';
 
 export class Logger {
