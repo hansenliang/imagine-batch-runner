@@ -1,0 +1,574 @@
+import path from 'path';
+import fs from 'fs/promises';
+import chalk from 'chalk';
+import config from '../config.js';
+import { AccountManager } from './accounts.js';
+import { ParallelRunner } from './parallel-runner.js';
+import { Logger } from '../utils/logger.js';
+
+/**
+ * Format milliseconds as human-readable duration
+ */
+function formatDuration(ms) {
+  const hours = Math.floor(ms / (60 * 60 * 1000));
+  const minutes = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
+
+  if (hours > 0 && minutes > 0) {
+    return `${hours}h ${minutes}m`;
+  } else if (hours > 0) {
+    return `${hours}h`;
+  } else {
+    return `${minutes}m`;
+  }
+}
+
+/**
+ * Format timestamp for job names (YYYYMMDD-HHmm)
+ */
+function formatTimestamp(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${year}${month}${day}-${hours}${minutes}`;
+}
+
+/**
+ * AutoRunner - orchestrates continuous scheduled batch runs
+ */
+export class AutoRunner {
+  constructor(options) {
+    const {
+      intervalMs = config.DEFAULT_AUTORUN_INTERVAL,
+      configDir = config.DEFAULT_AUTORUN_CONFIG_DIR,
+      dryRun = false,
+      runOnce = false,
+    } = options;
+
+    this.intervalMs = intervalMs;
+    this.configDir = path.resolve(configDir);
+    this.dryRun = dryRun;
+    this.runOnce = runOnce;
+
+    // Session state
+    this.sessionId = `autorun_${Date.now()}`;
+    this.sessionDir = path.join(config.RUNS_DIR, 'autorun', this.sessionId);
+    this.cycleCount = 0;
+    this.isRunning = false;
+    this.shutdownRequested = false;
+
+    // Scheduling
+    this.nextCycleTimeout = null;
+    this.nextCycleTime = null;
+    this.cycleStartTime = null;
+
+    // Logging
+    this.logger = null;
+
+    // Account manager
+    this.accountManager = new AccountManager();
+
+    // Statistics
+    this.sessionStats = {
+      totalCycles: 0,
+      totalConfigsRun: 0,
+      totalCompleted: 0,
+      totalRateLimited: 0,
+      totalFailed: 0,
+      totalSkipped: 0,
+    };
+  }
+
+  /**
+   * Parse interval string to milliseconds
+   */
+  static parseInterval(str) {
+    const match = str.match(/^(\d+)(m|h)$/);
+    if (!match) {
+      throw new Error('Invalid interval format. Use: 30m, 1h, 4h, etc.');
+    }
+    const value = parseInt(match[1], 10);
+    const unit = match[2];
+
+    let ms;
+    if (unit === 'm') {
+      ms = value * 60 * 1000;
+    } else if (unit === 'h') {
+      ms = value * 60 * 60 * 1000;
+    }
+
+    if (ms < config.AUTORUN_MIN_INTERVAL) {
+      throw new Error(`Interval must be at least 30 minutes`);
+    }
+
+    return ms;
+  }
+
+  /**
+   * Start the auto-run session
+   */
+  async start() {
+    this.isRunning = true;
+
+    // Setup signal handlers for graceful shutdown
+    this._setupSignalHandlers();
+
+    // Create session directory
+    await fs.mkdir(this.sessionDir, { recursive: true });
+
+    // Initialize logger
+    this.logger = new Logger(this.sessionDir);
+
+    // Print header
+    console.log(chalk.blue('\n========================================'));
+    console.log(chalk.blue('     AUTO-RUN SESSION STARTED'));
+    console.log(chalk.blue('========================================\n'));
+
+    await this.logger.info('=== Auto-Run Session Started ===');
+    await this.logger.info(`Session ID: ${this.sessionId}`);
+    await this.logger.info(`Interval: ${formatDuration(this.intervalMs)}`);
+    await this.logger.info(`Config directory: ${this.configDir}`);
+    await this.logger.info(`Mode: ${this.dryRun ? 'Dry run' : this.runOnce ? 'Run once' : 'Continuous'}`);
+
+    console.log(chalk.gray(`Session ID: ${this.sessionId}`));
+    console.log(chalk.gray(`Interval: ${formatDuration(this.intervalMs)}`));
+    console.log(chalk.gray(`Config directory: ${this.configDir}`));
+    console.log(chalk.gray(`Session logs: ${this.sessionDir}`));
+    console.log('');
+
+    // Discover and validate configs
+    const { validConfigs, invalidConfigs } = await this.discoverConfigs();
+
+    if (invalidConfigs.length > 0) {
+      console.log(chalk.yellow(`\nInvalid configs (${invalidConfigs.length}):`));
+      for (const { file, errors } of invalidConfigs) {
+        console.log(chalk.red(`  - ${file}`));
+        for (const error of errors) {
+          console.log(chalk.gray(`      ${error}`));
+        }
+      }
+      await this.logger.warn(`Found ${invalidConfigs.length} invalid configs`);
+    }
+
+    if (validConfigs.length === 0) {
+      console.log(chalk.red('\nNo valid configs found. Exiting.\n'));
+      await this.logger.error('No valid configs found');
+      return;
+    }
+
+    console.log(chalk.green(`\nValid configs (${validConfigs.length}):`));
+    for (const { file, data } of validConfigs) {
+      console.log(chalk.white(`  - ${file}`));
+      console.log(chalk.gray(`      Account: ${data.account}, Count: ${data.count || config.DEFAULT_BATCH_SIZE}`));
+    }
+    console.log('');
+
+    await this.logger.info(`Found ${validConfigs.length} valid configs`);
+
+    // Dry run: just show what would run and exit
+    if (this.dryRun) {
+      console.log(chalk.yellow('\nDry run complete. No configs were executed.\n'));
+      await this.logger.info('Dry run complete');
+      return;
+    }
+
+    // Run initial cycle
+    await this.runCycle(validConfigs);
+
+    // If run-once mode, exit after first cycle
+    if (this.runOnce) {
+      console.log(chalk.blue('\nRun-once mode: exiting after first cycle.\n'));
+      await this.logger.info('Run-once mode complete');
+      await this._printSessionSummary();
+      return;
+    }
+
+    // Schedule next cycle (continuous mode)
+    if (!this.shutdownRequested) {
+      this.scheduleNextCycle();
+
+      // Keep process alive
+      await new Promise((resolve) => {
+        this._resolveWhenDone = resolve;
+      });
+    }
+
+    await this._printSessionSummary();
+  }
+
+  /**
+   * Run a single cycle of all configs
+   */
+  async runCycle(validConfigs = null) {
+    if (this.shutdownRequested) {
+      return;
+    }
+
+    this.cycleCount++;
+    this.cycleStartTime = Date.now();
+    this.sessionStats.totalCycles++;
+
+    // Re-discover configs if not provided (for subsequent cycles)
+    if (!validConfigs) {
+      const discovery = await this.discoverConfigs();
+      validConfigs = discovery.validConfigs;
+
+      if (validConfigs.length === 0) {
+        await this.logger.warn(`Cycle ${this.cycleCount}: No valid configs found, skipping`);
+        console.log(chalk.yellow(`\nCycle ${this.cycleCount}: No valid configs found, skipping.\n`));
+        return;
+      }
+    }
+
+    console.log(chalk.blue('\n----------------------------------------'));
+    console.log(chalk.blue(`  Cycle ${this.cycleCount} starting...`));
+    console.log(chalk.blue('----------------------------------------\n'));
+
+    await this.logger.info(`=== Cycle ${this.cycleCount} Starting ===`);
+    await this.logger.info(`Configs to process: ${validConfigs.length}`);
+
+    const cycleResults = {
+      completed: 0,
+      rateLimited: 0,
+      failed: 0,
+      skipped: 0,
+    };
+
+    // Run configs sequentially
+    for (let i = 0; i < validConfigs.length; i++) {
+      if (this.shutdownRequested) {
+        await this.logger.info('Shutdown requested, stopping cycle');
+        console.log(chalk.yellow('\nShutdown requested, stopping cycle...\n'));
+        break;
+      }
+
+      const { file, data } = validConfigs[i];
+      const timestamp = new Date().toLocaleTimeString();
+
+      console.log(chalk.gray(`[${timestamp}] ${file}`));
+      console.log(chalk.gray(`           Account: ${data.account}, Videos: ${data.count || config.DEFAULT_BATCH_SIZE}`));
+
+      try {
+        const result = await this.runConfig(file, data);
+        this.sessionStats.totalConfigsRun++;
+
+        if (result.status === 'COMPLETED') {
+          cycleResults.completed++;
+          this.sessionStats.totalCompleted++;
+          console.log(chalk.green(`           -> Completed (${result.videosCompleted}/${result.totalVideos})\n`));
+        } else if (result.status === 'STOPPED_RATE_LIMIT') {
+          cycleResults.rateLimited++;
+          this.sessionStats.totalRateLimited++;
+          console.log(chalk.yellow(`           -> Rate limited (${result.videosCompleted}/${result.totalVideos})\n`));
+        } else if (result.status === 'SKIPPED') {
+          cycleResults.skipped++;
+          this.sessionStats.totalSkipped++;
+          console.log(chalk.gray(`           -> Skipped: ${result.reason}\n`));
+        } else {
+          cycleResults.failed++;
+          this.sessionStats.totalFailed++;
+          console.log(chalk.red(`           -> Failed: ${result.error || 'Unknown error'}\n`));
+        }
+      } catch (error) {
+        cycleResults.failed++;
+        this.sessionStats.totalFailed++;
+        console.log(chalk.red(`           -> Error: ${error.message}\n`));
+        await this.logger.error(`Config ${file} error`, error);
+      }
+    }
+
+    // Print cycle summary
+    const cycleDuration = Date.now() - this.cycleStartTime;
+    console.log(chalk.blue('\n----------------------------------------'));
+    console.log(chalk.blue(`  Cycle ${this.cycleCount} Complete`));
+    console.log(chalk.gray(`  Duration: ${formatDuration(cycleDuration)}`));
+    console.log(chalk.green(`  Completed: ${cycleResults.completed}`));
+    if (cycleResults.rateLimited > 0) {
+      console.log(chalk.yellow(`  Rate limited: ${cycleResults.rateLimited}`));
+    }
+    if (cycleResults.failed > 0) {
+      console.log(chalk.red(`  Failed: ${cycleResults.failed}`));
+    }
+    if (cycleResults.skipped > 0) {
+      console.log(chalk.gray(`  Skipped: ${cycleResults.skipped}`));
+    }
+    console.log(chalk.blue('----------------------------------------\n'));
+
+    await this.logger.info(`Cycle ${this.cycleCount} complete`);
+    await this.logger.info(`  Duration: ${formatDuration(cycleDuration)}`);
+    await this.logger.info(`  Completed: ${cycleResults.completed}, Rate limited: ${cycleResults.rateLimited}, Failed: ${cycleResults.failed}, Skipped: ${cycleResults.skipped}`);
+  }
+
+  /**
+   * Run a single config using ParallelRunner
+   */
+  async runConfig(file, configData) {
+    // Generate job name from filename + timestamp
+    const baseName = path.basename(file, '.json');
+    const timestamp = formatTimestamp();
+    const jobName = `${baseName}-${timestamp}`;
+
+    // Extract config values with defaults
+    const batchSize = parseInt(configData.count, 10) || config.DEFAULT_BATCH_SIZE;
+    const parallelism = parseInt(configData.parallel, 10) || config.DEFAULT_PARALLELISM;
+
+    await this.logger.info(`Starting config: ${file}`);
+    await this.logger.info(`  Job name: ${jobName}`);
+    await this.logger.info(`  Account: ${configData.account}`);
+    await this.logger.info(`  Batch size: ${batchSize}, Parallelism: ${parallelism}`);
+
+    try {
+      // Create and initialize runner
+      const runner = new ParallelRunner({
+        accountAlias: configData.account,
+        permalink: configData.permalink,
+        prompt: configData.prompt,
+        batchSize,
+        jobName,
+        parallelism,
+      });
+
+      await runner.init();
+      const summary = await runner.start();
+
+      // Update account last used
+      await this.accountManager.updateLastUsed(configData.account);
+
+      await this.logger.info(`Config ${file} completed: ${summary.status}`);
+
+      return {
+        status: summary.status,
+        videosCompleted: summary.videosCompleted,
+        totalVideos: batchSize,
+        stopReason: summary.stopReason,
+      };
+    } catch (error) {
+      await this.logger.error(`Config ${file} failed`, error);
+      return {
+        status: 'FAILED',
+        error: error.message,
+        videosCompleted: 0,
+        totalVideos: batchSize,
+      };
+    }
+  }
+
+  /**
+   * Discover and validate all config files in the config directory
+   */
+  async discoverConfigs() {
+    const validConfigs = [];
+    const invalidConfigs = [];
+
+    // Check if directory exists
+    try {
+      await fs.access(this.configDir);
+    } catch {
+      throw new Error(`Config directory not found: ${this.configDir}`);
+    }
+
+    // Read all files in directory
+    const files = await fs.readdir(this.configDir);
+    const jsonFiles = files.filter((f) => f.endsWith('.json'));
+
+    if (jsonFiles.length === 0) {
+      throw new Error(`No JSON config files found in ${this.configDir}`);
+    }
+
+    // Validate each config
+    for (const file of jsonFiles) {
+      const configPath = path.join(this.configDir, file);
+      try {
+        const content = await fs.readFile(configPath, 'utf-8');
+        const configData = JSON.parse(content);
+
+        const validation = await this.validateConfig(configData, file);
+        if (validation.valid) {
+          validConfigs.push({ path: configPath, file, data: configData });
+        } else {
+          invalidConfigs.push({ path: configPath, file, errors: validation.errors });
+        }
+      } catch (error) {
+        invalidConfigs.push({
+          path: configPath,
+          file,
+          errors: [`Parse error: ${error.message}`],
+        });
+      }
+    }
+
+    return { validConfigs, invalidConfigs };
+  }
+
+  /**
+   * Validate a single config
+   */
+  async validateConfig(configData, filename) {
+    const errors = [];
+
+    // Required fields
+    if (!configData.account) {
+      errors.push('Missing required field: account');
+    }
+    if (!configData.permalink) {
+      errors.push('Missing required field: permalink');
+    }
+    if (!configData.prompt) {
+      errors.push('Missing required field: prompt');
+    }
+
+    // Permalink format
+    if (configData.permalink && !configData.permalink.includes('grok.com/imagine')) {
+      errors.push('Permalink must be a Grok Imagine URL');
+    }
+
+    // Count validation
+    if (configData.count !== undefined) {
+      const count = parseInt(configData.count, 10);
+      if (isNaN(count) || count < 1 || count > 1000) {
+        errors.push('Count must be between 1 and 1000');
+      }
+    }
+
+    // Parallel validation
+    if (configData.parallel !== undefined) {
+      const parallel = parseInt(configData.parallel, 10);
+      if (isNaN(parallel) || parallel < 1 || parallel > 100) {
+        errors.push('Parallel must be between 1 and 100');
+      }
+    }
+
+    // Account exists check
+    if (configData.account) {
+      const exists = await this.accountManager.accountExists(configData.account);
+      if (!exists) {
+        errors.push(`Account "${configData.account}" not found`);
+      }
+    }
+
+    return { valid: errors.length === 0, errors };
+  }
+
+  /**
+   * Schedule the next cycle
+   */
+  scheduleNextCycle() {
+    if (this.shutdownRequested) {
+      return;
+    }
+
+    const now = Date.now();
+    const idealNextStart = this.cycleStartTime + this.intervalMs;
+
+    let waitMs;
+    if (idealNextStart <= now) {
+      // Cycle took longer than interval, start next cycle soon
+      console.log(chalk.yellow('Cycle took longer than interval. Starting next cycle in 1 minute.'));
+      this.logger.warn('Cycle took longer than interval');
+      waitMs = 60 * 1000; // 1 minute buffer
+    } else {
+      waitMs = idealNextStart - now;
+    }
+
+    this.nextCycleTime = new Date(now + waitMs);
+
+    console.log(chalk.gray(`Next cycle at: ${this.nextCycleTime.toLocaleString()}`));
+    console.log(chalk.gray(`              (in ${formatDuration(waitMs)})`));
+    console.log(chalk.gray('\nPress Ctrl+C to stop.\n'));
+
+    this.nextCycleTimeout = setTimeout(async () => {
+      try {
+        await this.runCycle();
+      } catch (error) {
+        await this.logger.error('Cycle error', error);
+        console.error(chalk.red(`\nCycle error: ${error.message}\n`));
+      }
+
+      // Schedule next cycle after this one completes
+      if (!this.shutdownRequested && !this.runOnce) {
+        this.scheduleNextCycle();
+      }
+    }, waitMs);
+  }
+
+  /**
+   * Stop the auto-run session gracefully
+   */
+  async stop() {
+    this.shutdownRequested = true;
+
+    // Cancel scheduled next cycle
+    if (this.nextCycleTimeout) {
+      clearTimeout(this.nextCycleTimeout);
+      this.nextCycleTimeout = null;
+    }
+
+    await this.logger.info('Shutdown initiated');
+
+    // Resolve the waiting promise to exit
+    if (this._resolveWhenDone) {
+      this._resolveWhenDone();
+    }
+  }
+
+  /**
+   * Setup signal handlers for graceful shutdown
+   */
+  _setupSignalHandlers() {
+    let forceShutdownWarned = false;
+
+    const shutdown = async (signal) => {
+      if (this.shutdownRequested) {
+        if (!forceShutdownWarned) {
+          console.log(chalk.yellow('\nForce shutdown. Exiting immediately.\n'));
+          forceShutdownWarned = true;
+        }
+        process.exit(1);
+      }
+
+      console.log(chalk.yellow(`\n${signal} received. Graceful shutdown initiated...`));
+      console.log(chalk.gray('Waiting for current config to complete.'));
+      console.log(chalk.gray('Press Ctrl+C again to force quit.\n'));
+
+      await this.stop();
+    };
+
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+  }
+
+  /**
+   * Print final session summary
+   */
+  async _printSessionSummary() {
+    console.log(chalk.blue('\n========================================'));
+    console.log(chalk.blue('     SESSION SUMMARY'));
+    console.log(chalk.blue('========================================\n'));
+
+    console.log(chalk.gray(`Session ID: ${this.sessionId}`));
+    console.log(chalk.gray(`Total cycles: ${this.sessionStats.totalCycles}`));
+    console.log(chalk.gray(`Total configs run: ${this.sessionStats.totalConfigsRun}`));
+    console.log(chalk.green(`  Completed: ${this.sessionStats.totalCompleted}`));
+    if (this.sessionStats.totalRateLimited > 0) {
+      console.log(chalk.yellow(`  Rate limited: ${this.sessionStats.totalRateLimited}`));
+    }
+    if (this.sessionStats.totalFailed > 0) {
+      console.log(chalk.red(`  Failed: ${this.sessionStats.totalFailed}`));
+    }
+    if (this.sessionStats.totalSkipped > 0) {
+      console.log(chalk.gray(`  Skipped: ${this.sessionStats.totalSkipped}`));
+    }
+    console.log(chalk.gray(`\nSession logs: ${this.sessionDir}\n`));
+
+    await this.logger.info('=== Session Summary ===');
+    await this.logger.info(`Total cycles: ${this.sessionStats.totalCycles}`);
+    await this.logger.info(`Total configs run: ${this.sessionStats.totalConfigsRun}`);
+    await this.logger.info(`  Completed: ${this.sessionStats.totalCompleted}`);
+    await this.logger.info(`  Rate limited: ${this.sessionStats.totalRateLimited}`);
+    await this.logger.info(`  Failed: ${this.sessionStats.totalFailed}`);
+    await this.logger.info(`  Skipped: ${this.sessionStats.totalSkipped}`);
+  }
+}
+
+export default AutoRunner;

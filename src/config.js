@@ -81,6 +81,11 @@ export const config = {
   DEFAULT_PARALLELISM: 10,
   WORKER_SHUTDOWN_TIMEOUT: 60000, // 60s grace period for shutdown
 
+  // Auto-run settings
+  DEFAULT_AUTORUN_INTERVAL: 4 * 60 * 60 * 1000, // 4 hours in milliseconds
+  DEFAULT_AUTORUN_CONFIG_DIR: './autorun-configs',
+  AUTORUN_MIN_INTERVAL: 30 * 60 * 1000, // 30 minutes minimum
+
   // Browser settings
   HEADED_MODE: true, // Default to headed for debugging
   VIEWPORT: { width: 1280, height: 720 },

@@ -6,6 +6,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { AccountManager } from './core/accounts.js';
 import { ParallelRunner } from './core/parallel-runner.js';
+import { AutoRunner } from './core/auto-runner.js';
 import config from './config.js';
 
 const program = new Command();
@@ -175,6 +176,38 @@ run
       // Update account last used
       await accountManager.updateLastUsed(options.account);
 
+    } catch (error) {
+      console.error(chalk.red(`\n✗ Error: ${error.message}\n`));
+      process.exit(1);
+    }
+  });
+
+/**
+ * Auto-run commands
+ */
+const autorun = program.command('autorun').description('Continuous scheduled batch runs');
+
+autorun
+  .command('start')
+  .description('Start continuous auto-run session')
+  .option('--interval <duration>', 'Time between cycles (e.g., 30m, 1h, 4h)', '4h')
+  .option('--config-dir <path>', 'Directory containing config files', config.DEFAULT_AUTORUN_CONFIG_DIR)
+  .option('--dry-run', 'Validate configs without running', false)
+  .option('--run-once', 'Run all configs once and exit', false)
+  .action(async (options) => {
+    try {
+      // Parse interval to milliseconds
+      const intervalMs = AutoRunner.parseInterval(options.interval);
+
+      // Create and start auto-runner
+      const runner = new AutoRunner({
+        intervalMs,
+        configDir: options.configDir,
+        dryRun: options.dryRun,
+        runOnce: options.runOnce,
+      });
+
+      await runner.start();
     } catch (error) {
       console.error(chalk.red(`\n✗ Error: ${error.message}\n`));
       process.exit(1);
