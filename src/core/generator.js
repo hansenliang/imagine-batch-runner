@@ -20,19 +20,20 @@ export class VideoGenerator {
    * Generate a single video from the current permalink (single attempt)
    * Returns: { success, rateLimited, attempted, error }
    */
-  async generate(index, prompt) {
+  async generate(index, prompt, workerId = null) {
+    const logPrefix = workerId !== null ? `[Worker ${workerId}][Attempt ${index + 1}]` : `[Attempt ${index + 1}]`;
     let lastError = null;
     const startTime = Date.now();
 
     try {
       // Step 1: Find and click the generation button
-      await this._clickGenerationButton(index);
+      await this._clickGenerationButton(logPrefix);
 
       // Step 2: Enter prompt (if needed)
-      await this._enterPrompt(prompt, index);
+      await this._enterPrompt(prompt, logPrefix);
 
       // Step 3: Wait for video generation to complete
-      await this._waitForCompletion(index);
+      await this._waitForCompletion(logPrefix);
 
       const duration = Date.now() - startTime;
       return {
@@ -70,7 +71,7 @@ export class VideoGenerator {
 
     // Non-rate-limit error = failed attempt
     const duration = Date.now() - startTime;
-    this.logger.error(`[Attempt ${index + 1}] Failed: ${lastError?.message}`);
+    this.logger.error(`${logPrefix} Failed: ${lastError?.message}`);
 
     return {
       success: false,
@@ -84,8 +85,8 @@ export class VideoGenerator {
   /**
    * Click the "Make video" or "Redo" button
    */
-  async _clickGenerationButton(index) {
-    this.logger.debug(`[Attempt ${index + 1}] Looking for generation button`);
+  async _clickGenerationButton(logPrefix) {
+    this.logger.debug(`${logPrefix} Looking for generation button`);
 
     const waitTimeout = Math.max(3000, config.ELEMENT_WAIT_TIMEOUT);
     await Promise.race([
@@ -101,7 +102,7 @@ export class VideoGenerator {
     let buttonLabel = null;
 
     if (!button) {
-      const promptButton = await this._findGenerationButtonNearPrompt(index);
+      const promptButton = await this._findGenerationButtonNearPrompt(logPrefix);
       if (promptButton) {
         button = promptButton;
       }
@@ -151,7 +152,7 @@ export class VideoGenerator {
         }
 
         this.logger.debug(
-          `[Attempt ${index + 1}] Visible buttons: ${visibleLabels.join(' | ') || 'none'}`
+          `${logPrefix} Visible buttons: ${visibleLabels.join(' | ') || 'none'}`
         );
       }
     }
@@ -161,7 +162,7 @@ export class VideoGenerator {
     }
 
     const buttonText = buttonLabel || await button.textContent();
-    this.logger.debug(`[Attempt ${index + 1}] Found button: "${buttonText}"`);
+    this.logger.debug(`${logPrefix} Found button: "${buttonText}"`);
 
     // Check if button is disabled (might indicate rate limit)
     const isDisabled = await button.isDisabled();
@@ -170,7 +171,7 @@ export class VideoGenerator {
     }
 
     await button.click();
-    this.logger.debug(`[Attempt ${index + 1}] Clicked generation button`);
+    this.logger.debug(`${logPrefix} Clicked generation button`);
 
     // Wait for UI to respond
     await sleep(1000);
@@ -179,7 +180,7 @@ export class VideoGenerator {
   /**
    * Find the generation button near the prompt input field
    */
-  async _findGenerationButtonNearPrompt(index) {
+  async _findGenerationButtonNearPrompt(logPrefix) {
     try {
       const promptInput = await this.page.$(selectors.PROMPT_INPUT);
       if (!promptInput) return null;
@@ -242,13 +243,13 @@ export class VideoGenerator {
 
       if (best) {
         this.logger.debug(
-          `[Attempt ${index + 1}] Found prompt-adjacent button: "${bestLabel || 'icon-only'}" (score=${bestScore})`
+          `${logPrefix} Found prompt-adjacent button: "${bestLabel || 'icon-only'}" (score=${bestScore})`
         );
       }
 
       return best;
     } catch (error) {
-      this.logger.debug(`[Attempt ${index + 1}] Prompt-adjacent button lookup failed: ${error.message}`);
+      this.logger.debug(`${logPrefix} Prompt-adjacent button lookup failed: ${error.message}`);
       return null;
     }
   }
@@ -256,7 +257,7 @@ export class VideoGenerator {
   /**
    * Enter prompt in the text field
    */
-  async _enterPrompt(prompt, index) {
+  async _enterPrompt(prompt, logPrefix) {
     try {
       // Try to find prompt input field
       const promptInput = await this.page.$(selectors.PROMPT_INPUT);
@@ -265,17 +266,17 @@ export class VideoGenerator {
         // Clear existing text
         await promptInput.click({ clickCount: 3 }); // Triple-click to select all
         await promptInput.fill(prompt);
-        this.logger.debug(`[Attempt ${index + 1}] Entered prompt`);
+        this.logger.debug(`${logPrefix} Entered prompt`);
 
         // Submit the prompt (usually Enter key or a submit button)
         await promptInput.press('Enter');
         await sleep(1000);
       } else {
         // Prompt might be pre-filled from previous generation (Redo case)
-        this.logger.debug(`[Attempt ${index + 1}] No prompt input found (might be pre-filled)`);
+        this.logger.debug(`${logPrefix} No prompt input found (might be pre-filled)`);
       }
     } catch (error) {
-      this.logger.warn(`[Attempt ${index + 1}] Could not enter prompt: ${error.message}`);
+      this.logger.warn(`${logPrefix} Could not enter prompt: ${error.message}`);
       // Continue anyway - prompt might already be set
     }
   }
@@ -414,8 +415,8 @@ export class VideoGenerator {
   /**
    * Wait for video generation to complete with real-time failure detection
    */
-  async _waitForCompletion(index) {
-    this.logger.debug(`[Attempt ${index + 1}] Waiting for generation to complete`);
+  async _waitForCompletion(logPrefix) {
+    this.logger.debug(`${logPrefix} Waiting for generation to complete`);
 
     const startTime = Date.now();
     const checkInterval = 2000; // Check every 2 seconds
@@ -432,11 +433,18 @@ export class VideoGenerator {
       const video = await this.page.$(selectors.VIDEO_CONTAINER);
       const percentageProgress = await this._detectProgressPercentage();
 
-      // Check for generation signals
+      // Check for generation signals (log which one triggered it)
       // A video element alone could be stale from a previous session
       if (!sawGenerationSignal) {
-        if (loading || progress || percentageProgress.detected) {
+        if (loading) {
           sawGenerationSignal = true;
+          this.logger.info(`${logPrefix} Generation signal: loading indicator`);
+        } else if (progress) {
+          sawGenerationSignal = true;
+          this.logger.info(`${logPrefix} Generation signal: progress bar`);
+        } else if (percentageProgress.detected) {
+          sawGenerationSignal = true;
+          this.logger.info(`${logPrefix} Generation signal: ${percentageProgress.percentage}% (${percentageProgress.text})`);
         }
       }
 
@@ -444,13 +452,13 @@ export class VideoGenerator {
       const rateLimit = await this._detectRateLimit();
       if (rateLimit.detected) {
         if (!sawGenerationSignal) {
-          this.logger.warn(`[Attempt ${index + 1}] Rate limit detected before generation started: ${rateLimit.message}`);
+          this.logger.warn(`${logPrefix} Rate limit detected before generation started: ${rateLimit.message}`);
           throw new Error(`RATE_LIMIT: ${rateLimit.message}`);
         }
 
         if (!this.rateLimitAfterStart) {
           this.logger.debug(
-            `[Attempt ${index + 1}] Rate limit detected after generation started; will stop after current attempt`
+            `${logPrefix} Rate limit detected after generation started; will stop after current attempt`
           );
         }
         this.rateLimitAfterStart = true;
@@ -459,21 +467,21 @@ export class VideoGenerator {
       // Content moderation check
       const moderation = await this._detectContentModeration();
       if (moderation.detected) {
-        this.logger.warn(`[Attempt ${index + 1}] Content moderation detected: ${moderation.message}`);
+        this.logger.warn(`${logPrefix} Content moderation detected: ${moderation.message}`);
         throw new Error(`CONTENT_MODERATED: ${moderation.message}`);
       }
 
       // Network error check
       const networkError = await this._detectNetworkError();
       if (networkError.detected) {
-        this.logger.warn(`[Attempt ${index + 1}] Network error detected: ${networkError.message}`);
+        this.logger.warn(`${logPrefix} Network error detected: ${networkError.message}`);
         throw new Error(`NETWORK_ERROR: ${networkError.message}`);
       }
 
       // General generation error check
       const genError = await this._detectGenerationError();
       if (genError.detected) {
-        this.logger.warn(`[Attempt ${index + 1}] Generation error detected: ${genError.message}`);
+        this.logger.warn(`${logPrefix} Generation error detected: ${genError.message}`);
         throw new Error(`GENERATION_ERROR: ${genError.message}`);
       }
 
@@ -482,22 +490,22 @@ export class VideoGenerator {
         // Video element found, verify it's actually playable
         const isPlayable = await this._verifyVideoPlayable(video);
         if (isPlayable) {
-          this.logger.success(`[Attempt ${index + 1}] Video ready and verified`);
+          this.logger.success(`${logPrefix} Video ready and verified`);
           return { success: true };
         }
       }
 
       // 3. Check for timeout
       if (elapsed > config.VIDEO_GENERATION_TIMEOUT / 1000) {
-        this.logger.error(`[Attempt ${index + 1}] Generation timeout after ${elapsed}s`);
-        this.logger.error(`[Attempt ${index + 1}] Debug: sawGenerationSignal=${sawGenerationSignal}, video=${!!video}`);
+        this.logger.error(`${logPrefix} Generation timeout after ${elapsed}s`);
+        this.logger.error(`${logPrefix} Debug: sawGenerationSignal=${sawGenerationSignal}, video=${!!video}`);
         throw new Error(`TIMEOUT: Video generation exceeded ${config.VIDEO_GENERATION_TIMEOUT / 1000}s`);
       }
 
       // 4. Log progress periodically
       if (elapsed - lastProgressLog >= 10) {
         const status = sawGenerationSignal ? 'generation in progress' : 'waiting for generation signal';
-        this.logger.debug(`[Attempt ${index + 1}] ${status} (${elapsed}s, video=${!!video})`);
+        this.logger.debug(`${logPrefix} ${status} (${elapsed}s, video=${!!video})`);
         lastProgressLog = elapsed;
       }
 

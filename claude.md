@@ -42,6 +42,7 @@ Config: `src/config.js` → defaults and UI selectors
 3. Create a thoughtful plan explaining your approach
 4. Present plan to user for review BEFORE implementing
 5. Avoid surface-level fixes that add complexity
+6. Do not stop at the first likely cause for an issue -- continue investigating to come up with 3 or more theories, then think critically about which is the most likely. 
 
 **Code Behavior**:
 - Never log prompt text (privacy) - logs show "prompt provided" instead

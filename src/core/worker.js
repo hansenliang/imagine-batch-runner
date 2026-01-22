@@ -174,7 +174,7 @@ export class ParallelWorker {
         this.logger.info(`[Worker ${this.workerId}] Attempting generation ${index + 1}`);
 
         // Generate video (returns result with success, rateLimited, attempted)
-        const result = await this.generator.generate(index, this.prompt);
+        const result = await this.generator.generate(index, this.prompt, this.workerId);
         const duration = Math.round((result.durationMs || 0) / 1000);
 
         // Handle rate limit (already logged in generator)
