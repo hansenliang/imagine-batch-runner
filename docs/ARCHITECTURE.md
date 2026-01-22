@@ -85,7 +85,7 @@ Shared Manifest (File-Locked State)
 
 **Lifecycle**:
 1. **Init Phase**:
-   - Create run directory: `~/GrokBatchRuns/<job-name>/`
+   - Create run directory: `./logs/<job-name>/`
    - Initialize manifest with batch items
    - Create worker profile directory structure
    - Initialize logger
@@ -192,10 +192,6 @@ Error?   → Return { success: false, error }
    - No error messages present
 
 3. **Timeout**: Default 60s (configurable)
-
-**Debug Artifacts**:
-- Screenshots on error: `debug/worker-{id}_error_{timestamp}.png`
-- HTML snapshots: `debug/worker-{id}_error_{timestamp}.html`
 
 ### 5. Manifest Manager (`src/core/manifest.js`)
 
@@ -306,7 +302,7 @@ Error?   → Return { success: false, error }
 2. CLI validates config and creates ParallelRunner
 
 3. ParallelRunner.init():
-   - Create ~/GrokBatchRuns/<job-name>/
+   - Create ./logs/<job-name>/
    - Initialize manifest.json
    - Initialize run.log
 
@@ -391,8 +387,8 @@ Process exits
 
 ```javascript
 // Paths
-PROFILES_DIR: '~/Library/Application Support/Grok Batch Profiles'
-RUNS_DIR: '~/GrokBatchRuns'
+PROFILES_DIR: './profiles'
+RUNS_DIR: './logs'
 
 // Defaults
 DEFAULT_BATCH_SIZE: 10

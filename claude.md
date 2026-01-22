@@ -61,11 +61,10 @@ Config: `src/config.js` → defaults and UI selectors
 
 **Run Directory Structure**:
 ```
-~/GrokBatchRuns/<job-name>/
+./logs/<job-name>/
   ├── manifest.json       # Shared state (file-locked)
   ├── manifest.lock       # Lock file (auto-managed)
   ├── run.log            # Combined logs
-  ├── debug/             # Screenshots on errors
   └── worker-profiles/   # Temp profiles (auto-cleaned)
 ```
 

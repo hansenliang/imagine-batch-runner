@@ -32,7 +32,6 @@ export class ParallelWorker {
 
     // Worker-specific paths
     this.workerProfileDir = path.join(runDir, 'worker-profiles', `worker-${workerId}`);
-    this.debugDir = path.join(runDir, 'debug');
 
     // State
     this.isRunning = false;
@@ -100,21 +99,6 @@ export class ParallelWorker {
       // Create video generator
       const mockBrowser = {
         page: this.page,
-        screenshot: async (filepath) => {
-          try {
-            await this.page.screenshot({ path: filepath, fullPage: true });
-          } catch (error) {
-            this.logger.warn(`[Worker ${this.workerId}] Failed to take screenshot: ${error.message}`);
-          }
-        },
-        saveHTML: async (filepath) => {
-          try {
-            const html = await this.page.content();
-            await fs.writeFile(filepath, html, 'utf-8');
-          } catch (error) {
-            this.logger.warn(`[Worker ${this.workerId}] Failed to save HTML: ${error.message}`);
-          }
-        },
       };
 
       this.generator = new VideoGenerator(mockBrowser, this.logger);
@@ -194,7 +178,7 @@ export class ParallelWorker {
         this.logger.info(`[Worker ${this.workerId}] Attempting generation ${index + 1}`);
 
         // Generate video (returns result with success, rateLimited, attempted)
-        const result = await this.generator.generate(index, this.prompt, this.debugDir);
+        const result = await this.generator.generate(index, this.prompt);
         const duration = Math.round((result.durationMs || 0) / 1000);
 
         // Handle rate limit

@@ -1,10 +1,8 @@
 node_modules/
 profiles/
-GrokBatchRuns/
+logs/
 *.log
 .DS_Store
-debug/
-logs/
 
 # User-specific config files (may contain account info, permalinks, prompts)
 batch-config.json

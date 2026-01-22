@@ -63,7 +63,7 @@ export const config = {
   // Paths
   PROJECT_ROOT: path.resolve(__dirname, '..'),
   PROFILES_DIR: path.resolve(__dirname, '..', 'profiles'),
-  RUNS_DIR: path.join(os.homedir(), 'GrokBatchRuns'),
+  RUNS_DIR: path.resolve(__dirname, '..', 'logs'),
 
   // Timeouts (milliseconds)
   VIDEO_GENERATION_TIMEOUT: 60000, // 60 seconds
