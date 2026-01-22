@@ -52,7 +52,7 @@ The tool will:
 - Open the permalink in each authenticated browser session
 - Generate 20 video variations using the same image + prompt
 - Automatically detect rate limits and stop gracefully
-- Save progress to `~/GrokBatchRuns/<job-name>/`
+- Save progress to `./logs/<job-name>/`
 
 **Note**: Each worker runs in a separate Chrome window for isolation. This is normal behavior.
 
@@ -160,20 +160,20 @@ When rate-limited:
 
 ## Output Structure
 
-Each run creates a directory at `~/GrokBatchRuns/<job-name>/`:
+Each run creates a directory at `./logs/<job-name>/`:
 
 ```
-~/GrokBatchRuns/job_1234567890/
-├── manifest.json          # Run metadata and progress
-├── manifest.lock         # Lock file for parallel coordination
-├── run.log               # Detailed logs (from all workers)
-├── debug/                # Screenshots on errors
-│   ├── initial.png       # Initial state
-│   └── worker-*_error_*.png  # Worker-specific error screenshots
-└── worker-profiles/      # Temporary worker profile copies (auto-cleaned)
-    ├── worker-0/
-    ├── worker-1/
-    └── ...
+./logs/job_1234567890/
+└── run.log               # Detailed logs (operational files auto-cleaned)
+```
+
+For autorun sessions:
+```
+./logs/
+├── autorun-2026-01-22-14-04-20.log   # Session summary with TOTALS
+└── autorun/
+    └── autorun_2026-01-22-14-04-20/
+        └── run.log                    # Detailed per-attempt logs
 ```
 
 ## Troubleshooting

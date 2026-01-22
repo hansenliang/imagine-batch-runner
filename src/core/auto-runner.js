@@ -23,7 +23,7 @@ function formatDuration(ms) {
 }
 
 /**
- * Format timestamp for job names (YYYYMMDD-HHmm)
+ * Format timestamp for session/job names (YYYY-MM-DD-HH-mm-ss)
  */
 function formatTimestamp(date = new Date()) {
   const year = date.getFullYear();
@@ -31,7 +31,21 @@ function formatTimestamp(date = new Date()) {
   const day = String(date.getDate()).padStart(2, '0');
   const hours = String(date.getHours()).padStart(2, '0');
   const minutes = String(date.getMinutes()).padStart(2, '0');
-  return `${year}${month}${day}-${hours}${minutes}`;
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day}-${hours}-${minutes}-${seconds}`;
+}
+
+/**
+ * Format timestamp for display (YYYY-MM-DD HH:mm:ss)
+ */
+function formatDisplayTimestamp(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
 /**
@@ -52,8 +66,11 @@ export class AutoRunner {
     this.runOnce = runOnce;
 
     // Session state
-    this.sessionId = `autorun_${Date.now()}`;
+    this.sessionStartTime = new Date();
+    const timestamp = formatTimestamp(this.sessionStartTime);
+    this.sessionId = `autorun_${timestamp}`;
     this.sessionDir = path.join(config.RUNS_DIR, 'autorun', this.sessionId);
+    this.summaryLogPath = path.join(config.RUNS_DIR, `autorun-${timestamp}.log`);
     this.cycleCount = 0;
     this.isRunning = false;
     this.shutdownRequested = false;
@@ -69,15 +86,18 @@ export class AutoRunner {
     // Account manager
     this.accountManager = new AccountManager();
 
-    // Statistics
+    // Cumulative session statistics
     this.sessionStats = {
       totalCycles: 0,
-      totalConfigsRun: 0,
-      totalCompleted: 0,
-      totalRateLimited: 0,
+      totalAttempts: 0,
+      totalSuccessful: 0,
       totalFailed: 0,
-      totalSkipped: 0,
+      totalRateLimited: 0,
+      parallelism: 0,
     };
+
+    // Per-cycle summaries for the summary log
+    this.cycleSummaries = [];
   }
 
   /**
@@ -134,7 +154,8 @@ export class AutoRunner {
     console.log(chalk.gray(`Session ID: ${this.sessionId}`));
     console.log(chalk.gray(`Interval: ${formatDuration(this.intervalMs)}`));
     console.log(chalk.gray(`Config directory: ${this.configDir}`));
-    console.log(chalk.gray(`Session logs: ${this.sessionDir}`));
+    console.log(chalk.gray(`Summary log: ${this.summaryLogPath}`));
+    console.log(chalk.gray(`Detailed logs: ${this.sessionDir}`));
     console.log('');
 
     // Discover and validate configs
@@ -228,11 +249,15 @@ export class AutoRunner {
     await this.logger.info(`=== Cycle ${this.cycleCount} Starting ===`);
     await this.logger.info(`Configs to process: ${validConfigs.length}`);
 
-    const cycleResults = {
-      completed: 0,
-      rateLimited: 0,
+    // Track cycle-level stats
+    const cycleStats = {
+      totalAttempts: 0,
+      successful: 0,
       failed: 0,
-      skipped: 0,
+      rateLimited: 0,
+      parallelism: 0,
+      status: 'COMPLETED',
+      stopReason: null,
     };
 
     // Run configs sequentially
@@ -245,59 +270,68 @@ export class AutoRunner {
 
       const { file, data } = validConfigs[i];
       const timestamp = new Date().toLocaleTimeString();
+      const parallelism = parseInt(data.parallel, 10) || config.DEFAULT_PARALLELISM;
 
       console.log(chalk.gray(`[${timestamp}] ${file}`));
       console.log(chalk.gray(`           Account: ${data.account}, Videos: ${data.count || config.DEFAULT_BATCH_SIZE}`));
 
       try {
         const result = await this.runConfig(file, data);
-        this.sessionStats.totalConfigsRun++;
+
+        // Accumulate stats from this run
+        cycleStats.totalAttempts += result.totalAttempts;
+        cycleStats.successful += result.successfulAttempts;
+        cycleStats.failed += result.failedAttempts;
+        cycleStats.rateLimited += result.videosRateLimited;
+        cycleStats.parallelism = Math.max(cycleStats.parallelism, parallelism);
 
         if (result.status === 'COMPLETED') {
-          cycleResults.completed++;
-          this.sessionStats.totalCompleted++;
           console.log(chalk.green(`           -> Completed (${result.videosCompleted}/${result.totalVideos})\n`));
         } else if (result.status === 'STOPPED_RATE_LIMIT') {
-          cycleResults.rateLimited++;
-          this.sessionStats.totalRateLimited++;
+          cycleStats.status = 'STOPPED_RATE_LIMIT';
+          cycleStats.stopReason = 'Rate limit detected';
           console.log(chalk.yellow(`           -> Rate limited (${result.videosCompleted}/${result.totalVideos})\n`));
-        } else if (result.status === 'SKIPPED') {
-          cycleResults.skipped++;
-          this.sessionStats.totalSkipped++;
-          console.log(chalk.gray(`           -> Skipped: ${result.reason}\n`));
         } else {
-          cycleResults.failed++;
-          this.sessionStats.totalFailed++;
+          cycleStats.status = 'FAILED';
+          cycleStats.stopReason = result.error || 'Unknown error';
           console.log(chalk.red(`           -> Failed: ${result.error || 'Unknown error'}\n`));
         }
       } catch (error) {
-        cycleResults.failed++;
-        this.sessionStats.totalFailed++;
+        cycleStats.failed++;
+        cycleStats.status = 'FAILED';
+        cycleStats.stopReason = error.message;
         console.log(chalk.red(`           -> Error: ${error.message}\n`));
         await this.logger.error(`Config ${file} error`, error);
       }
     }
+
+    // Update cumulative session stats
+    this.sessionStats.totalAttempts += cycleStats.totalAttempts;
+    this.sessionStats.totalSuccessful += cycleStats.successful;
+    this.sessionStats.totalFailed += cycleStats.failed;
+    this.sessionStats.totalRateLimited += cycleStats.rateLimited;
+    this.sessionStats.parallelism = Math.max(this.sessionStats.parallelism, cycleStats.parallelism);
 
     // Print cycle summary
     const cycleDuration = Date.now() - this.cycleStartTime;
     console.log(chalk.blue('\n----------------------------------------'));
     console.log(chalk.blue(`  Cycle ${this.cycleCount} Complete`));
     console.log(chalk.gray(`  Duration: ${formatDuration(cycleDuration)}`));
-    console.log(chalk.green(`  Completed: ${cycleResults.completed}`));
-    if (cycleResults.rateLimited > 0) {
-      console.log(chalk.yellow(`  Rate limited: ${cycleResults.rateLimited}`));
+    console.log(chalk.green(`  Successful: ${cycleStats.successful}`));
+    if (cycleStats.failed > 0) {
+      console.log(chalk.red(`  Failed: ${cycleStats.failed}`));
     }
-    if (cycleResults.failed > 0) {
-      console.log(chalk.red(`  Failed: ${cycleResults.failed}`));
-    }
-    if (cycleResults.skipped > 0) {
-      console.log(chalk.gray(`  Skipped: ${cycleResults.skipped}`));
+    if (cycleStats.rateLimited > 0) {
+      console.log(chalk.yellow(`  Rate limited: ${cycleStats.rateLimited}`));
     }
     console.log(chalk.blue('----------------------------------------\n'));
 
     await this.logger.info(`Cycle ${this.cycleCount} complete`);
     await this.logger.info(`  Duration: ${formatDuration(cycleDuration)}`);
-    await this.logger.info(`  Completed: ${cycleResults.completed}, Rate limited: ${cycleResults.rateLimited}, Failed: ${cycleResults.failed}, Skipped: ${cycleResults.skipped}`);
+    await this.logger.info(`  Successful: ${cycleStats.successful}, Failed: ${cycleStats.failed}, Rate limited: ${cycleStats.rateLimited}`);
+
+    // Write summary log with TOTALS and per-cycle summaries
+    await this._writeSummaryLog(cycleStats);
   }
 
   /**
@@ -341,6 +375,10 @@ export class AutoRunner {
         status: summary.status,
         videosCompleted: summary.videosCompleted,
         totalVideos: batchSize,
+        totalAttempts: summary.totalAttempts || 0,
+        successfulAttempts: summary.successfulAttempts || 0,
+        failedAttempts: summary.failedAttempts || 0,
+        videosRateLimited: summary.videosRateLimited || 0,
         stopReason: summary.stopReason,
       };
     } catch (error) {
@@ -350,6 +388,10 @@ export class AutoRunner {
         error: error.message,
         videosCompleted: 0,
         totalVideos: batchSize,
+        totalAttempts: 0,
+        successfulAttempts: 0,
+        failedAttempts: 0,
+        videosRateLimited: 0,
       };
     }
   }
@@ -539,6 +581,65 @@ export class AutoRunner {
   }
 
   /**
+   * Write the summary log file with TOTALS at top and per-cycle summaries below
+   */
+  async _writeSummaryLog(cycleStats) {
+    const now = new Date();
+    const cycleTimestamp = formatDisplayTimestamp(now);
+
+    // Store this cycle's summary
+    this.cycleSummaries.push({
+      cycleNumber: this.cycleCount,
+      timestamp: cycleTimestamp,
+      stats: { ...cycleStats },
+    });
+
+    // Build the summary file content
+    const lines = [];
+
+    // TOTALS section at top
+    lines.push('---');
+    lines.push(`📊 AUTORUN TOTALS (${this.sessionStats.totalCycles} cycles, last updated ${cycleTimestamp}):`);
+    lines.push(`  Session started: ${formatDisplayTimestamp(this.sessionStartTime)}`);
+    lines.push(`  Workers: ${this.sessionStats.parallelism}`);
+    lines.push(`  Total attempts: ${this.sessionStats.totalAttempts}`);
+    lines.push(`    ✓ Successful: ${this.sessionStats.totalSuccessful} (${this.sessionStats.totalSuccessful} videos)`);
+    lines.push(`    ✗ Failed: ${this.sessionStats.totalFailed} (${this.sessionStats.totalFailed} videos)`);
+    if (this.sessionStats.totalRateLimited > 0) {
+      lines.push(`  Rate limited: ${this.sessionStats.totalRateLimited} videos`);
+    }
+    lines.push('---');
+    lines.push('');
+
+    // Per-cycle summaries (newest first)
+    for (let i = this.cycleSummaries.length - 1; i >= 0; i--) {
+      const cycle = this.cycleSummaries[i];
+      lines.push(`--- Cycle ${cycle.cycleNumber} (${cycle.timestamp}) ---`);
+      lines.push('📊 Auto-Run Summary:');
+      lines.push(`  Workers: ${cycle.stats.parallelism}`);
+      lines.push(`  Total attempts: ${cycle.stats.totalAttempts}`);
+      lines.push(`    ✓ Successful: ${cycle.stats.successful} (${cycle.stats.successful} videos)`);
+      lines.push(`    ✗ Failed: ${cycle.stats.failed} (${cycle.stats.failed} videos)`);
+      if (cycle.stats.rateLimited > 0) {
+        lines.push(`  Rate limited: ${cycle.stats.rateLimited} videos`);
+      }
+      lines.push(`  Status: ${cycle.stats.status}`);
+      if (cycle.stats.stopReason) {
+        lines.push(`  Stop reason: ${cycle.stats.stopReason}`);
+      }
+      lines.push('---');
+      lines.push('');
+    }
+
+    // Write the entire file
+    try {
+      await fs.writeFile(this.summaryLogPath, lines.join('\n'), 'utf-8');
+    } catch (error) {
+      await this.logger.error('Failed to write summary log', error);
+    }
+  }
+
+  /**
    * Print final session summary
    */
   async _printSessionSummary() {
@@ -548,26 +649,23 @@ export class AutoRunner {
 
     console.log(chalk.gray(`Session ID: ${this.sessionId}`));
     console.log(chalk.gray(`Total cycles: ${this.sessionStats.totalCycles}`));
-    console.log(chalk.gray(`Total configs run: ${this.sessionStats.totalConfigsRun}`));
-    console.log(chalk.green(`  Completed: ${this.sessionStats.totalCompleted}`));
-    if (this.sessionStats.totalRateLimited > 0) {
-      console.log(chalk.yellow(`  Rate limited: ${this.sessionStats.totalRateLimited}`));
-    }
+    console.log(chalk.gray(`Total attempts: ${this.sessionStats.totalAttempts}`));
+    console.log(chalk.green(`  Successful: ${this.sessionStats.totalSuccessful}`));
     if (this.sessionStats.totalFailed > 0) {
       console.log(chalk.red(`  Failed: ${this.sessionStats.totalFailed}`));
     }
-    if (this.sessionStats.totalSkipped > 0) {
-      console.log(chalk.gray(`  Skipped: ${this.sessionStats.totalSkipped}`));
+    if (this.sessionStats.totalRateLimited > 0) {
+      console.log(chalk.yellow(`  Rate limited: ${this.sessionStats.totalRateLimited}`));
     }
-    console.log(chalk.gray(`\nSession logs: ${this.sessionDir}\n`));
+    console.log(chalk.gray(`\nSummary log: ${this.summaryLogPath}`));
+    console.log(chalk.gray(`Detailed logs: ${this.sessionDir}\n`));
 
     await this.logger.info('=== Session Summary ===');
     await this.logger.info(`Total cycles: ${this.sessionStats.totalCycles}`);
-    await this.logger.info(`Total configs run: ${this.sessionStats.totalConfigsRun}`);
-    await this.logger.info(`  Completed: ${this.sessionStats.totalCompleted}`);
-    await this.logger.info(`  Rate limited: ${this.sessionStats.totalRateLimited}`);
+    await this.logger.info(`Total attempts: ${this.sessionStats.totalAttempts}`);
+    await this.logger.info(`  Successful: ${this.sessionStats.totalSuccessful}`);
     await this.logger.info(`  Failed: ${this.sessionStats.totalFailed}`);
-    await this.logger.info(`  Skipped: ${this.sessionStats.totalSkipped}`);
+    await this.logger.info(`  Rate limited: ${this.sessionStats.totalRateLimited}`);
   }
 }
 

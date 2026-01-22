@@ -156,7 +156,7 @@ npm start accounts list
 
 ### Checking Runs
 
-Each run writes a `manifest.json` and `run.log` under `~/GrokBatchRuns/<job-name>/` for progress and debugging.
+Each run writes a `run.log` under `./logs/<job-name>/` for progress and debugging.
 
 ## Troubleshooting Common Issues
 
@@ -176,12 +176,12 @@ VIDEO_GENERATION_TIMEOUT: 120000  // Increase to 2 minutes
 
 ### Issue: Too many failures
 
-Check the debug folder:
+Check the run log:
 ```bash
-open ~/GrokBatchRuns/your-job/debug/
+cat ./logs/your-job/run.log
 ```
 
-Review error screenshots to see what went wrong in the UI.
+Review error messages to see what went wrong.
 
 ### Issue: Session expired mid-run
 

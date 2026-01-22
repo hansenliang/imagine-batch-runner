@@ -148,17 +148,9 @@ src/
 
 ### Run Directory Structure (Parallel)
 ```
-~/GrokBatchRuns/job_name/
-├── manifest.json             # Shared state
-├── manifest.lock            # Lock file (auto-managed)
-├── run.log                  # Combined logs from all workers
-├── debug/
-│   ├── worker-0_error_*.png # Worker-specific debug
-│   └── worker-5_error_*.png
-└── worker-profiles/         # Temporary (auto-cleaned)
-    ├── worker-0/
-    ├── worker-1/
-    └── ...
+./logs/job_name/
+└── run.log                  # Combined logs from all workers
+                             # (manifest.json and worker-profiles/ auto-cleaned after run)
 ```
 
 ## Thread Safety

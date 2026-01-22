@@ -144,7 +144,6 @@ export class ManifestManager {
   async init(options) {
     // Ensure run directory exists
     await fs.mkdir(this.runDir, { recursive: true });
-    await fs.mkdir(path.join(this.runDir, 'debug'), { recursive: true });
 
     // Create manifest
     this.manifest = ManifestManager.createManifest(options);

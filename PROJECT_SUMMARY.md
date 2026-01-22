@@ -18,7 +18,6 @@ A production-ready CLI tool for batch-generating videos from Grok Imagine image 
    - Handles "Make video" vs "Redo" button scenarios
    - Prompt entry and submission
    - Wait for completion with timeout
-   - Debug artifact capture on failures
 
 3. **Manifest Manager** (`src/core/manifest.js`)
    - Run state persistence (JSON)
@@ -65,7 +64,7 @@ Centralized configuration for:
 | Batch generation (N ≤ 100) | ✅ | Configurable batch size, default 10, max 100 |
 | Rate-limit detection | ✅ | UI toast/message detection + disabled button checks |
 | Graceful stop on rate limit | ✅ | STOPPED_RATE_LIMIT status, preserves state |
-| Debug artifacts | ✅ | Screenshots + HTML on errors |
+| Debug artifacts | ❌ | Removed for simplicity (use run.log) |
 | Account setup & persistence | ✅ | Headed browser login, profile directory storage |
 | Run logs and metadata | ✅ | run.log + manifest.json per run |
 
@@ -107,11 +106,13 @@ Imagine batch runner/
 │   ├── accounts.json            # Account registry
 │   └── <account-alias>/         # Persistent browser data
 │
-└── ~/GrokBatchRuns/             # (Created at runtime) Run outputs
-    └── <job-name>/
-        ├── manifest.json        # Run state
-        ├── run.log             # Detailed logs
-        └── debug/              # Screenshots
+└── logs/                        # (Created at runtime) Run outputs
+    ├── <job-name>/
+    │   └── run.log              # Detailed logs (operational files auto-cleaned)
+    ├── autorun-<timestamp>.log  # Autorun session summaries
+    └── autorun/
+        └── autorun_<timestamp>/
+            └── run.log          # Autorun detailed logs
 ```
 
 ## Technical Decisions & Rationale
@@ -136,7 +137,7 @@ Imagine batch runner/
 ### Resilience Strategies
 1. **Centralized selectors**: Easy to update when UI changes
 2. **Multiple detection methods**: Check for buttons, toasts, disabled states
-3. **Debug artifacts**: Always capture state on failure
+3. **Detailed logging**: Capture all events in run.log
 4. **Graceful degradation**: Continue on single-item failures
 
 ### State Management

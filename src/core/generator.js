@@ -1,5 +1,4 @@
 import config, { selectors } from '../config.js';
-import path from 'path';
 
 /**
  * Sleep utility
@@ -22,7 +21,7 @@ export class VideoGenerator {
    * Generate a single video from the current permalink (single attempt)
    * Returns: { success, rateLimited, attempted, error }
    */
-  async generate(index, prompt, debugDir) {
+  async generate(index, prompt) {
     let lastError = null;
     const startTime = Date.now();
 
@@ -47,7 +46,6 @@ export class VideoGenerator {
       // Rate limit detected before generation starts - doesn't count as attempt
       if (error.message?.includes('RATE_LIMIT')) {
         this.logger.warn(`[Attempt ${index + 1}] Rate limit detected (not attempted)`);
-        await this._saveDebugArtifacts(index, debugDir, error);
         return {
           success: false,
           rateLimited: true,
@@ -62,7 +60,6 @@ export class VideoGenerator {
     // Non-rate-limit error = failed attempt
     const duration = Date.now() - startTime;
     this.logger.error(`[Attempt ${index + 1}] Failed: ${lastError?.message}`);
-    await this._saveDebugArtifacts(index, debugDir, lastError);
 
     return {
       success: false,
@@ -461,24 +458,6 @@ export class VideoGenerator {
 
       // 5. Wait before next check
       await sleep(checkInterval);
-    }
-  }
-
-  /**
-   * Save debug artifacts on failure
-   */
-  async _saveDebugArtifacts(index, debugDir, error) {
-    try {
-      const timestamp = Date.now();
-      const screenshotPath = path.join(debugDir, `error_${index}_${timestamp}.png`);
-      const htmlPath = path.join(debugDir, `error_${index}_${timestamp}.html`);
-
-      await this.browser.screenshot(screenshotPath);
-      await this.browser.saveHTML(htmlPath);
-
-      this.logger.debug(`Debug artifacts saved for attempt ${index}`);
-    } catch (saveError) {
-      this.logger.warn(`Failed to save debug artifacts: ${saveError.message}`);
     }
   }
 

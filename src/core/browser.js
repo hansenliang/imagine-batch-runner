@@ -108,38 +108,6 @@ export class BrowserManager {
   }
 
   /**
-   * Take screenshot for debugging
-   */
-  async screenshot(filepath) {
-    if (!this.page) return;
-
-    try {
-      await this.page.screenshot({
-        path: filepath,
-        fullPage: true,
-      });
-      this.logger.debug(`Screenshot saved: ${filepath}`);
-    } catch (error) {
-      this.logger.warn(`Failed to take screenshot: ${error.message}`);
-    }
-  }
-
-  /**
-   * Save HTML snapshot
-   */
-  async saveHTML(filepath) {
-    if (!this.page) return;
-
-    try {
-      const html = await this.page.content();
-      await fs.writeFile(filepath, html, 'utf-8');
-      this.logger.debug(`HTML saved: ${filepath}`);
-    } catch (error) {
-      this.logger.warn(`Failed to save HTML: ${error.message}`);
-    }
-  }
-
-  /**
    * Check if user is authenticated
    */
   async isAuthenticated() {

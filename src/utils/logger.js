@@ -1,5 +1,4 @@
 import fs from 'fs/promises';
-import path from 'path';
 import chalk from 'chalk';
 
 export class Logger {
@@ -12,7 +11,8 @@ export class Logger {
     if (!this.logFile) return;
 
     try {
-      const timestamp = new Date().toISOString();
+      const now = new Date();
+      const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
       await fs.appendFile(this.logFile, `[${timestamp}] ${message}\n`);
     } catch (error) {
       // Silent fail for logging errors
@@ -66,13 +66,6 @@ export class Logger {
 
   async logToFileOnly(message) {
     await this._writeToFile(message);
-  }
-
-  async progress(current, total, message = '') {
-    const percentage = Math.round((current / total) * 100);
-    const bar = '█'.repeat(Math.floor(percentage / 5)) + '░'.repeat(20 - Math.floor(percentage / 5));
-    const formatted = `[${bar}] ${current}/${total} (${percentage}%) ${message}`;
-    console.log(chalk.cyan(formatted));
   }
 }
 

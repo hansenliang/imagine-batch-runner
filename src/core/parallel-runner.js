@@ -7,13 +7,6 @@ import { Logger } from '../utils/logger.js';
 import { ParallelWorker } from './worker.js';
 
 /**
- * Sleep utility
- */
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-/**
  * Parallel Runner - coordinates multiple workers for concurrent video generation
  */
 export class ParallelRunner {
@@ -194,6 +187,35 @@ export class ParallelRunner {
 
     const cleanupDurationMs = Date.now() - cleanupStart;
     await this.logger.success(`Cleanup complete in ${cleanupDurationMs}ms`);
+
+    // Clean up operational files (keep run.log)
+    await this.cleanupOperationalFiles();
+  }
+
+  /**
+   * Clean up operational files after run completes (keeps run.log)
+   */
+  async cleanupOperationalFiles() {
+    const filesToDelete = [
+      path.join(this.runDir, 'manifest.json'),
+      path.join(this.runDir, 'manifest.lock'),
+    ];
+
+    for (const filePath of filesToDelete) {
+      try {
+        await fs.rm(filePath, { force: true });
+      } catch (error) {
+        // Ignore errors - file may not exist
+      }
+    }
+
+    // Remove worker-profiles directory if it exists
+    const workerProfilesDir = path.join(this.runDir, 'worker-profiles');
+    try {
+      await fs.rm(workerProfilesDir, { recursive: true, force: true });
+    } catch (error) {
+      // Ignore errors
+    }
   }
 
   /**
