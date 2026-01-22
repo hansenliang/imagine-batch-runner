@@ -172,21 +172,6 @@ run
       await runner.init();
       const summary = await runner.start();
 
-      // Print summary
-      console.log(chalk.blue('\n📊 Run Summary:\n'));
-      console.log(chalk.gray(`  Workers: ${parallelism}`));
-      console.log(chalk.gray(`  Total attempts: ${summary.totalAttempts} (successes + failures)`));
-      console.log(chalk.green(`    ✓ Successful: ${summary.successfulAttempts} (${summary.videosCompleted} videos)`));
-      console.log(chalk.red(`    ✗ Failed: ${summary.failedAttempts} (${summary.videosFailed} videos)`));
-      if (summary.videosRateLimited > 0) {
-        console.log(chalk.yellow(`  Rate limited: ${summary.videosRateLimited} videos (not attempted)`));
-      }
-      console.log(chalk.gray(`  Status: ${summary.status}`));
-      if (summary.stopReason) {
-        console.log(chalk.yellow(`  Stop reason: ${summary.stopReason}`));
-      }
-      console.log('');
-
       // Update account last used
       await accountManager.updateLastUsed(options.account);
 

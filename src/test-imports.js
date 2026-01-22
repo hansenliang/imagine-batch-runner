@@ -8,12 +8,10 @@ import { AccountManager } from './core/accounts.js';
 import { BrowserManager } from './core/browser.js';
 import { VideoGenerator } from './core/generator.js';
 import { ManifestManager } from './core/manifest.js';
-import { BatchRunner } from './core/runner.js';
 import { ParallelRunner } from './core/parallel-runner.js';
 import { ParallelWorker } from './core/worker.js';
 import { Logger } from './utils/logger.js';
 import { FileLock } from './utils/lock.js';
-import { retry, sleep, calculateBackoff } from './utils/retry.js';
 import config, { selectors } from './config.js';
 
 console.log('✓ All imports successful');

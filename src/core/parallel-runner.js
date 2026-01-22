@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs/promises';
+import chalk from 'chalk';
 import config from '../config.js';
 import { ManifestManager } from './manifest.js';
 import { Logger } from '../utils/logger.js';
@@ -48,7 +49,6 @@ export class ParallelRunner {
   async init() {
     // Create run directory
     await fs.mkdir(this.runDir, { recursive: true });
-    await fs.mkdir(path.join(this.runDir, 'debug'), { recursive: true });
     await fs.mkdir(path.join(this.runDir, 'worker-profiles'), { recursive: true });
 
     // Initialize logger
@@ -203,6 +203,22 @@ export class ParallelRunner {
   async _printSummary() {
     const summary = this.manifest.getSummary();
 
+    // Console output: color-coded emoji summary
+    console.log(chalk.blue('\n📊 Run Summary:\n'));
+    console.log(chalk.gray(`  Workers: ${this.parallelism}`));
+    console.log(chalk.gray(`  Total attempts: ${summary.totalAttempts} (successes + failures)`));
+    console.log(chalk.green(`    ✓ Successful: ${summary.successfulAttempts} (${summary.videosCompleted} videos)`));
+    console.log(chalk.red(`    ✗ Failed: ${summary.failedAttempts} (${summary.videosFailed} videos)`));
+    if (summary.videosRateLimited > 0) {
+      console.log(chalk.yellow(`  Rate limited: ${summary.videosRateLimited} videos (not attempted)`));
+    }
+    console.log(chalk.gray(`  Status: ${summary.status}`));
+    if (summary.stopReason) {
+      console.log(chalk.yellow(`  Stop reason: ${summary.stopReason}`));
+    }
+    console.log('');
+
+    // File log: plain text for run.log
     await this.logger.info('=== Run Summary ===');
     await this.logger.info(`Workers: ${this.parallelism}`);
     await this.logger.info(`Total attempts: ${summary.totalAttempts} (successes + failures)`);
@@ -212,12 +228,9 @@ export class ParallelRunner {
       await this.logger.info(`Rate limited: ${summary.videosRateLimited} videos (not attempted)`);
     }
     await this.logger.info(`Status: ${summary.status}`);
-
     if (summary.stopReason) {
       await this.logger.info(`Stop reason: ${summary.stopReason}`);
     }
-
-    await this.logger.info(`Run directory: ${this.runDir}`);
   }
 
 }
