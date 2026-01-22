@@ -392,7 +392,9 @@ export class VideoGenerator {
       const loading = await this.page.$(selectors.LOADING_INDICATOR);
       const progress = await this.page.$(selectors.VIDEO_PROGRESS_BAR);
       const video = await this.page.$(selectors.VIDEO_CONTAINER);
-      if (loading || progress || video) {
+      // Only loading/progress indicators count as generation started
+      // A video element alone could be stale from a previous session
+      if (loading || progress) {
         sawGenerationSignal = true;
       }
 
@@ -433,8 +435,8 @@ export class VideoGenerator {
         throw new Error(`GENERATION_ERROR: ${genError.message}`);
       }
 
-      // 2. Check for success
-      if (video) {
+      // 2. Check for success (only if we saw generation actually start)
+      if (video && sawGenerationSignal) {
         // Video element found, verify it's actually playable
         const isPlayable = await this._verifyVideoPlayable(video);
         if (isPlayable) {
