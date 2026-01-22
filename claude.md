@@ -47,6 +47,7 @@ Each worker uses its own Chrome profile copy and writes logs to a run directory.
 2. **Explore thoroughly**: When investigating issues, find at least 3 likely causes before concluding. Don't stop at the first plausible explanation—keep investigating until you have high confidence
 3. **Understand context**: Search for existing patterns in the codebase before implementing new code. Follow established conventions
 4. **Clarify ambiguity**: If requirements are unclear or there are multiple valid approaches, list pros/cons and ask for clarification
+5. **Plan and align with the user**: Unless it's a trivial change, you should always outline your analysis of the request, any competing theories / options and which one you think is the best / most likely, and review the approach with the user for approval before making any code changes.
 
 ## While Making Changes
 1. **Small increments**: Break complex tasks into small, testable steps. Implement and verify each step before moving on
