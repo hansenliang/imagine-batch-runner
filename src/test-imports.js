@@ -5,7 +5,6 @@
  */
 
 import { AccountManager } from './core/accounts.js';
-import { BrowserManager } from './core/browser.js';
 import { VideoGenerator } from './core/generator.js';
 import { ManifestManager } from './core/manifest.js';
 import { ParallelRunner } from './core/parallel-runner.js';

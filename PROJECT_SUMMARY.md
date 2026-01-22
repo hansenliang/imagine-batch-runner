@@ -93,7 +93,6 @@ Imagine batch runner/
 │   │
 │   ├── core/
 │   │   ├── accounts.js          # Account management
-│   │   ├── browser.js           # Legacy browser utilities
 │   │   ├── generator.js         # Video generation logic
 │   │   ├── manifest.js          # State persistence
 │   │   ├── parallel-runner.js   # Orchestration

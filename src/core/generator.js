@@ -11,10 +11,13 @@ function sleep(ms) {
  * Video generator - handles the generation state machine
  */
 export class VideoGenerator {
-  constructor(browser, logger) {
-    this.browser = browser;
+  /**
+   * @param {import('playwright').Page} page - Playwright page instance
+   * @param {import('../utils/logger.js').Logger} logger - Logger instance
+   */
+  constructor(page, logger) {
+    this.page = page;
     this.logger = logger;
-    this.page = browser.page;
   }
 
   /**
