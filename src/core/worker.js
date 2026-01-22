@@ -97,11 +97,7 @@ export class ParallelWorker {
       }
 
       // Create video generator
-      const mockBrowser = {
-        page: this.page,
-      };
-
-      this.generator = new VideoGenerator(mockBrowser, this.logger);
+      this.generator = new VideoGenerator(this.page, this.logger);
 
       this.logger.success(`[Worker ${this.workerId}] Ready`);
     } catch (error) {
