@@ -47,7 +47,20 @@ Completely refactored `_waitForCompletion()` method:
 - Logs progress every 10 seconds
 - Returns immediately on success or failure
 
-### 4. **Internal Retry Loop for Content Moderation** (generator.js)
+### 4. **Progress Percentage Detection** (generator.js)
+
+Added `_detectProgressPercentage()` to detect Grok's progress indicator:
+
+- Scans visible buttons for text matching `/(\d{1,3})%/` (e.g., "45%", "100%")
+- Used as a generation signal alongside loading indicators and progress bars
+- Enables success detection even when standard progress elements aren't present
+
+The `sawGenerationSignal` flag is set when any of these are detected:
+1. Loading indicator (`[aria-busy="true"], .loading, .spinner`)
+2. Progress bar (`[role="progressbar"], .progress-bar, [aria-valuenow]`)
+3. **Percentage text in buttons** (e.g., "45%") ← New
+
+### 5. **Internal Retry Loop for Content Moderation** (generator.js)
 
 The `generate()` method now wraps the entire generation process with `retryWithCooldown()`:
 
@@ -257,8 +270,7 @@ Changes are additive:
 
 Potential improvements for v1.2:
 
-1. **Progress bar monitoring** - Track % completion to detect stalls
-2. **Adaptive retry cooldown** - Increase cooldown after multiple failures
+1. **Adaptive retry cooldown** - Increase cooldown after multiple failures
 3. **Prompt variation** - Automatically rephrase prompts that fail moderation
 4. **Success rate tracking** - Log moderation success rate per prompt
 5. **Parallel worker support** - Already have file locking infrastructure

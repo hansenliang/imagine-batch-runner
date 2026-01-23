@@ -354,6 +354,35 @@ export class VideoGenerator {
   }
 
   /**
+   * Detect progress percentage in button text (e.g., "45%", "100%")
+   * Grok shows generation progress as percentage text in the button area
+   */
+  async _detectProgressPercentage() {
+    try {
+      const candidates = await this.page.$$('button, [role="button"]');
+
+      for (const candidate of candidates) {
+        const isVisible = await candidate.isVisible().catch(() => false);
+        if (!isVisible) continue;
+
+        const text = await candidate.innerText().catch(() => '');
+        // Match patterns like "45%", "100%", "0%"
+        const percentMatch = text.match(/(\d{1,3})%/);
+        if (percentMatch) {
+          return {
+            detected: true,
+            percentage: parseInt(percentMatch[1], 10),
+            text: text.trim(),
+          };
+        }
+      }
+      return { detected: false, percentage: null, text: null };
+    } catch (error) {
+      return { detected: false, percentage: null, text: null };
+    }
+  }
+
+  /**
    * Verify video is actually playable
    */
   async _verifyVideoPlayable(videoElement) {
@@ -409,10 +438,16 @@ export class VideoGenerator {
       const loading = await this.page.$(selectors.LOADING_INDICATOR);
       const progress = await this.page.$(selectors.VIDEO_PROGRESS_BAR);
       const video = await this.page.$(selectors.VIDEO_CONTAINER);
-      // Only loading/progress indicators count as generation started
+      const percentageProgress = await this._detectProgressPercentage();
+
+      // Check for generation signals - loading indicator, progress bar, or percentage text
       // A video element alone could be stale from a previous session
-      if (loading || progress) {
-        sawGenerationSignal = true;
+      if (!sawGenerationSignal) {
+        if (loading || progress || percentageProgress.detected) {
+          sawGenerationSignal = true;
+          const signal = loading ? 'loading indicator' : progress ? 'progress bar' : `${percentageProgress.percentage}%`;
+          this.logger.info(`[Attempt ${index + 1}] Generation signal detected: ${signal}`);
+        }
       }
 
       // Rate limit check (if before generation starts, stop immediately)
@@ -464,7 +499,7 @@ export class VideoGenerator {
 
       // 3. Check for timeout
       if (elapsed > config.VIDEO_GENERATION_TIMEOUT / 1000) {
-        this.logger.error(`[Attempt ${index + 1}] Generation timeout after ${elapsed}s`);
+        this.logger.error(`[Attempt ${index + 1}] Generation timeout after ${elapsed}s (sawGenerationSignal=${sawGenerationSignal}, video=${!!video})`);
         throw new Error(`TIMEOUT: Video generation exceeded ${config.VIDEO_GENERATION_TIMEOUT / 1000}s`);
       }
 
