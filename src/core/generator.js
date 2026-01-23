@@ -45,6 +45,7 @@ export class VideoGenerator {
         success: true,
         rateLimited: false,
         attempted: true,
+        contentModerated: false,
         durationMs: duration,
       };
     } catch (error) {
@@ -55,6 +56,7 @@ export class VideoGenerator {
           success: false,
           rateLimited: true,
           attempted: false,
+          contentModerated: false,
           error: error.message,
         };
       }
@@ -65,6 +67,7 @@ export class VideoGenerator {
           success: false,
           rateLimited: false,
           attempted: true,
+          contentModerated: true,
           error: error.message,
           durationMs: Date.now() - startTime,
         };
@@ -81,6 +84,7 @@ export class VideoGenerator {
       success: false,
       rateLimited: false,
       attempted: true,
+      contentModerated: false,
       error: lastError?.message || 'Unknown error',
       durationMs: duration,
     };

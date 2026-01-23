@@ -92,6 +92,7 @@ export class AutoRunner {
       totalAttempts: 0,
       totalSuccessful: 0,
       totalFailed: 0,
+      totalContentModerated: 0,
       totalRateLimited: 0,
       parallelism: 0,
     };
@@ -254,6 +255,7 @@ export class AutoRunner {
       totalAttempts: 0,
       successful: 0,
       failed: 0,
+      contentModerated: 0,
       rateLimited: 0,
       parallelism: 0,
       status: 'COMPLETED',
@@ -280,17 +282,18 @@ export class AutoRunner {
 
         // Accumulate stats from this run
         cycleStats.totalAttempts += result.totalAttempts;
-        cycleStats.successful += result.successfulAttempts;
-        cycleStats.failed += result.failedAttempts;
-        cycleStats.rateLimited += result.videosRateLimited;
+        cycleStats.successful += result.successful;
+        cycleStats.failed += result.failed;
+        cycleStats.contentModerated += result.contentModerated;
+        cycleStats.rateLimited += result.rateLimited;
         cycleStats.parallelism = Math.max(cycleStats.parallelism, parallelism);
 
         if (result.status === 'COMPLETED') {
-          console.log(chalk.green(`           -> Completed (${result.videosCompleted}/${result.totalVideos})\n`));
+          console.log(chalk.green(`           -> Completed (${result.successful}/${result.totalVideos})\n`));
         } else if (result.status === 'STOPPED_RATE_LIMIT') {
           cycleStats.status = 'STOPPED_RATE_LIMIT';
           cycleStats.stopReason = 'Rate limit detected';
-          console.log(chalk.yellow(`           -> Rate limited (${result.videosCompleted}/${result.totalVideos})\n`));
+          console.log(chalk.yellow(`           -> Rate limited (${result.successful}/${result.totalVideos})\n`));
         } else {
           cycleStats.status = 'FAILED';
           cycleStats.stopReason = result.error || 'Unknown error';
@@ -309,6 +312,7 @@ export class AutoRunner {
     this.sessionStats.totalAttempts += cycleStats.totalAttempts;
     this.sessionStats.totalSuccessful += cycleStats.successful;
     this.sessionStats.totalFailed += cycleStats.failed;
+    this.sessionStats.totalContentModerated += cycleStats.contentModerated;
     this.sessionStats.totalRateLimited += cycleStats.rateLimited;
     this.sessionStats.parallelism = Math.max(this.sessionStats.parallelism, cycleStats.parallelism);
 
@@ -318,6 +322,9 @@ export class AutoRunner {
     console.log(chalk.blue(`  Cycle ${this.cycleCount} Complete`));
     console.log(chalk.gray(`  Duration: ${formatDuration(cycleDuration)}`));
     console.log(chalk.green(`  Successful: ${cycleStats.successful}`));
+    if (cycleStats.contentModerated > 0) {
+      console.log(chalk.yellow(`  Content moderated: ${cycleStats.contentModerated}`));
+    }
     if (cycleStats.failed > 0) {
       console.log(chalk.red(`  Failed: ${cycleStats.failed}`));
     }
@@ -328,7 +335,7 @@ export class AutoRunner {
 
     await this.logger.info(`Cycle ${this.cycleCount} complete`);
     await this.logger.info(`  Duration: ${formatDuration(cycleDuration)}`);
-    await this.logger.info(`  Successful: ${cycleStats.successful}, Failed: ${cycleStats.failed}, Rate limited: ${cycleStats.rateLimited}`);
+    await this.logger.info(`  Successful: ${cycleStats.successful}, Content moderated: ${cycleStats.contentModerated}, Failed: ${cycleStats.failed}, Rate limited: ${cycleStats.rateLimited}`);
 
     // Write summary log with TOTALS and per-cycle summaries
     await this._writeSummaryLog(cycleStats);
@@ -373,12 +380,12 @@ export class AutoRunner {
 
       return {
         status: summary.status,
-        videosCompleted: summary.videosCompleted,
+        successful: summary.successful,
         totalVideos: batchSize,
         totalAttempts: summary.totalAttempts || 0,
-        successfulAttempts: summary.successfulAttempts || 0,
-        failedAttempts: summary.failedAttempts || 0,
-        videosRateLimited: summary.videosRateLimited || 0,
+        failed: summary.failed || 0,
+        contentModerated: summary.contentModerated || 0,
+        rateLimited: summary.rateLimited || 0,
         stopReason: summary.stopReason,
       };
     } catch (error) {
@@ -386,12 +393,12 @@ export class AutoRunner {
       return {
         status: 'FAILED',
         error: error.message,
-        videosCompleted: 0,
+        successful: 0,
         totalVideos: batchSize,
         totalAttempts: 0,
-        successfulAttempts: 0,
-        failedAttempts: 0,
-        videosRateLimited: 0,
+        failed: 0,
+        contentModerated: 0,
+        rateLimited: 0,
       };
     }
   }
@@ -603,10 +610,15 @@ export class AutoRunner {
     lines.push(`  Session started: ${formatDisplayTimestamp(this.sessionStartTime)}`);
     lines.push(`  Workers: ${this.sessionStats.parallelism}`);
     lines.push(`  Total attempts: ${this.sessionStats.totalAttempts}`);
-    lines.push(`    ✓ Successful: ${this.sessionStats.totalSuccessful} (${this.sessionStats.totalSuccessful} videos)`);
-    lines.push(`    ✗ Failed: ${this.sessionStats.totalFailed} (${this.sessionStats.totalFailed} videos)`);
+    lines.push(`    ✓ Successful: ${this.sessionStats.totalSuccessful}`);
+    if (this.sessionStats.totalContentModerated > 0) {
+      lines.push(`    ⚠ Content moderated: ${this.sessionStats.totalContentModerated}`);
+    }
+    if (this.sessionStats.totalFailed > 0) {
+      lines.push(`    ✗ Failed: ${this.sessionStats.totalFailed}`);
+    }
     if (this.sessionStats.totalRateLimited > 0) {
-      lines.push(`  Rate limited: ${this.sessionStats.totalRateLimited} videos`);
+      lines.push(`  Rate limited: ${this.sessionStats.totalRateLimited}`);
     }
     lines.push('---');
     lines.push('');
@@ -618,10 +630,15 @@ export class AutoRunner {
       lines.push('📊 Auto-Run Summary:');
       lines.push(`  Workers: ${cycle.stats.parallelism}`);
       lines.push(`  Total attempts: ${cycle.stats.totalAttempts}`);
-      lines.push(`    ✓ Successful: ${cycle.stats.successful} (${cycle.stats.successful} videos)`);
-      lines.push(`    ✗ Failed: ${cycle.stats.failed} (${cycle.stats.failed} videos)`);
+      lines.push(`    ✓ Successful: ${cycle.stats.successful}`);
+      if (cycle.stats.contentModerated > 0) {
+        lines.push(`    ⚠ Content moderated: ${cycle.stats.contentModerated}`);
+      }
+      if (cycle.stats.failed > 0) {
+        lines.push(`    ✗ Failed: ${cycle.stats.failed}`);
+      }
       if (cycle.stats.rateLimited > 0) {
-        lines.push(`  Rate limited: ${cycle.stats.rateLimited} videos`);
+        lines.push(`  Rate limited: ${cycle.stats.rateLimited}`);
       }
       lines.push(`  Status: ${cycle.stats.status}`);
       if (cycle.stats.stopReason) {
@@ -651,6 +668,9 @@ export class AutoRunner {
     console.log(chalk.gray(`Total cycles: ${this.sessionStats.totalCycles}`));
     console.log(chalk.gray(`Total attempts: ${this.sessionStats.totalAttempts}`));
     console.log(chalk.green(`  Successful: ${this.sessionStats.totalSuccessful}`));
+    if (this.sessionStats.totalContentModerated > 0) {
+      console.log(chalk.yellow(`  Content moderated: ${this.sessionStats.totalContentModerated}`));
+    }
     if (this.sessionStats.totalFailed > 0) {
       console.log(chalk.red(`  Failed: ${this.sessionStats.totalFailed}`));
     }
@@ -664,6 +684,7 @@ export class AutoRunner {
     await this.logger.info(`Total cycles: ${this.sessionStats.totalCycles}`);
     await this.logger.info(`Total attempts: ${this.sessionStats.totalAttempts}`);
     await this.logger.info(`  Successful: ${this.sessionStats.totalSuccessful}`);
+    await this.logger.info(`  Content moderated: ${this.sessionStats.totalContentModerated}`);
     await this.logger.info(`  Failed: ${this.sessionStats.totalFailed}`);
     await this.logger.info(`  Rate limited: ${this.sessionStats.totalRateLimited}`);
   }

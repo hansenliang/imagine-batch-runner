@@ -41,10 +41,11 @@ export class ManifestManager {
       nextIndex: 0,
       completedCount: 0,
       failedCount: 0,
+      contentModeratedCount: 0,
       rateLimitedCount: 0,
       items: Array.from({ length: batchSize }, (_, i) => ({
         index: i,
-        status: 'PENDING', // PENDING, IN_PROGRESS, COMPLETED, FAILED, RATE_LIMITED
+        status: 'PENDING', // PENDING, IN_PROGRESS, COMPLETED, FAILED, CONTENT_MODERATED, RATE_LIMITED
         attempts: 0,
         createdAt: null,
         completedAt: null,
@@ -124,6 +125,8 @@ export class ManifestManager {
       this.manifest.completedCount = Math.max(0, this.manifest.completedCount - 1);
     } else if (prevStatus === 'FAILED') {
       this.manifest.failedCount = Math.max(0, this.manifest.failedCount - 1);
+    } else if (prevStatus === 'CONTENT_MODERATED') {
+      this.manifest.contentModeratedCount = Math.max(0, this.manifest.contentModeratedCount - 1);
     } else if (prevStatus === 'RATE_LIMITED') {
       this.manifest.rateLimitedCount = Math.max(0, this.manifest.rateLimitedCount - 1);
     }
@@ -133,6 +136,8 @@ export class ManifestManager {
       item.completedAt = new Date().toISOString();
     } else if (nextStatus === 'FAILED') {
       this.manifest.failedCount++;
+    } else if (nextStatus === 'CONTENT_MODERATED') {
+      this.manifest.contentModeratedCount++;
     } else if (nextStatus === 'RATE_LIMITED') {
       this.manifest.rateLimitedCount++;
     }
@@ -210,17 +215,18 @@ export class ManifestManager {
 
     const completed = items.filter(i => i.status === 'COMPLETED');
     const failed = items.filter(i => i.status === 'FAILED');
+    const contentModerated = items.filter(i => i.status === 'CONTENT_MODERATED');
     const rateLimited = items.filter(i => i.status === 'RATE_LIMITED');
     const pending = items.filter(i => i.status === 'PENDING');
 
     return {
-      totalAttempts: completed.length + failed.length,
-      successfulAttempts: completed.length,
-      failedAttempts: failed.length,
-      videosCompleted: completed.length,
-      videosFailed: failed.length,
-      videosRateLimited: rateLimited.length,
-      videosRemaining: pending.length,
+      totalAttempts: completed.length + failed.length + contentModerated.length,
+      successful: completed.length,
+      failed: failed.length,
+      contentModerated: contentModerated.length,
+      rateLimited: rateLimited.length,
+      remaining: pending.length,
+      totalVideos: items.length,
       status,
       stopReason,
     };

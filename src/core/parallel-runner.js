@@ -228,11 +228,16 @@ export class ParallelRunner {
     // Console output: color-coded emoji summary
     console.log(chalk.blue('\n📊 Run Summary:\n'));
     console.log(chalk.gray(`  Workers: ${this.parallelism}`));
-    console.log(chalk.gray(`  Total attempts: ${summary.totalAttempts} (successes + failures)`));
-    console.log(chalk.green(`    ✓ Successful: ${summary.successfulAttempts} (${summary.videosCompleted} videos)`));
-    console.log(chalk.red(`    ✗ Failed: ${summary.failedAttempts} (${summary.videosFailed} videos)`));
-    if (summary.videosRateLimited > 0) {
-      console.log(chalk.yellow(`  Rate limited: ${summary.videosRateLimited} videos (not attempted)`));
+    console.log(chalk.gray(`  Total attempts: ${summary.totalAttempts}`));
+    console.log(chalk.green(`    ✓ Successful: ${summary.successful}`));
+    if (summary.contentModerated > 0) {
+      console.log(chalk.yellow(`    ⚠ Content moderated: ${summary.contentModerated}`));
+    }
+    if (summary.failed > 0) {
+      console.log(chalk.red(`    ✗ Failed: ${summary.failed}`));
+    }
+    if (summary.rateLimited > 0) {
+      console.log(chalk.yellow(`  Rate limited: ${summary.rateLimited} (not attempted)`));
     }
     console.log(chalk.gray(`  Status: ${summary.status}`));
     if (summary.stopReason) {
@@ -243,11 +248,16 @@ export class ParallelRunner {
     // File log only (console already has emoji summary above)
     await this.logger.logToFileOnly('=== Run Summary ===');
     await this.logger.logToFileOnly(`Workers: ${this.parallelism}`);
-    await this.logger.logToFileOnly(`Total attempts: ${summary.totalAttempts} (successes + failures)`);
-    await this.logger.logToFileOnly(`  Successful: ${summary.successfulAttempts} (${summary.videosCompleted} videos)`);
-    await this.logger.logToFileOnly(`  Failed: ${summary.failedAttempts} (${summary.videosFailed} videos)`);
-    if (summary.videosRateLimited > 0) {
-      await this.logger.logToFileOnly(`Rate limited: ${summary.videosRateLimited} videos (not attempted)`);
+    await this.logger.logToFileOnly(`Total attempts: ${summary.totalAttempts}`);
+    await this.logger.logToFileOnly(`  Successful: ${summary.successful}`);
+    if (summary.contentModerated > 0) {
+      await this.logger.logToFileOnly(`  Content moderated: ${summary.contentModerated}`);
+    }
+    if (summary.failed > 0) {
+      await this.logger.logToFileOnly(`  Failed: ${summary.failed}`);
+    }
+    if (summary.rateLimited > 0) {
+      await this.logger.logToFileOnly(`Rate limited: ${summary.rateLimited} (not attempted)`);
     }
     await this.logger.logToFileOnly(`Status: ${summary.status}`);
     if (summary.stopReason) {

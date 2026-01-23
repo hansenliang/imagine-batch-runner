@@ -21,8 +21,7 @@ export class Logger {
   }
 
   _formatMessage(level, message, data = null) {
-    const timestamp = new Date().toLocaleTimeString();
-    let formatted = `[${timestamp}] ${level}: ${message}`;
+    let formatted = `${level}: ${message}`;
     if (data) {
       formatted += '\n' + JSON.stringify(data, null, 2);
     }
@@ -31,19 +30,22 @@ export class Logger {
 
   async info(message, data = null) {
     const formatted = this._formatMessage('INFO', message, data);
-    console.log(chalk.blue(formatted));
+    const time = new Date().toLocaleTimeString();
+    console.log(chalk.blue(`[${time}] ${formatted}`));
     await this._writeToFile(formatted);
   }
 
   async success(message, data = null) {
     const formatted = this._formatMessage('SUCCESS', message, data);
-    console.log(chalk.green(formatted));
+    const time = new Date().toLocaleTimeString();
+    console.log(chalk.green(`[${time}] ${formatted}`));
     await this._writeToFile(formatted);
   }
 
   async warn(message, data = null) {
     const formatted = this._formatMessage('WARN', message, data);
-    console.log(chalk.yellow(formatted));
+    const time = new Date().toLocaleTimeString();
+    console.log(chalk.yellow(`[${time}] ${formatted}`));
     await this._writeToFile(formatted);
   }
 
@@ -53,14 +55,16 @@ export class Logger {
       stack: error?.stack,
       ...data
     });
-    console.error(chalk.red(formatted));
+    const time = new Date().toLocaleTimeString();
+    console.error(chalk.red(`[${time}] ${formatted}`));
     await this._writeToFile(formatted);
   }
 
   async debug(message, data = null) {
     if (process.env.DEBUG) {
       const formatted = this._formatMessage('DEBUG', message, data);
-      console.log(chalk.gray(formatted));
+      const time = new Date().toLocaleTimeString();
+      console.log(chalk.gray(`[${time}] ${formatted}`));
       await this._writeToFile(formatted);
     }
   }
