@@ -6,6 +6,7 @@ GrokBatchRuns/
 debug/
 logs/
 autorun-configs/
+downloads/
 
 # User-specific config files (may contain account info, permalinks, prompts)
 batch-config.json
