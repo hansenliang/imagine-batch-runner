@@ -31,11 +31,11 @@ export class VideoGenerator {
     const startTime = Date.now();
 
     try {
-      // Step 1: Find and click the generation button
-      await this._clickGenerationButton(index);
-
-      // Step 2: Enter prompt (if needed)
+      // Step 1: Ensure prompt is set correctly
       await this._enterPrompt(prompt, index);
+
+      // Step 2: Click the generation button
+      await this._clickGenerationButton(index);
 
       // Step 3: Wait for video generation to complete
       await this._waitForCompletion(index);
@@ -263,30 +263,44 @@ export class VideoGenerator {
   }
 
   /**
-   * Enter prompt in the text field
+   * Ensure prompt is set correctly in the text field
    */
   async _enterPrompt(prompt, index) {
+    // Wait for prompt input to be available
+    const waitTimeout = Math.max(5000, config.ELEMENT_WAIT_TIMEOUT);
+    let promptInput;
+    
     try {
-      // Try to find prompt input field
-      const promptInput = await this.page.$(selectors.PROMPT_INPUT);
-
-      if (promptInput) {
-        // Clear existing text
-        await promptInput.click({ clickCount: 3 }); // Triple-click to select all
-        await promptInput.fill(prompt);
-        this.logger.debug(`[Attempt ${index + 1}] Entered prompt`);
-
-        // Submit the prompt (usually Enter key or a submit button)
-        await promptInput.press('Enter');
-        await sleep(1000);
-      } else {
-        // Prompt might be pre-filled from previous generation (Redo case)
-        this.logger.debug(`[Attempt ${index + 1}] No prompt input found (might be pre-filled)`);
-      }
+      await this.page.waitForSelector(selectors.PROMPT_INPUT, { timeout: waitTimeout });
+      promptInput = await this.page.$(selectors.PROMPT_INPUT);
     } catch (error) {
-      this.logger.warn(`[Attempt ${index + 1}] Could not enter prompt: ${error.message}`);
-      // Continue anyway - prompt might already be set
+      throw new Error(`Prompt input not found after ${waitTimeout}ms`);
     }
+
+    if (!promptInput) {
+      throw new Error('Prompt input element not found');
+    }
+
+    // Read current value
+    const currentValue = await promptInput.inputValue().catch(() => '');
+    
+    // Only fill if value doesn't match
+    if (currentValue.trim() === prompt.trim()) {
+      this.logger.debug(`[Attempt ${index + 1}] Prompt already set correctly`);
+      return;
+    }
+
+    // Clear and fill with correct prompt
+    await promptInput.click({ clickCount: 3 }); // Triple-click to select all
+    await promptInput.fill(prompt);
+    
+    // Verify the value was set correctly
+    const verifyValue = await promptInput.inputValue().catch(() => '');
+    if (verifyValue.trim() !== prompt.trim()) {
+      throw new Error(`Prompt verification failed: expected "${prompt.slice(0, 50)}..." but got "${verifyValue.slice(0, 50)}..."`);
+    }
+    
+    this.logger.debug(`[Attempt ${index + 1}] Prompt entered and verified`);
   }
 
   /**
