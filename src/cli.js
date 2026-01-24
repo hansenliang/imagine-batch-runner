@@ -94,7 +94,8 @@ run
   .option('--count <number>', 'Number of videos to generate', String(config.DEFAULT_BATCH_SIZE))
   .option('--job-name <name>', 'Custom job name (default: auto-generated)')
   .option('--parallel <count>', 'Number of parallel workers (1-100)', '1')
-  .option('--auto-download', 'Automatically download generated videos', false)
+  .option('--auto-download', 'Automatically download generated videos', true)
+  .option('--auto-upscale', 'Automatically upscale videos to HD (requires --auto-download)', true)
   .option('--auto-delete', 'Automatically delete videos after download (requires --auto-download)', false)
   .action(async (options) => {
     try {
@@ -105,9 +106,11 @@ run
 
         // Merge config with options, but preserve config values for defaults
         // Save original values to detect if they were explicitly set
+        // Note: defaults are autoDownload=true, autoUpscale=true, autoDelete=false
         const parallelWasDefault = options.parallel === '1';
         const countWasDefault = options.count === String(config.DEFAULT_BATCH_SIZE);
-        const autoDownloadWasDefault = options.autoDownload === false;
+        const autoDownloadWasDefault = options.autoDownload === true;
+        const autoUpscaleWasDefault = options.autoUpscale === true;
         const autoDeleteWasDefault = options.autoDelete === false;
 
         options = { ...configData, ...options };
@@ -127,10 +130,20 @@ run
           options.autoDownload = configData.autoDownload;
         }
 
+        // If auto-upscale wasn't explicitly set on CLI, use config value
+        if (autoUpscaleWasDefault && configData.autoUpscale !== undefined) {
+          options.autoUpscale = configData.autoUpscale;
+        }
+
         // If auto-delete wasn't explicitly set on CLI, use config value
         if (autoDeleteWasDefault && configData.autoDelete !== undefined) {
           options.autoDelete = configData.autoDelete;
         }
+      }
+
+      // Validate auto-upscale requires auto-download
+      if (options.autoUpscale && !options.autoDownload) {
+        throw new Error('--auto-upscale requires --auto-download to be enabled');
       }
 
       // Validate auto-delete requires auto-download
@@ -180,6 +193,9 @@ run
       if (options.autoDownload) {
         console.log(chalk.gray(`Auto-download: enabled`));
       }
+      if (options.autoUpscale) {
+        console.log(chalk.gray(`Auto-upscale: enabled`));
+      }
       if (options.autoDelete) {
         console.log(chalk.gray(`Auto-delete: enabled`));
       }
@@ -194,6 +210,7 @@ run
         jobName: options.jobName,
         parallelism,
         autoDownload: options.autoDownload || false,
+        autoUpscale: options.autoUpscale || false,
         autoDelete: options.autoDelete || false,
       });
 

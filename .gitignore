@@ -5,6 +5,7 @@ GrokBatchRuns/
 .DS_Store
 debug/
 logs/
+cache/
 autorun-configs/
 downloads/
 

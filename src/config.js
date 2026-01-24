@@ -64,6 +64,7 @@ export const config = {
   PROJECT_ROOT: path.resolve(__dirname, '..'),
   PROFILES_DIR: path.resolve(__dirname, '..', 'profiles'),
   RUNS_DIR: path.resolve(__dirname, '..', 'logs'),
+  CACHE_DIR: path.resolve(__dirname, '..', 'cache'),
 
   // Timeouts (milliseconds)
   VIDEO_GENERATION_TIMEOUT: 60000, // 60 seconds
@@ -86,15 +87,22 @@ export const config = {
   DEFAULT_AUTORUN_CONFIG_DIR: './autorun-configs',
   AUTORUN_MIN_INTERVAL: 30 * 60 * 1000, // 30 minutes minimum
 
-  // Download/delete settings
-  DEFAULT_DOWNLOAD_ENABLED: false,
+  // Download/delete/upscale settings
+  DEFAULT_DOWNLOAD_ENABLED: true,
+  DEFAULT_UPSCALE_ENABLED: true,
   DEFAULT_DELETE_ENABLED: false,
   DOWNLOAD_DIR: path.resolve(__dirname, '..', 'downloads'),
   DOWNLOAD_TIMEOUT: 60000, // 60 seconds
   DOWNLOAD_RETRY_MAX: 3,
   DOWNLOAD_RETRY_DELAY: 2000, // 2 seconds between retries
   POST_GENERATION_DELAY: 1000, // 1s delay after generation before download
-  POST_DOWNLOAD_DELAY: 1000, // 1s delay after download before delete
+  POST_DOWNLOAD_DELAY: 1000, // 1s delay after download before delete/upscale
+
+  // Upscale settings
+  UPSCALE_TIMEOUT: 30000, // 30 seconds max wait for upscale
+  UPSCALE_POST_COMPLETION_DELAY: 3000, // 3 seconds after HD badge appears
+  UPSCALE_RETRY_MAX: 3,
+  UPSCALE_RETRY_DELAY: 2000, // 2 seconds between retries
 
   // Browser settings
   HEADED_MODE: true, // Default to headed for debugging
@@ -151,6 +159,11 @@ export const selectors = {
   // Delete confirmation modal
   DELETE_CONFIRM_BUTTON: '[role="dialog"] button:has-text("Delete"), [role="alertdialog"] button:has-text("Delete"), button:has-text("Confirm")',
   DELETE_MODAL: '[role="dialog"], [role="alertdialog"]',
+
+  // Upscale flow
+  UPSCALE_MENU_ITEM: '[role="menuitem"]:has-text("Upscale"), [role="menuitem"]:has-text("upscale")',
+  UPSCALING_INDICATOR: 'text=/upscaling/i',
+  HD_BADGE: 'text=/^HD$/i',
 };
 
 export default config;

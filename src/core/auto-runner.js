@@ -96,6 +96,8 @@ export class AutoRunner {
       totalRateLimited: 0,
       totalDownloaded: 0,
       totalDownloadFailed: 0,
+      totalUpscaled: 0,
+      totalUpscaleFailed: 0,
       totalDeleted: 0,
       totalDeleteFailed: 0,
       parallelism: 0,
@@ -263,6 +265,8 @@ export class AutoRunner {
       rateLimited: 0,
       downloaded: 0,
       downloadFailed: 0,
+      upscaled: 0,
+      upscaleFailed: 0,
       deleted: 0,
       deleteFailed: 0,
       parallelism: 0,
@@ -296,6 +300,8 @@ export class AutoRunner {
         cycleStats.rateLimited += result.rateLimited;
         cycleStats.downloaded += result.downloaded || 0;
         cycleStats.downloadFailed += result.downloadFailed || 0;
+        cycleStats.upscaled += result.upscaled || 0;
+        cycleStats.upscaleFailed += result.upscaleFailed || 0;
         cycleStats.deleted += result.deleted || 0;
         cycleStats.deleteFailed += result.deleteFailed || 0;
         cycleStats.parallelism = Math.max(cycleStats.parallelism, parallelism);
@@ -328,6 +334,8 @@ export class AutoRunner {
     this.sessionStats.totalRateLimited += cycleStats.rateLimited;
     this.sessionStats.totalDownloaded += cycleStats.downloaded;
     this.sessionStats.totalDownloadFailed += cycleStats.downloadFailed;
+    this.sessionStats.totalUpscaled += cycleStats.upscaled;
+    this.sessionStats.totalUpscaleFailed += cycleStats.upscaleFailed;
     this.sessionStats.totalDeleted += cycleStats.deleted;
     this.sessionStats.totalDeleteFailed += cycleStats.deleteFailed;
     this.sessionStats.parallelism = Math.max(this.sessionStats.parallelism, cycleStats.parallelism);
@@ -384,8 +392,9 @@ export class AutoRunner {
         batchSize,
         jobName,
         parallelism,
-        autoDownload: configData.autoDownload || false,
-        autoDelete: configData.autoDelete || false,
+        autoDownload: configData.autoDownload !== false,  // default true
+        autoUpscale: configData.autoUpscale !== false,    // default true
+        autoDelete: configData.autoDelete || false,       // default false
       });
 
       await runner.init();
@@ -406,6 +415,8 @@ export class AutoRunner {
         rateLimited: summary.rateLimited || 0,
         downloaded: summary.downloaded || 0,
         downloadFailed: summary.downloadFailed || 0,
+        upscaled: summary.upscaled || 0,
+        upscaleFailed: summary.upscaleFailed || 0,
         deleted: summary.deleted || 0,
         deleteFailed: summary.deleteFailed || 0,
         stopReason: summary.stopReason,
@@ -518,8 +529,13 @@ export class AutoRunner {
       }
     }
 
+    // Auto-upscale requires auto-download
+    if (configData.autoUpscale && configData.autoDownload === false) {
+      errors.push('autoUpscale requires autoDownload to be enabled');
+    }
+
     // Auto-delete requires auto-download
-    if (configData.autoDelete && !configData.autoDownload) {
+    if (configData.autoDelete && configData.autoDownload === false) {
       errors.push('autoDelete requires autoDownload to be enabled');
     }
 
@@ -710,6 +726,12 @@ export class AutoRunner {
         console.log(chalk.yellow(`  Download failed: ${this.sessionStats.totalDownloadFailed}`));
       }
     }
+    if (this.sessionStats.totalUpscaled > 0 || this.sessionStats.totalUpscaleFailed > 0) {
+      console.log(chalk.green(`  Upscaled: ${this.sessionStats.totalUpscaled}`));
+      if (this.sessionStats.totalUpscaleFailed > 0) {
+        console.log(chalk.yellow(`  Upscale failed: ${this.sessionStats.totalUpscaleFailed}`));
+      }
+    }
     if (this.sessionStats.totalDeleted > 0 || this.sessionStats.totalDeleteFailed > 0) {
       console.log(chalk.green(`  Deleted: ${this.sessionStats.totalDeleted}`));
       if (this.sessionStats.totalDeleteFailed > 0) {
@@ -729,6 +751,10 @@ export class AutoRunner {
     if (this.sessionStats.totalDownloaded > 0 || this.sessionStats.totalDownloadFailed > 0) {
       await this.logger.info(`  Downloaded: ${this.sessionStats.totalDownloaded}`);
       await this.logger.info(`  Download failed: ${this.sessionStats.totalDownloadFailed}`);
+    }
+    if (this.sessionStats.totalUpscaled > 0 || this.sessionStats.totalUpscaleFailed > 0) {
+      await this.logger.info(`  Upscaled: ${this.sessionStats.totalUpscaled}`);
+      await this.logger.info(`  Upscale failed: ${this.sessionStats.totalUpscaleFailed}`);
     }
     if (this.sessionStats.totalDeleted > 0 || this.sessionStats.totalDeleteFailed > 0) {
       await this.logger.info(`  Deleted: ${this.sessionStats.totalDeleted}`);

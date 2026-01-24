@@ -19,6 +19,7 @@ export class ParallelRunner {
       jobName = `job_${Date.now()}`,
       parallelism = config.DEFAULT_PARALLELISM || 10,
       autoDownload = false,
+      autoUpscale = false,
       autoDelete = false,
     } = options;
 
@@ -29,10 +30,12 @@ export class ParallelRunner {
     this.jobName = jobName;
     this.parallelism = parallelism;
     this.autoDownload = autoDownload;
+    this.autoUpscale = autoUpscale;
     this.autoDelete = autoDelete;
 
     // Runtime state
-    this.runDir = path.join(config.RUNS_DIR, this.jobName);
+    this.runDir = path.join(config.RUNS_DIR, this.jobName);  // logs only
+    this.cacheDir = path.join(config.CACHE_DIR, this.jobName);  // ephemeral files (manifest, worker-profiles)
     this.downloadDir = autoDownload ? path.join(config.DOWNLOAD_DIR, this.jobName) : null;
     this.manifest = null;
     this.logger = null;
@@ -45,11 +48,12 @@ export class ParallelRunner {
    * Initialize a new parallel run
    */
   async init() {
-    // Create run directory
+    // Create directories: logs for run.log, cache for manifest and worker-profiles
     await fs.mkdir(this.runDir, { recursive: true });
-    await fs.mkdir(path.join(this.runDir, 'worker-profiles'), { recursive: true });
+    await fs.mkdir(this.cacheDir, { recursive: true });
+    await fs.mkdir(path.join(this.cacheDir, 'worker-profiles'), { recursive: true });
 
-    // Initialize logger
+    // Initialize logger (writes to runDir)
     this.logger = new Logger(this.runDir);
     await this.logger.info('=== Parallel Run Started ===');
     await this.logger.info(`Job: ${this.jobName}`);
@@ -58,8 +62,8 @@ export class ParallelRunner {
     await this.logger.info(`Parallelism: ${this.parallelism} workers`);
     await this.logger.info(`Permalink: ${this.permalink}`);
 
-    // Initialize manifest
-    this.manifest = new ManifestManager(this.runDir);
+    // Initialize manifest (stored in cacheDir)
+    this.manifest = new ManifestManager(this.cacheDir);
     await this.manifest.init({
       accountAlias: this.accountAlias,
       permalink: this.permalink,
@@ -69,6 +73,7 @@ export class ParallelRunner {
     });
 
     await this.logger.info(`Run directory: ${this.runDir}`);
+    await this.logger.info(`Cache directory: ${this.cacheDir}`);
     await this.logger.success('Initialization complete');
   }
 
@@ -89,8 +94,10 @@ export class ParallelRunner {
           this.manifest,
           this.logger,
           this.runDir,
+          this.cacheDir,
           {
             autoDownload: this.autoDownload,
+            autoUpscale: this.autoUpscale,
             autoDelete: this.autoDelete,
             downloadDir: this.downloadDir,
             jobName: this.jobName,
@@ -204,28 +211,14 @@ export class ParallelRunner {
   }
 
   /**
-   * Clean up operational files after run completes (keeps run.log)
+   * Clean up operational files after run completes (keeps run.log in runDir)
    */
   async cleanupOperationalFiles() {
-    const filesToDelete = [
-      path.join(this.runDir, 'manifest.json'),
-      path.join(this.runDir, 'manifest.lock'),
-    ];
-
-    for (const filePath of filesToDelete) {
-      try {
-        await fs.rm(filePath, { force: true });
-      } catch (error) {
-        // Ignore errors - file may not exist
-      }
-    }
-
-    // Remove worker-profiles directory if it exists
-    const workerProfilesDir = path.join(this.runDir, 'worker-profiles');
+    // Remove entire cache directory (manifest, worker-profiles, etc.)
     try {
-      await fs.rm(workerProfilesDir, { recursive: true, force: true });
+      await fs.rm(this.cacheDir, { recursive: true, force: true });
     } catch (error) {
-      // Ignore errors
+      // Ignore errors - directory may not exist
     }
   }
 
@@ -254,6 +247,12 @@ export class ParallelRunner {
       console.log(chalk.green(`    Downloaded: ${summary.downloaded}`));
       if (summary.downloadFailed > 0) {
         console.log(chalk.yellow(`    Download failed: ${summary.downloadFailed}`));
+      }
+    }
+    if (this.autoUpscale) {
+      console.log(chalk.green(`    Upscaled: ${summary.upscaled}`));
+      if (summary.upscaleFailed > 0) {
+        console.log(chalk.yellow(`    Upscale failed: ${summary.upscaleFailed}`));
       }
     }
     if (this.autoDelete) {
@@ -286,6 +285,12 @@ export class ParallelRunner {
       await this.logger.logToFileOnly(`  Downloaded: ${summary.downloaded}`);
       if (summary.downloadFailed > 0) {
         await this.logger.logToFileOnly(`  Download failed: ${summary.downloadFailed}`);
+      }
+    }
+    if (this.autoUpscale) {
+      await this.logger.logToFileOnly(`  Upscaled: ${summary.upscaled}`);
+      if (summary.upscaleFailed > 0) {
+        await this.logger.logToFileOnly(`  Upscale failed: ${summary.upscaleFailed}`);
       }
     }
     if (this.autoDelete) {

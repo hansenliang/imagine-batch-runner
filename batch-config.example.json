@@ -4,5 +4,8 @@
   "prompt": "cinematic slow pan over landscape",
   "count": 20,
   "jobName": "landscape_videos",
-  "parallel": 10
+  "parallel": 10,
+  "autoDownload": true,
+  "autoUpscale": true,
+  "autoDelete": false
 }

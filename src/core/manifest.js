@@ -45,6 +45,8 @@ export class ManifestManager {
       rateLimitedCount: 0,
       downloadedCount: 0,
       downloadFailedCount: 0,
+      upscaledCount: 0,
+      upscaleFailedCount: 0,
       deletedCount: 0,
       deleteFailedCount: 0,
       items: Array.from({ length: batchSize }, (_, i) => ({
@@ -56,6 +58,8 @@ export class ManifestManager {
         error: null,
         downloaded: false,
         downloadPath: null,
+        upscaled: false,
+        upscaleDownloadPath: null,
         deleted: false,
       })),
       lastError: null,
@@ -238,6 +242,8 @@ export class ManifestManager {
       stopReason,
       downloaded: this.manifest.downloadedCount || 0,
       downloadFailed: this.manifest.downloadFailedCount || 0,
+      upscaled: this.manifest.upscaledCount || 0,
+      upscaleFailed: this.manifest.upscaleFailedCount || 0,
       deleted: this.manifest.deletedCount || 0,
       deleteFailed: this.manifest.deleteFailedCount || 0,
     };

@@ -16,7 +16,7 @@ function sleep(ms) {
  * Each worker runs independently with its own profile copy
  */
 export class ParallelWorker {
-  constructor(workerId, accountAlias, permalink, prompt, manifest, logger, runDir, options = {}) {
+  constructor(workerId, accountAlias, permalink, prompt, manifest, logger, runDir, cacheDir, options = {}) {
     this.workerId = workerId;
     this.accountAlias = accountAlias;
     this.permalink = permalink;
@@ -24,9 +24,11 @@ export class ParallelWorker {
     this.manifest = manifest;
     this.logger = logger;
     this.runDir = runDir;
+    this.cacheDir = cacheDir;
 
-    // Download/delete options
+    // Download/delete/upscale options
     this.autoDownload = options.autoDownload || false;
+    this.autoUpscale = options.autoUpscale || false;
     this.autoDelete = options.autoDelete || false;
     this.downloadDir = options.downloadDir || null;
     this.jobName = options.jobName || null;
@@ -37,8 +39,8 @@ export class ParallelWorker {
     this.generator = null;
     this.postProcessor = null;
 
-    // Worker-specific paths
-    this.workerProfileDir = path.join(runDir, 'worker-profiles', `worker-${workerId}`);
+    // Worker-specific paths (in cacheDir for ephemeral data)
+    this.workerProfileDir = path.join(cacheDir, 'worker-profiles', `worker-${workerId}`);
 
     // State
     this.isRunning = false;
@@ -106,11 +108,12 @@ export class ParallelWorker {
       // Create video generator
       this.generator = new VideoGenerator(this.page, this.logger);
 
-      // Create post-processor if download/delete enabled
+      // Create post-processor if download/upscale/delete enabled
       if (this.autoDownload) {
         const { PostProcessor } = await import('./post-processor.js');
         this.postProcessor = new PostProcessor(this.page, this.logger, {
           autoDownload: this.autoDownload,
+          autoUpscale: this.autoUpscale,
           autoDelete: this.autoDelete,
           downloadDir: this.downloadDir,
           jobName: this.jobName,
@@ -246,6 +249,23 @@ export class ParallelWorker {
               );
             }
 
+            // Update manifest with upscale results
+            if (postResult.upscaled) {
+              await this.manifest.incrementCounterAtomic('upscaledCount');
+              await this.manifest.updateItemAtomic(index, {
+                upscaled: true,
+                upscaleDownloadPath: postResult.upscaleDownloadPath,
+              }, this.workerId);
+              this.logger.success(
+                `[Worker ${this.workerId}] Attempt ${index + 1}: Upscaled and downloaded HD to ${postResult.upscaleDownloadPath} (${postResult.upscaleFileSize})`
+              );
+            } else if (this.autoUpscale && postResult.downloaded) {
+              await this.manifest.incrementCounterAtomic('upscaleFailedCount');
+              this.logger.warn(
+                `[Worker ${this.workerId}] Attempt ${index + 1}: Upscale failed - ${postResult.upscaleError}`
+              );
+            }
+
             // Update manifest with delete results
             if (postResult.deleted) {
               await this.manifest.incrementCounterAtomic('deletedCount');
@@ -254,10 +274,17 @@ export class ParallelWorker {
                 `[Worker ${this.workerId}] Attempt ${index + 1}: Deleted from server`
               );
             } else if (this.autoDelete && postResult.downloaded) {
-              await this.manifest.incrementCounterAtomic('deleteFailedCount');
-              this.logger.warn(
-                `[Worker ${this.workerId}] Attempt ${index + 1}: Delete failed - ${postResult.deleteError}`
-              );
+              // Only log delete failure if it wasn't skipped due to upscale failure
+              if (!this.autoUpscale || postResult.upscaled) {
+                await this.manifest.incrementCounterAtomic('deleteFailedCount');
+                this.logger.warn(
+                  `[Worker ${this.workerId}] Attempt ${index + 1}: Delete failed - ${postResult.deleteError}`
+                );
+              } else {
+                this.logger.info(
+                  `[Worker ${this.workerId}] Attempt ${index + 1}: Delete skipped - upscale failed`
+                );
+              }
             }
           }
         } else if (result.contentModerated) {
