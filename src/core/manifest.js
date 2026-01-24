@@ -43,6 +43,10 @@ export class ManifestManager {
       failedCount: 0,
       contentModeratedCount: 0,
       rateLimitedCount: 0,
+      downloadedCount: 0,
+      downloadFailedCount: 0,
+      deletedCount: 0,
+      deleteFailedCount: 0,
       items: Array.from({ length: batchSize }, (_, i) => ({
         index: i,
         status: 'PENDING', // PENDING, IN_PROGRESS, COMPLETED, FAILED, CONTENT_MODERATED, RATE_LIMITED
@@ -50,6 +54,9 @@ export class ManifestManager {
         createdAt: null,
         completedAt: null,
         error: null,
+        downloaded: false,
+        downloadPath: null,
+        deleted: false,
       })),
       lastError: null,
       stopReason: null,
@@ -229,6 +236,10 @@ export class ManifestManager {
       totalVideos: items.length,
       status,
       stopReason,
+      downloaded: this.manifest.downloadedCount || 0,
+      downloadFailed: this.manifest.downloadFailedCount || 0,
+      deleted: this.manifest.deletedCount || 0,
+      deleteFailed: this.manifest.deleteFailedCount || 0,
     };
   }
 
@@ -300,6 +311,18 @@ export class ManifestManager {
       Object.assign(item, updates);
       this._applyStatusTransition(item, prevStatus, updates.status);
 
+      await this._writeToFile();
+    });
+  }
+
+  /**
+   * Increment a counter atomically (thread-safe)
+   * @param {string} counterName - Name of the counter to increment
+   */
+  async incrementCounterAtomic(counterName) {
+    await this.lock.withLock(async () => {
+      await this._reloadFromDisk();
+      this.manifest[counterName] = (this.manifest[counterName] || 0) + 1;
       await this._writeToFile();
     });
   }

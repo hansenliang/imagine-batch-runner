@@ -18,6 +18,8 @@ export class ParallelRunner {
       batchSize = config.DEFAULT_BATCH_SIZE,
       jobName = `job_${Date.now()}`,
       parallelism = config.DEFAULT_PARALLELISM || 10,
+      autoDownload = false,
+      autoDelete = false,
     } = options;
 
     this.accountAlias = accountAlias;
@@ -26,9 +28,12 @@ export class ParallelRunner {
     this.batchSize = batchSize;
     this.jobName = jobName;
     this.parallelism = parallelism;
+    this.autoDownload = autoDownload;
+    this.autoDelete = autoDelete;
 
     // Runtime state
     this.runDir = path.join(config.RUNS_DIR, this.jobName);
+    this.downloadDir = autoDownload ? path.join(config.DOWNLOAD_DIR, this.jobName) : null;
     this.manifest = null;
     this.logger = null;
     this.workers = [];
@@ -83,7 +88,13 @@ export class ParallelRunner {
           this.prompt,
           this.manifest,
           this.logger,
-          this.runDir
+          this.runDir,
+          {
+            autoDownload: this.autoDownload,
+            autoDelete: this.autoDelete,
+            downloadDir: this.downloadDir,
+            jobName: this.jobName,
+          }
         );
         this.workers.push(worker);
       }
@@ -239,6 +250,18 @@ export class ParallelRunner {
     if (summary.rateLimited > 0) {
       console.log(chalk.yellow(`  Rate limited: ${summary.rateLimited} (not attempted)`));
     }
+    if (this.autoDownload) {
+      console.log(chalk.green(`    Downloaded: ${summary.downloaded}`));
+      if (summary.downloadFailed > 0) {
+        console.log(chalk.yellow(`    Download failed: ${summary.downloadFailed}`));
+      }
+    }
+    if (this.autoDelete) {
+      console.log(chalk.green(`    Deleted: ${summary.deleted}`));
+      if (summary.deleteFailed > 0) {
+        console.log(chalk.yellow(`    Delete failed: ${summary.deleteFailed}`));
+      }
+    }
     console.log(chalk.gray(`  Status: ${summary.status}`));
     if (summary.stopReason) {
       console.log(chalk.yellow(`  Stop reason: ${summary.stopReason}`));
@@ -258,6 +281,18 @@ export class ParallelRunner {
     }
     if (summary.rateLimited > 0) {
       await this.logger.logToFileOnly(`Rate limited: ${summary.rateLimited} (not attempted)`);
+    }
+    if (this.autoDownload) {
+      await this.logger.logToFileOnly(`  Downloaded: ${summary.downloaded}`);
+      if (summary.downloadFailed > 0) {
+        await this.logger.logToFileOnly(`  Download failed: ${summary.downloadFailed}`);
+      }
+    }
+    if (this.autoDelete) {
+      await this.logger.logToFileOnly(`  Deleted: ${summary.deleted}`);
+      if (summary.deleteFailed > 0) {
+        await this.logger.logToFileOnly(`  Delete failed: ${summary.deleteFailed}`);
+      }
     }
     await this.logger.logToFileOnly(`Status: ${summary.status}`);
     if (summary.stopReason) {

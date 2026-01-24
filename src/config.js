@@ -86,6 +86,16 @@ export const config = {
   DEFAULT_AUTORUN_CONFIG_DIR: './autorun-configs',
   AUTORUN_MIN_INTERVAL: 30 * 60 * 1000, // 30 minutes minimum
 
+  // Download/delete settings
+  DEFAULT_DOWNLOAD_ENABLED: false,
+  DEFAULT_DELETE_ENABLED: false,
+  DOWNLOAD_DIR: path.resolve(__dirname, '..', 'downloads'),
+  DOWNLOAD_TIMEOUT: 60000, // 60 seconds
+  DOWNLOAD_RETRY_MAX: 3,
+  DOWNLOAD_RETRY_DELAY: 2000, // 2 seconds between retries
+  POST_GENERATION_DELAY: 1000, // 1s delay after generation before download
+  POST_DOWNLOAD_DELAY: 1000, // 1s delay after download before delete
+
   // Browser settings
   HEADED_MODE: true, // Default to headed for debugging
   VIEWPORT: { width: 1280, height: 720 },
@@ -128,6 +138,19 @@ export const selectors = {
   // Options and quality
   OPTIONS_BUTTON: 'button:has-text("Options")',
   HD_BUTTON: 'button:has-text("HD")',
+
+  // Download button (aria-label="Download")
+  DOWNLOAD_BUTTON: 'button[aria-label*="download" i], button[aria-label*="Download"]',
+
+  // Delete flow - "More options" button (aria-label="More options")
+  VIDEO_MENU_BUTTON: 'button[aria-label*="more options" i], button[aria-label*="More options"]',
+
+  // Delete menu item (role="menuitem" containing "Delete")
+  DELETE_MENU_ITEM: '[role="menuitem"]:has-text("Delete"), [role="menuitem"]:has-text("delete")',
+
+  // Delete confirmation modal
+  DELETE_CONFIRM_BUTTON: '[role="dialog"] button:has-text("Delete"), [role="alertdialog"] button:has-text("Delete"), button:has-text("Confirm")',
+  DELETE_MODAL: '[role="dialog"], [role="alertdialog"]',
 };
 
 export default config;

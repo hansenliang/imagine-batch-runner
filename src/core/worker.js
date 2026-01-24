@@ -16,7 +16,7 @@ function sleep(ms) {
  * Each worker runs independently with its own profile copy
  */
 export class ParallelWorker {
-  constructor(workerId, accountAlias, permalink, prompt, manifest, logger, runDir) {
+  constructor(workerId, accountAlias, permalink, prompt, manifest, logger, runDir, options = {}) {
     this.workerId = workerId;
     this.accountAlias = accountAlias;
     this.permalink = permalink;
@@ -25,10 +25,17 @@ export class ParallelWorker {
     this.logger = logger;
     this.runDir = runDir;
 
+    // Download/delete options
+    this.autoDownload = options.autoDownload || false;
+    this.autoDelete = options.autoDelete || false;
+    this.downloadDir = options.downloadDir || null;
+    this.jobName = options.jobName || null;
+
     // Browser resources
     this.context = null;
     this.page = null;
     this.generator = null;
+    this.postProcessor = null;
 
     // Worker-specific paths
     this.workerProfileDir = path.join(runDir, 'worker-profiles', `worker-${workerId}`);
@@ -98,6 +105,17 @@ export class ParallelWorker {
 
       // Create video generator
       this.generator = new VideoGenerator(this.page, this.logger);
+
+      // Create post-processor if download/delete enabled
+      if (this.autoDownload) {
+        const { PostProcessor } = await import('./post-processor.js');
+        this.postProcessor = new PostProcessor(this.page, this.logger, {
+          autoDownload: this.autoDownload,
+          autoDelete: this.autoDelete,
+          downloadDir: this.downloadDir,
+          jobName: this.jobName,
+        });
+      }
 
       this.logger.success(`[Worker ${this.workerId}] Ready`);
     } catch (error) {
@@ -206,6 +224,42 @@ export class ParallelWorker {
           this.logger.success(
             `[Worker ${this.workerId}] Attempt ${index + 1}: Success in ${duration}s - ${this.page.url()}`
           );
+
+          // Post-processing: download and/or delete
+          if (this.postProcessor) {
+            const postResult = await this.postProcessor.process(index);
+
+            // Update manifest with download results
+            if (postResult.downloaded) {
+              await this.manifest.incrementCounterAtomic('downloadedCount');
+              await this.manifest.updateItemAtomic(index, {
+                downloaded: true,
+                downloadPath: postResult.downloadPath,
+              }, this.workerId);
+              this.logger.success(
+                `[Worker ${this.workerId}] Attempt ${index + 1}: Downloaded to ${postResult.downloadPath} (${postResult.fileSize})`
+              );
+            } else if (this.autoDownload) {
+              await this.manifest.incrementCounterAtomic('downloadFailedCount');
+              this.logger.warn(
+                `[Worker ${this.workerId}] Attempt ${index + 1}: Download failed - ${postResult.downloadError}`
+              );
+            }
+
+            // Update manifest with delete results
+            if (postResult.deleted) {
+              await this.manifest.incrementCounterAtomic('deletedCount');
+              await this.manifest.updateItemAtomic(index, { deleted: true }, this.workerId);
+              this.logger.success(
+                `[Worker ${this.workerId}] Attempt ${index + 1}: Deleted from server`
+              );
+            } else if (this.autoDelete && postResult.downloaded) {
+              await this.manifest.incrementCounterAtomic('deleteFailedCount');
+              this.logger.warn(
+                `[Worker ${this.workerId}] Attempt ${index + 1}: Delete failed - ${postResult.deleteError}`
+              );
+            }
+          }
         } else if (result.contentModerated) {
           // Content moderation - expected failure, already logged as WARN in generator
           await this.manifest.updateItemAtomic(

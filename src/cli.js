@@ -94,6 +94,8 @@ run
   .option('--count <number>', 'Number of videos to generate', String(config.DEFAULT_BATCH_SIZE))
   .option('--job-name <name>', 'Custom job name (default: auto-generated)')
   .option('--parallel <count>', 'Number of parallel workers (1-100)', '1')
+  .option('--auto-download', 'Automatically download generated videos', false)
+  .option('--auto-delete', 'Automatically delete videos after download (requires --auto-download)', false)
   .action(async (options) => {
     try {
       // Load config file if specified
@@ -105,6 +107,8 @@ run
         // Save original values to detect if they were explicitly set
         const parallelWasDefault = options.parallel === '1';
         const countWasDefault = options.count === String(config.DEFAULT_BATCH_SIZE);
+        const autoDownloadWasDefault = options.autoDownload === false;
+        const autoDeleteWasDefault = options.autoDelete === false;
 
         options = { ...configData, ...options };
 
@@ -117,6 +121,21 @@ run
         if (countWasDefault && configData.count !== undefined) {
           options.count = configData.count;
         }
+
+        // If auto-download wasn't explicitly set on CLI, use config value
+        if (autoDownloadWasDefault && configData.autoDownload !== undefined) {
+          options.autoDownload = configData.autoDownload;
+        }
+
+        // If auto-delete wasn't explicitly set on CLI, use config value
+        if (autoDeleteWasDefault && configData.autoDelete !== undefined) {
+          options.autoDelete = configData.autoDelete;
+        }
+      }
+
+      // Validate auto-delete requires auto-download
+      if (options.autoDelete && !options.autoDownload) {
+        throw new Error('--auto-delete requires --auto-download to be enabled');
       }
 
       // Validate required fields
@@ -158,6 +177,12 @@ run
       console.log(chalk.gray(`Permalink: ${options.permalink}`));
       console.log(chalk.gray(`Batch size: ${batchSize}`));
       console.log(chalk.gray(`Parallelism: ${parallelism} workers`));
+      if (options.autoDownload) {
+        console.log(chalk.gray(`Auto-download: enabled`));
+      }
+      if (options.autoDelete) {
+        console.log(chalk.gray(`Auto-delete: enabled`));
+      }
       console.log('');
 
       // Create and start runner (always use ParallelRunner, parallelism=1 runs sequentially)
@@ -168,6 +193,8 @@ run
         batchSize,
         jobName: options.jobName,
         parallelism,
+        autoDownload: options.autoDownload || false,
+        autoDelete: options.autoDelete || false,
       });
 
       await runner.init();

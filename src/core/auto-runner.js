@@ -94,6 +94,10 @@ export class AutoRunner {
       totalFailed: 0,
       totalContentModerated: 0,
       totalRateLimited: 0,
+      totalDownloaded: 0,
+      totalDownloadFailed: 0,
+      totalDeleted: 0,
+      totalDeleteFailed: 0,
       parallelism: 0,
     };
 
@@ -257,6 +261,10 @@ export class AutoRunner {
       failed: 0,
       contentModerated: 0,
       rateLimited: 0,
+      downloaded: 0,
+      downloadFailed: 0,
+      deleted: 0,
+      deleteFailed: 0,
       parallelism: 0,
       status: 'COMPLETED',
       stopReason: null,
@@ -286,6 +294,10 @@ export class AutoRunner {
         cycleStats.failed += result.failed;
         cycleStats.contentModerated += result.contentModerated;
         cycleStats.rateLimited += result.rateLimited;
+        cycleStats.downloaded += result.downloaded || 0;
+        cycleStats.downloadFailed += result.downloadFailed || 0;
+        cycleStats.deleted += result.deleted || 0;
+        cycleStats.deleteFailed += result.deleteFailed || 0;
         cycleStats.parallelism = Math.max(cycleStats.parallelism, parallelism);
 
         if (result.status === 'COMPLETED') {
@@ -314,6 +326,10 @@ export class AutoRunner {
     this.sessionStats.totalFailed += cycleStats.failed;
     this.sessionStats.totalContentModerated += cycleStats.contentModerated;
     this.sessionStats.totalRateLimited += cycleStats.rateLimited;
+    this.sessionStats.totalDownloaded += cycleStats.downloaded;
+    this.sessionStats.totalDownloadFailed += cycleStats.downloadFailed;
+    this.sessionStats.totalDeleted += cycleStats.deleted;
+    this.sessionStats.totalDeleteFailed += cycleStats.deleteFailed;
     this.sessionStats.parallelism = Math.max(this.sessionStats.parallelism, cycleStats.parallelism);
 
     // Print cycle summary
@@ -368,6 +384,8 @@ export class AutoRunner {
         batchSize,
         jobName,
         parallelism,
+        autoDownload: configData.autoDownload || false,
+        autoDelete: configData.autoDelete || false,
       });
 
       await runner.init();
@@ -386,6 +404,10 @@ export class AutoRunner {
         failed: summary.failed || 0,
         contentModerated: summary.contentModerated || 0,
         rateLimited: summary.rateLimited || 0,
+        downloaded: summary.downloaded || 0,
+        downloadFailed: summary.downloadFailed || 0,
+        deleted: summary.deleted || 0,
+        deleteFailed: summary.deleteFailed || 0,
         stopReason: summary.stopReason,
       };
     } catch (error) {
@@ -494,6 +516,11 @@ export class AutoRunner {
       if (!exists) {
         errors.push(`Account "${configData.account}" not found`);
       }
+    }
+
+    // Auto-delete requires auto-download
+    if (configData.autoDelete && !configData.autoDownload) {
+      errors.push('autoDelete requires autoDownload to be enabled');
     }
 
     return { valid: errors.length === 0, errors };
@@ -677,6 +704,18 @@ export class AutoRunner {
     if (this.sessionStats.totalRateLimited > 0) {
       console.log(chalk.yellow(`  Rate limited: ${this.sessionStats.totalRateLimited}`));
     }
+    if (this.sessionStats.totalDownloaded > 0 || this.sessionStats.totalDownloadFailed > 0) {
+      console.log(chalk.green(`  Downloaded: ${this.sessionStats.totalDownloaded}`));
+      if (this.sessionStats.totalDownloadFailed > 0) {
+        console.log(chalk.yellow(`  Download failed: ${this.sessionStats.totalDownloadFailed}`));
+      }
+    }
+    if (this.sessionStats.totalDeleted > 0 || this.sessionStats.totalDeleteFailed > 0) {
+      console.log(chalk.green(`  Deleted: ${this.sessionStats.totalDeleted}`));
+      if (this.sessionStats.totalDeleteFailed > 0) {
+        console.log(chalk.yellow(`  Delete failed: ${this.sessionStats.totalDeleteFailed}`));
+      }
+    }
     console.log(chalk.gray(`\nSummary log: ${this.summaryLogPath}`));
     console.log(chalk.gray(`Detailed logs: ${this.sessionDir}\n`));
 
@@ -687,6 +726,14 @@ export class AutoRunner {
     await this.logger.info(`  Content moderated: ${this.sessionStats.totalContentModerated}`);
     await this.logger.info(`  Failed: ${this.sessionStats.totalFailed}`);
     await this.logger.info(`  Rate limited: ${this.sessionStats.totalRateLimited}`);
+    if (this.sessionStats.totalDownloaded > 0 || this.sessionStats.totalDownloadFailed > 0) {
+      await this.logger.info(`  Downloaded: ${this.sessionStats.totalDownloaded}`);
+      await this.logger.info(`  Download failed: ${this.sessionStats.totalDownloadFailed}`);
+    }
+    if (this.sessionStats.totalDeleted > 0 || this.sessionStats.totalDeleteFailed > 0) {
+      await this.logger.info(`  Deleted: ${this.sessionStats.totalDeleted}`);
+      await this.logger.info(`  Delete failed: ${this.sessionStats.totalDeleteFailed}`);
+    }
   }
 }
 
