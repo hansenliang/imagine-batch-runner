@@ -1,19 +1,16 @@
 # Grok Batch Video Generator
 
-Local batch image-to-video generator for Grok Imagine. 
+Local batch image-to-video generator for Grok Imagine.
 
-AI generation is inherently random, so to get the best results, you often need to run jobs in batches. Grok does not make this easy today. This tool helps you change that. 
+AI generation is inherently random, so to get the best results, you often need to run jobs in batches. This tool automates that process using browser automation (Playwright).
 
 ## Features
 
-- **Parallel video generation**: Generate up to 100 videos simultaneously using multiple browser contexts
-- **Per-account batch generation**: Generate up to 100 videos from a single image permalink
-- **Persistent sessions**: Set up multiple account profiles, reuse without re-login
-- **Resilient automation**: Rate-limit detection and graceful stopping
-- **Config file support**: Save your settings in JSON for easy reuse
-- **No API credits**: Uses browser automation (Playwright) instead of API
-- **Permalink-based**: No local image uploads needed
-- **True parallel execution**: Each worker maintains its own browser session without page reloads
+- **Parallel generation**: Up to 100 simultaneous workers
+- **Persistent sessions**: Set up accounts once, reuse without re-login
+- **Rate-limit aware**: Automatic detection and graceful stopping
+- **Auto-download**: Optionally download and upscale videos
+- **Config files**: Save settings in JSON for easy reuse
 
 ## Installation
 
@@ -26,230 +23,69 @@ npx playwright install chromium
 
 ### 1. Add an Account
 
-First, set up a Grok account profile. A browser will open for you to log in:
-
 ```bash
 npm start accounts add my-account
 ```
 
-Follow the browser prompts to log in to Grok, then close the browser when done.
+A browser opens. Log in to Grok, then close it.
 
-### 2. Start a Batch Run
-
-Generate videos from a Grok image permalink:
+### 2. Run a Batch
 
 ```bash
 npm start run start \
   --account my-account \
-  --permalink "https://grok.com/imagine/post/060ec750-c502-4fb2-9de0-562bdd2e599e" \
-  --prompt "camera pans into a detail of the dandelions softly moving in the wind" \
+  --permalink "https://grok.com/imagine/post/YOUR_POST_ID" \
+  --prompt "camera pans slowly over the landscape" \
   --count 20 \
   --parallel 10
 ```
 
-The tool will:
-- Launch 10 parallel browser contexts (workers) - each in its own Chrome window
-- Open the permalink in each authenticated browser session
-- Generate 20 video variations using the same image + prompt
-- Automatically detect rate limits and stop gracefully
-- Save progress to `./logs/<job-name>/`
+Or use a config file:
 
-**Note**: Each worker runs in a separate Chrome window for isolation. This is normal behavior.
+```bash
+node src/cli.js run start --config batch-config.json
+```
 
-**Tip**: Start with `--parallel 10` (default). You can go up to `--parallel 100` for maximum speed, but you'll likely hit rate limits quickly.
+### 3. View Results
+
+Videos appear in Grok UI at your permalink. Downloads go to `./downloads/<job-name>/` if enabled.
+
+## Documentation
+
+For detailed guides:
+
+- **[Quick Start Guide](docs/quickstart.md)** — Installation and first run
+- **[Architecture](docs/architecture.md)** — Technical deep-dive for contributors
+- **[Usage Examples](docs/examples.md)** — Config files, parallel execution, auto-run
 
 ## Commands
 
-### Account Management
-
 ```bash
-# Add a new account (opens browser for login)
-npm start accounts add <alias>
+# Account management
+npm start accounts add <alias>      # Add account
+npm start accounts list             # List accounts
 
-# List all configured accounts
-npm start accounts list
+# Batch runs
+npm start run start --config <file> # Start from config
+npm start run start --account <alias> --permalink <url> --prompt "<text>" --count <n>
+
+# Auto-run (scheduled)
+npm start autorun start --interval 4h --config-dir ./autorun-configs
 ```
-
-### Run Management
-
-```bash
-# Start a new batch run with config file (recommended)
-npm start run start --config batch-config.json
-
-# Or start with command-line options
-npm start run start \
-  --account <alias> \
-  --permalink <url> \
-  --prompt "<text>" \
-  --count <number> \
-  --parallel <workers> \
-  [--job-name <name>]
-
-# Runs can be restarted with the same config if needed.
-```
-
-### Using Config Files
-
-Create a `batch-config.json` file (see `batch-config.example.json`):
-
-```json
-{
-  "account": "my-account",
-  "permalink": "https://grok.com/imagine/post/YOUR_IMAGE_ID",
-  "prompt": "cinematic slow pan over landscape",
-  "count": 20,
-  "jobName": "landscape_videos",
-  "parallel": 10
-}
-```
-
-Then run:
-
-```bash
-# Option 1: Use the npm script (easiest)
-npm run run:config batch-config.json
-
-# Option 2: Direct node execution
-node src/cli.js run start --config batch-config.json
-
-# Option 3: With npm start (requires -- separator)
-npm start -- run start --config batch-config.json
-```
-
-**Benefits**: Easier to reuse settings, track what you ran, and share configs.
 
 ## Configuration
 
-Edit `src/config.js` to customize:
+See `batch-config.example.json` for config file format.
 
-- **Timeouts**: Video generation timeout (default: 60s)
-- **Rate limits**: Videos per period (default: 100 per 4 hours)
-- **Browser mode**: Headed vs headless (default: headed for debugging)
-- **Chrome profile**: Auto-detected and copied for bot detection avoidance
-
-### Chrome Profile Auto-Detection (Bot Detection Avoidance)
-
-**The tool automatically detects and copies your Chrome profile** to avoid bot detection when adding accounts. This helps prevent human verification loops on Grok.
-
-When you add an account, the tool will:
-- Auto-detect your Chrome installation (macOS/Windows/Linux)
-- Copy your Default Chrome profile to avoid looking like a bot
-- Preserve cookies, session data, and browser fingerprint
-
-**Make sure all Chrome windows are closed** before adding accounts.
-
-If auto-detection fails or you want to use a different profile:
-
-```bash
-# Override with environment variables
-export CHROME_USER_DATA_DIR="/Users/<you>/Library/Application Support/Google/Chrome"
-export CHROME_PROFILE_NAME="Profile 1"   # or "Profile 2", etc.
-```
-
-## Rate Limiting
-
-The tool automatically detects Grok's rate limits by:
-- Monitoring UI messages/toasts
-- Checking for disabled buttons
-- Detecting error states
-
-When rate-limited:
-- In-flight video completes, no new work is claimed
-- Progress is saved in the manifest and run log
-- Restart later with the same config to continue fresh
-
-## Output Structure
-
-Each run creates a directory at `./logs/<job-name>/`:
-
-```
-./logs/job_1234567890/
-└── run.log               # Detailed logs (operational files auto-cleaned)
-```
-
-For autorun sessions:
-```
-./logs/
-├── autorun-2026-01-22-14-04-20.log   # Session summary with TOTALS
-└── autorun/
-    └── autorun_2026-01-22-14-04-20/
-        └── run.log                    # Detailed per-attempt logs
-```
+Edit `src/config.js` for timeouts, rate limits, and browser settings.
 
 ## Troubleshooting
 
-### "AUTH_REQUIRED" Error
-
-Your session expired. Re-run account setup:
-
-```bash
-npm start accounts add <alias>
-```
-
-### Generation Timeout
-
-If videos take longer than 60s, increase timeout in `src/config.js`:
-
-```javascript
-VIDEO_GENERATION_TIMEOUT: 120000  // 2 minutes
-```
-
-### Rate Limit Too Aggressive
-
-Adjust expected rate limit in `src/config.js`:
-
-```javascript
-DEFAULT_RATE_LIMIT: 50  // 50 videos instead of 100
-DEFAULT_RATE_PERIOD: 2 * 60 * 60 * 1000  // 2 hours instead of 4
-```
-
-## Parallel Execution Strategies
-
-### Single-Account Parallelism (Recommended)
-
-Generate multiple videos simultaneously with one account:
-
-```bash
-npm start run start \
-  --account my-account \
-  --permalink <url> \
-  --prompt "<text>" \
-  --count 100 \
-  --parallel 10
-```
-
-- **2 workers**: Conservative, minimal rate limit risk
-- **10 workers** (default): Good balance of speed and rate limit safety
-- **50 workers**: 5x faster, higher rate limit risk
-- **100 workers**: Maximum speed (100 videos in ~30s), will likely hit rate limits
-
-**How it works**: Each worker runs in its own isolated browser context (separate Chrome window). Workers process videos from a shared queue, automatically claiming the next available task. No page reloads means uninterrupted video generation.
-
-### Multi-Account Parallelism
-
-To utilize multiple subscriptions, run multiple instances in parallel:
-
-```bash
-# Terminal 1
-npm start run start --account account1 --permalink <url> --prompt "<text>" --count 100 --parallel 10
-
-# Terminal 2
-npm start run start --account account2 --permalink <url> --prompt "<text>" --count 100 --parallel 10
-```
-
-Each instance uses a separate browser profile and can run concurrently.
-
-### Performance Estimates
-
-- **Sequential** (no --parallel): 100 videos in 25-50 minutes
-- **10 workers**: 100 videos in 2.5-5 minutes (10x faster)
-- **100 workers**: 100 videos in 15-30 seconds (100x faster, high rate limit risk)
-
-## Limitations
-
-- **No downloads**: Videos are generated but not downloaded (you'll need to download manually from Grok UI)
-- **Single prompt per run**: All videos use the same prompt (use multiple runs for variation)
-- **macOS focused**: Tested on macOS, should work on Linux/Windows with minor adjustments
+| Problem | Solution |
+|---------|----------|
+| `AUTH_REQUIRED` | Re-run `npm start accounts add <alias>` |
+| Videos timing out | Increase `VIDEO_GENERATION_TIMEOUT` in `src/config.js` |
+| Rate limited | Wait ~4 hours, then rerun |
 
 ## License
 

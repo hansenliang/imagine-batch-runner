@@ -1,52 +1,35 @@
 # Grok Batch Video Generator
 
-## Project Overview
-Grok Batch Video Generator automates Grok Imagine video generation via Playwright.
-Primary workflow is `run start` with optional JSON config, running 1-100 workers.
-Each worker uses its own Chrome profile copy and writes logs to a run directory.
+Automates Grok Imagine video generation via Playwright. Runs 1-100 parallel workers, each with isolated Chrome profile.
 
-## Primary Commands
-- Add account: `npm start accounts add <alias>`
-- List accounts: `npm start accounts list`
-- Start run (config): `node src/cli.js run start --config batch-config.json`
-- Start run (flags): `npm start run start --account <alias> --permalink <url> --prompt "<text>" --count <n> --parallel <n>`
+## Commands
+- `npm start accounts add <alias>` — Add account (opens browser for login)
+- `npm start accounts list` — List accounts
+- `node src/cli.js run start --config batch-config.json` — Start batch run
+- `npm test` — Validate imports
 
 ## Key Files
-- `src/cli.js`: CLI parsing and run start command
-- `src/core/parallel-runner.js`: Orchestration, worker lifecycle, final summary
-- `src/core/worker.js`: Worker initialization and generation loop
-- `src/core/generator.js`: UI automation for generation steps
-- `src/core/manifest.js`: Run state + atomic updates
-- `src/utils/logger.js`: Log formatting + run.log writes
-- `src/config.js`: Defaults and selectors
-
-## Testing & Validation
-- Import check: `npm test`
-- Manual run: `node src/cli.js run start --config batch-config-es.json`
-- Always verify changes work by running the relevant command
+- `src/cli.js` — CLI entry point
+- `src/core/parallel-runner.js` — Worker orchestration
+- `src/core/worker.js` — Browser context, generation loop
+- `src/core/generator.js` — UI automation state machine
+- `src/core/manifest.js` — Atomic state with file locking
+- `src/config.js` — Timeouts, selectors, defaults
 
 ## Run Outputs
-- CLI runs: `./logs/<job-name>/`
-- Autorun sessions: `./logs/autorun/`
-- Autorun summary logs: `./logs/autorun-<timestamp>.log`
-- Manifests track attempts and rate-limit stops; there is no resume command
-- Operational files (manifest.json, worker-profiles) are cleaned up after each run; only run.log persists
+- Logs: `./logs/<job-name>/run.log`
+- Downloads: `./downloads/<job-name>/` (if autoDownload enabled)
+- Cache cleaned up after each run; only run.log persists
 
-## Expected Behavior
-- `--config` should work without extra required flags
-- Workers initialize in parallel (no startup stagger)
-- CLI and run logs must not print the prompt text
-- Rate limits stop new work; rerun later with the same config if needed
+## Key Rules
+- **Content moderation is expected** — log as WARN, never ERROR
+- **Never print prompt text** to CLI or logs (privacy)
+- **UI selectors** are in `src/config.js` — update there, not inline
 
-## Generation Outcome Classification
-Each generation attempt returns `{ success, attempted, rateLimited }`. The outcome determines logging:
-
-- **Success** (`attempted: true`, `success: true`): Video generated. Log: SUCCESS
-- **Content Moderation** (`attempted: true`, `success: false`): Expected failure, not an error. Log: WARN only
-- **Other Failures** (`attempted: true`, `success: false`): Technical failures (timeout, network). Log: ERROR
-- **Rate Limited** (`attempted: false`, `rateLimited: true`): Never started. Log: WARN only
-
-Content moderation is common and expected — do NOT log it as ERROR.
+## When to Read More
+- Setup or install issues → `docs/quickstart.md`
+- Modifying core logic or architecture → `docs/architecture.md`
+- Usage patterns or examples → `docs/examples.md`
 
 ---
 
@@ -58,6 +41,7 @@ Content moderation is common and expected — do NOT log it as ERROR.
 3. **Understand context**: Search for existing patterns in the codebase before implementing new code. Follow established conventions
 4. **Clarify ambiguity**: If requirements are unclear or there are multiple valid approaches, list pros/cons and ask for clarification
 5. **Plan and align with the user**: Unless it's a trivial change, you should always outline your analysis of the request, any competing theories / options and which one you think is the best / most likely, and review the approach with the user for approval before making any code changes.
+6. **Plan twice**: After the intial plan is done, always take a 2nd pass: can things be simpler? Are there actually simpler ways to achieve the same goals with fewer lines of code and less complexity? 
 
 ## While Making Changes
 1. **Small increments**: Break complex tasks into small, testable steps. Implement and verify each step before moving on
