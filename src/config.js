@@ -130,6 +130,7 @@ export const selectors = {
 
   // Error detection
   CONTENT_MODERATED_MESSAGE: 'text=/try a different idea|content moderated|moderated|blocked/i',
+  CONTENT_MODERATED_ICON: '.lucide-eye-off, [class*="lucide-eye-off"]',
   NETWORK_ERROR_MESSAGE: 'text=/network error|connection lost|failed to load/i',
   GENERATION_ERROR_MESSAGE: 'text=/generation failed|error generating|something went wrong/i',
 

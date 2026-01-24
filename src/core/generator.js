@@ -294,10 +294,16 @@ export class VideoGenerator {
    */
   async _detectContentModeration() {
     try {
+      // Check text-based message
       const moderationMsg = await this.page.$(selectors.CONTENT_MODERATED_MESSAGE);
       if (moderationMsg) {
         const text = await moderationMsg.textContent().catch(() => '');
         return { detected: true, message: text };
+      }
+      // Check icon indicator (lucide-eye-off)
+      const moderationIcon = await this.page.$(selectors.CONTENT_MODERATED_ICON);
+      if (moderationIcon) {
+        return { detected: true, message: 'Content not viewable (eye-off icon)' };
       }
       return { detected: false, message: null };
     } catch (error) {
