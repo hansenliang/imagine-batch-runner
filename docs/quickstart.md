@@ -19,7 +19,7 @@ npm --version    # Should show v9.x or higher
 ## Installation
 
 ```bash
-cd "/Users/hansenliang/Projects/Imagine batch runner"
+cd /path/to/imagine-batch-runner
 npm install
 npx playwright install chromium
 ```
