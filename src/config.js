@@ -6,22 +6,6 @@ import fs from 'fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-function parseBooleanEnv(value, defaultValue) {
-  if (value === undefined) {
-    return defaultValue;
-  }
-
-  const normalized = String(value).trim().toLowerCase();
-  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) {
-    return true;
-  }
-  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) {
-    return false;
-  }
-
-  return defaultValue;
-}
-
 /**
  * Auto-detect Chrome user data directory based on platform
  */
@@ -130,7 +114,6 @@ export const selectors = {
 
   // Error detection
   CONTENT_MODERATED_MESSAGE: 'text=/try a different idea|content moderated|moderated|blocked/i',
-  CONTENT_MODERATED_ICON: '.lucide-eye-off, [class*="lucide-eye-off"]',
   NETWORK_ERROR_MESSAGE: 'text=/network error|connection lost|failed to load/i',
   GENERATION_ERROR_MESSAGE: 'text=/generation failed|error generating|something went wrong/i',
 
