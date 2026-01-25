@@ -30,7 +30,7 @@ CLI (cli.js)
 ### VideoGenerator (`src/core/generator.js`)
 - UI automation state machine: find button → click → enter prompt → wait for completion
 - Real-time failure detection: content moderation, network errors, generation errors
-- Success verification: checks video has valid `src` and `duration > 0`
+- Success verification: requires seeing generation progress (% indicator) before accepting video
 - Returns `{ success, attempted, rateLimited, contentModerated }`
 
 ### ManifestManager (`src/core/manifest.js`)
@@ -45,7 +45,7 @@ CLI (cli.js)
 ## Generation Flow
 
 1. **Worker claims item**: `manifest.claimNextItem(workerId)` atomically assigns PENDING item
-2. **Generate video**: Enter prompt → click button → wait for video element with valid duration
+2. **Generate video**: Enter prompt → click button → wait for progress indicator (%) → wait for video
 3. **Detect outcome**:
    - Success: video playable → mark COMPLETED
    - Content moderation: expected failure → mark CONTENT_MODERATED (WARN, not ERROR)

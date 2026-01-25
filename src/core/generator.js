@@ -456,8 +456,9 @@ export class VideoGenerator {
         loggedStart = true;
       }
 
-      // 1. Always check for video completion
-      if (video) {
+      // 1. Check for video completion - only if we saw generation start
+      // This prevents false positives from pre-existing videos on the page
+      if (video && loggedStart) {
         const isPlayable = await this._verifyVideoPlayable(video);
         if (isPlayable) {
           this.logger.success(`[Attempt ${index + 1}] Video ready and verified`);
