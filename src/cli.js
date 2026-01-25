@@ -234,7 +234,7 @@ const autorun = program.command('autorun').description('Continuous scheduled bat
 autorun
   .command('start')
   .description('Start continuous auto-run session')
-  .option('--interval <duration>', 'Time between cycles (e.g., 30m, 1h, 4h)', '4h')
+  .option('--interval <duration>', 'Time between cycles (e.g., 30m, 1h, 3h)', '3h')
   .option('--config-dir <path>', 'Directory containing config files', config.DEFAULT_AUTORUN_CONFIG_DIR)
   .option('--dry-run', 'Validate configs without running', false)
   .option('--run-once', 'Run all configs once and exit', false)

@@ -73,5 +73,5 @@ Videos appear in the Grok UI at your permalink. Open it in a browser to download
 | `npm not found` | Install Node.js (see Prerequisites) |
 | `Account not found` | Run `npm start accounts add <name>` first |
 | Videos timing out | Increase `VIDEO_GENERATION_TIMEOUT` in `src/config.js` |
-| Rate limited | Wait ~4 hours, then rerun with same config |
+| Rate limited | Wait ~3 hours, then rerun with same config |
 | Session expired | Re-run `npm start accounts add <name>` to re-login |

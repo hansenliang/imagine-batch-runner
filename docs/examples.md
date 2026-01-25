@@ -18,7 +18,7 @@ npm start run start \
 ```
 
 ### 3. Handle Rate Limit
-If the run stops with `STOPPED_RATE_LIMIT`, wait ~4 hours and rerun with the same config.
+If the run stops with `STOPPED_RATE_LIMIT`, wait ~3 hours and rerun with the same config.
 
 ## Config File Usage
 
@@ -77,8 +77,8 @@ npm start run start --account account2 --permalink <url> --prompt "<text>" --cou
 Continuous scheduled runs from a config directory:
 
 ```bash
-# Run every 4 hours
-npm start autorun start --interval 4h --config-dir ./autorun-configs
+# Run every 3 hours (default)
+npm start autorun start --interval 3h --config-dir ./autorun-configs
 
 # Run once and exit
 npm start autorun start --run-once --config-dir ./autorun-configs

@@ -56,7 +56,7 @@ If the run stops due to rate limiting:
   Stop reason: Rate limit detected - try again later
 ```
 
-Wait for the rate limit to reset (typically 4 hours), then rerun with the same config or flags.
+Wait for the rate limit to reset (typically 3 hours), then rerun with the same config or flags.
 
 ## Advanced Examples
 

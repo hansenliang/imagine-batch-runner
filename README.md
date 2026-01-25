@@ -70,7 +70,7 @@ npm start run start --config <file> # Start from config
 npm start run start --account <alias> --permalink <url> --prompt "<text>" --count <n>
 
 # Auto-run (scheduled)
-npm start autorun start --interval 4h --config-dir ./autorun-configs
+npm start autorun start --interval 3h --config-dir ./autorun-configs
 ```
 
 ## Configuration
@@ -85,7 +85,7 @@ Edit `src/config.js` for timeouts, rate limits, and browser settings.
 |---------|----------|
 | `AUTH_REQUIRED` | Re-run `npm start accounts add <alias>` |
 | Videos timing out | Increase `VIDEO_GENERATION_TIMEOUT` in `src/config.js` |
-| Rate limited | Wait ~4 hours, then rerun |
+| Rate limited | Wait ~3 hours, then rerun |
 
 ## License
 
