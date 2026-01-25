@@ -23,7 +23,7 @@ function formatDuration(ms) {
 }
 
 /**
- * Format timestamp for session/job names (YYYY-MM-DD-HH-mm-ss)
+ * Format timestamp for session/job names (YYYYMMDD-HHmmss)
  */
 function formatTimestamp(date = new Date()) {
   const year = date.getFullYear();
@@ -32,7 +32,7 @@ function formatTimestamp(date = new Date()) {
   const hours = String(date.getHours()).padStart(2, '0');
   const minutes = String(date.getMinutes()).padStart(2, '0');
   const seconds = String(date.getSeconds()).padStart(2, '0');
-  return `${year}-${month}-${day}-${hours}-${minutes}-${seconds}`;
+  return `${year}${month}${day}-${hours}${minutes}${seconds}`;
 }
 
 /**
@@ -69,8 +69,9 @@ export class AutoRunner {
     this.sessionStartTime = new Date();
     const timestamp = formatTimestamp(this.sessionStartTime);
     this.sessionId = `autorun_${timestamp}`;
-    this.sessionDir = path.join(config.RUNS_DIR, 'autorun', this.sessionId);
-    this.summaryLogPath = path.join(config.RUNS_DIR, `autorun-${timestamp}.log`);
+    this.sessionDir = path.join(config.AUTORUN_LOGS_DIR, this.sessionId);
+    this.summaryLogPath = path.join(this.sessionDir, 'summary.log');
+    this.detailedLogsDir = path.join(this.sessionDir, 'detailed');
     this.cycleCount = 0;
     this.isRunning = false;
     this.shutdownRequested = false;
@@ -141,11 +142,12 @@ export class AutoRunner {
     // Setup signal handlers for graceful shutdown
     this._setupSignalHandlers();
 
-    // Create session directory
+    // Create session and detailed logs directories
     await fs.mkdir(this.sessionDir, { recursive: true });
+    await fs.mkdir(this.detailedLogsDir, { recursive: true });
 
-    // Initialize logger
-    this.logger = new Logger(this.sessionDir);
+    // Initialize logger for session-level logging (run.log in session dir)
+    this.logger = new Logger(path.join(this.sessionDir, 'run.log'));
 
     // Print header
     console.log(chalk.blue('\n========================================'));
@@ -162,7 +164,7 @@ export class AutoRunner {
     console.log(chalk.gray(`Interval: ${formatDuration(this.intervalMs)}`));
     console.log(chalk.gray(`Config directory: ${this.configDir}`));
     console.log(chalk.gray(`Summary log: ${this.summaryLogPath}`));
-    console.log(chalk.gray(`Detailed logs: ${this.sessionDir}`));
+    console.log(chalk.gray(`Detailed logs: ${this.detailedLogsDir}`));
     console.log('');
 
     // Discover and validate configs
@@ -374,6 +376,9 @@ export class AutoRunner {
     const timestamp = formatTimestamp();
     const jobName = `${baseName}-${timestamp}`;
 
+    // Detailed log goes in the session's detailed/ directory
+    const logFilePath = path.join(this.detailedLogsDir, `${jobName}.log`);
+
     // Extract config values with defaults
     const batchSize = parseInt(configData.count, 10) || config.DEFAULT_BATCH_SIZE;
     const parallelism = parseInt(configData.parallel, 10) || config.DEFAULT_PARALLELISM;
@@ -395,6 +400,7 @@ export class AutoRunner {
         autoDownload: configData.autoDownload !== false,  // default true
         autoUpscale: configData.autoUpscale !== false,    // default true
         autoDelete: configData.autoDelete || false,       // default false
+        logFilePath,  // Pass the detailed log path
       });
 
       await runner.init();

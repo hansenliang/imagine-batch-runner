@@ -16,14 +16,13 @@ function sleep(ms) {
  * Each worker runs independently with its own profile copy
  */
 export class ParallelWorker {
-  constructor(workerId, accountAlias, permalink, prompt, manifest, logger, runDir, cacheDir, options = {}) {
+  constructor(workerId, accountAlias, permalink, prompt, manifest, logger, cacheDir, options = {}) {
     this.workerId = workerId;
     this.accountAlias = accountAlias;
     this.permalink = permalink;
     this.prompt = prompt;
     this.manifest = manifest;
     this.logger = logger;
-    this.runDir = runDir;
     this.cacheDir = cacheDir;
 
     // Download/delete/upscale options

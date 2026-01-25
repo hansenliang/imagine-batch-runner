@@ -17,9 +17,13 @@ Automates Grok Imagine video generation via Playwright. Runs 1-100 parallel work
 - `src/config.js` — Timeouts, selectors, defaults
 
 ## Run Outputs
-- Logs: `./logs/<job-name>/run.log`
+- Single run logs: `./logs/runs/<job-name>.log`
+- Autorun logs: `./logs/autorun/<session-id>/`
+  - `summary.log` — cycle-level tallies
+  - `detailed/<job-name>.log` — per-job detailed trace
+  - `run.log` — session-level events
 - Downloads: `./downloads/<job-name>/` (if autoDownload enabled)
-- Cache cleaned up after each run; only run.log persists
+- Cache cleaned up after each run; only logs persist
 
 ## Key Rules
 - **Content moderation is expected** — log as WARN, never ERROR

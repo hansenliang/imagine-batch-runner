@@ -3,9 +3,11 @@ import path from 'path';
 import chalk from 'chalk';
 
 export class Logger {
-  constructor(runDir = null) {
-    this.runDir = runDir;
-    this.logFile = runDir ? path.join(runDir, 'run.log') : null;
+  /**
+   * @param {string|null} logFilePath - Full path to the log file (e.g., '/path/to/logs/job.log')
+   */
+  constructor(logFilePath = null) {
+    this.logFile = logFilePath;
   }
 
   async _writeToFile(message) {

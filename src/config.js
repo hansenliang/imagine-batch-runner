@@ -48,6 +48,8 @@ export const config = {
   PROJECT_ROOT: path.resolve(__dirname, '..'),
   PROFILES_DIR: path.resolve(__dirname, '..', 'profiles'),
   RUNS_DIR: path.resolve(__dirname, '..', 'logs'),
+  AUTORUN_LOGS_DIR: path.resolve(__dirname, '..', 'logs', 'autorun'),
+  SINGLE_RUN_LOGS_DIR: path.resolve(__dirname, '..', 'logs', 'runs'),
   CACHE_DIR: path.resolve(__dirname, '..', 'cache'),
 
   // Timeouts (milliseconds)

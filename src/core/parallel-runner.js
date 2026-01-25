@@ -21,6 +21,7 @@ export class ParallelRunner {
       autoDownload = false,
       autoUpscale = false,
       autoDelete = false,
+      logFilePath = null,  // Optional: caller can specify exact log file path
     } = options;
 
     this.accountAlias = accountAlias;
@@ -34,7 +35,8 @@ export class ParallelRunner {
     this.autoDelete = autoDelete;
 
     // Runtime state
-    this.runDir = path.join(config.RUNS_DIR, this.jobName);  // logs only
+    // If logFilePath provided, use it; otherwise default to logs/runs/<jobName>.log
+    this.logFilePath = logFilePath || path.join(config.SINGLE_RUN_LOGS_DIR, `${this.jobName}.log`);
     this.cacheDir = path.join(config.CACHE_DIR, this.jobName);  // ephemeral files (manifest, worker-profiles)
     this.downloadDir = autoDownload ? path.join(config.DOWNLOAD_DIR, this.jobName) : null;
     this.manifest = null;
@@ -48,13 +50,13 @@ export class ParallelRunner {
    * Initialize a new parallel run
    */
   async init() {
-    // Create directories: logs for run.log, cache for manifest and worker-profiles
-    await fs.mkdir(this.runDir, { recursive: true });
+    // Create directories: parent of log file, cache for manifest and worker-profiles
+    await fs.mkdir(path.dirname(this.logFilePath), { recursive: true });
     await fs.mkdir(this.cacheDir, { recursive: true });
     await fs.mkdir(path.join(this.cacheDir, 'worker-profiles'), { recursive: true });
 
-    // Initialize logger (writes to runDir)
-    this.logger = new Logger(this.runDir);
+    // Initialize logger (writes to logFilePath)
+    this.logger = new Logger(this.logFilePath);
     await this.logger.info('=== Parallel Run Started ===');
     await this.logger.info(`Job: ${this.jobName}`);
     await this.logger.info(`Account: ${this.accountAlias}`);
@@ -72,7 +74,7 @@ export class ParallelRunner {
       jobName: this.jobName,
     });
 
-    await this.logger.info(`Run directory: ${this.runDir}`);
+    await this.logger.info(`Log file: ${this.logFilePath}`);
     await this.logger.info(`Cache directory: ${this.cacheDir}`);
     await this.logger.success('Initialization complete');
   }
@@ -93,7 +95,6 @@ export class ParallelRunner {
           this.prompt,
           this.manifest,
           this.logger,
-          this.runDir,
           this.cacheDir,
           {
             autoDownload: this.autoDownload,
