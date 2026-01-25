@@ -109,8 +109,6 @@ export const selectors = {
 
   // Video generation states
   VIDEO_CONTAINER: 'video, [role="video"]',
-  LOADING_INDICATOR: '[aria-busy="true"], .loading, .spinner',
-  VIDEO_PROGRESS_BAR: '[role="progressbar"], .progress-bar, [aria-valuenow]',
 
   // Error detection
   CONTENT_MODERATED_MESSAGE: 'text=/try a different idea|content moderated|moderated|blocked/i',
@@ -119,7 +117,6 @@ export const selectors = {
 
   // Rate limit indicators
   RATE_LIMIT_TOAST: 'text=/try again later|rate limit|too many requests|usage limit|video limit|limit reached|daily limit|hourly limit|quota exceeded|maximum.*reached/i',
-  ERROR_MESSAGE: '[role="alert"], .error, .toast',
 
   // Success indicators
   VIDEO_DOWNLOAD_BUTTON: 'button:has-text("Download"), button:has-text("Save"), a[download]',
