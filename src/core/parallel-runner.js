@@ -38,7 +38,9 @@ export class ParallelRunner {
     // If logFilePath provided, use it; otherwise default to logs/runs/<jobName>.log
     this.logFilePath = logFilePath || path.join(config.SINGLE_RUN_LOGS_DIR, `${this.jobName}.log`);
     this.cacheDir = path.join(config.CACHE_DIR, this.jobName);  // ephemeral files (manifest, worker-profiles)
-    this.downloadDir = autoDownload ? path.join(config.DOWNLOAD_DIR, this.jobName) : null;
+    // downloadBaseName allows consolidating downloads by base job name (without timestamp)
+    const downloadFolderName = options.downloadBaseName || this.jobName;
+    this.downloadDir = autoDownload ? path.join(config.DOWNLOAD_DIR, downloadFolderName) : null;
     this.manifest = null;
     this.logger = null;
     this.workers = [];

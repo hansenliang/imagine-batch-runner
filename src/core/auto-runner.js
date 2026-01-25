@@ -401,6 +401,7 @@ export class AutoRunner {
         autoUpscale: configData.autoUpscale !== false,    // default true
         autoDelete: configData.autoDelete || false,       // default false
         logFilePath,  // Pass the detailed log path
+        downloadBaseName: baseName,  // Use base name (without timestamp) for download folder
       });
 
       await runner.init();
