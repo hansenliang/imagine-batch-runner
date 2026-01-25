@@ -371,8 +371,8 @@ export class AutoRunner {
    * Run a single config using ParallelRunner
    */
   async runConfig(file, configData) {
-    // Generate job name from filename + timestamp
-    const baseName = path.basename(file, '.json');
+    // Generate job name: use config's jobName if present, otherwise use filename
+    const baseName = configData.jobName || path.basename(file, '.json');
     const timestamp = formatTimestamp();
     const jobName = `${baseName}-${timestamp}`;
 
