@@ -4,6 +4,8 @@ Local batch image-to-video generator for Grok Imagine.
 
 AI generation is inherently random, so to get the best results, you often need to run jobs in batches. This tool automates that process using browser automation (Playwright).
 
+Demo: https://youtu.be/FT3I99cdwpE
+
 ## Features
 
 - **Parallel generation**: Up to 100 simultaneous workers
