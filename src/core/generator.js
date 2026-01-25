@@ -443,19 +443,19 @@ export class VideoGenerator {
     const checkInterval = 2000; // Check every 2 seconds
     let lastProgressLog = 0;
     let sawGenerationSignal = false;
+    let lastPercentage = -1;
 
     while (true) {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
-
-      // 1. Check for failures FIRST (highest priority)
 
       const loading = await this.page.$(selectors.LOADING_INDICATOR);
       const progress = await this.page.$(selectors.VIDEO_PROGRESS_BAR);
       const video = await this.page.$(selectors.VIDEO_CONTAINER);
       const percentageProgress = await this._detectProgressPercentage();
 
-      // Check for generation signals - loading indicator, progress bar, or percentage text
-      // A video element alone could be stale from a previous session
+      // Track generation signals and percentage progress
+      const generationInProgress = percentageProgress.detected;
+
       if (!sawGenerationSignal) {
         if (loading || progress || percentageProgress.detected) {
           sawGenerationSignal = true;
@@ -464,46 +464,16 @@ export class VideoGenerator {
         }
       }
 
-      // Rate limit check (if before generation starts, stop immediately)
-      const rateLimit = await this._detectRateLimit();
-      if (rateLimit.detected) {
-        if (!sawGenerationSignal) {
-          this.logger.warn(`[Attempt ${index + 1}] Rate limit detected before generation started: ${rateLimit.message}`);
-          throw new Error(`RATE_LIMIT: ${rateLimit.message}`);
+      // Track percentage to detect new generation (low % after high % = new gen started)
+      if (percentageProgress.detected) {
+        if (lastPercentage > 50 && percentageProgress.percentage < 20) {
+          this.logger.debug(`[Attempt ${index + 1}] New generation detected (${lastPercentage}% -> ${percentageProgress.percentage}%)`);
         }
-
-        if (!this.rateLimitAfterStart) {
-          this.logger.debug(
-            `[Attempt ${index + 1}] Rate limit detected after generation started; will stop after current attempt`
-          );
-        }
-        this.rateLimitAfterStart = true;
+        lastPercentage = percentageProgress.percentage;
       }
 
-      // Content moderation check
-      const moderation = await this._detectContentModeration();
-      if (moderation.detected) {
-        this.logger.warn(`[Attempt ${index + 1}] Content moderation detected: ${moderation.message}`);
-        throw new Error(`CONTENT_MODERATED: ${moderation.message}`);
-      }
-
-      // Network error check
-      const networkError = await this._detectNetworkError();
-      if (networkError.detected) {
-        this.logger.warn(`[Attempt ${index + 1}] Network error detected: ${networkError.message}`);
-        throw new Error(`NETWORK_ERROR: ${networkError.message}`);
-      }
-
-      // General generation error check
-      const genError = await this._detectGenerationError();
-      if (genError.detected) {
-        this.logger.warn(`[Attempt ${index + 1}] Generation error detected: ${genError.message}`);
-        throw new Error(`GENERATION_ERROR: ${genError.message}`);
-      }
-
-      // 2. Check for success (only if we saw generation actually start)
+      // 1. Check for success - video completion (always check this)
       if (video && sawGenerationSignal) {
-        // Video element found, verify it's actually playable
         const isPlayable = await this._verifyVideoPlayable(video);
         if (isPlayable) {
           this.logger.success(`[Attempt ${index + 1}] Video ready and verified`);
@@ -511,17 +481,57 @@ export class VideoGenerator {
         }
       }
 
-      // 3. Check for timeout
+      // 2. Check for timeout (always check this)
       if (elapsed > config.VIDEO_GENERATION_TIMEOUT / 1000) {
         this.logger.error(`[Attempt ${index + 1}] Generation timeout after ${elapsed}s (sawGenerationSignal=${sawGenerationSignal}, video=${!!video})`);
         throw new Error(`TIMEOUT: Video generation exceeded ${config.VIDEO_GENERATION_TIMEOUT / 1000}s`);
       }
 
+      // 3. Check for errors ONLY when generation is NOT in progress
+      // This prevents false positives from stale moderation toasts
+      if (!generationInProgress) {
+        // Rate limit check
+        const rateLimit = await this._detectRateLimit();
+        if (rateLimit.detected) {
+          if (!sawGenerationSignal) {
+            this.logger.warn(`[Attempt ${index + 1}] Rate limit detected before generation started: ${rateLimit.message}`);
+            throw new Error(`RATE_LIMIT: ${rateLimit.message}`);
+          }
+
+          if (!this.rateLimitAfterStart) {
+            this.logger.debug(
+              `[Attempt ${index + 1}] Rate limit detected after generation started; will stop after current attempt`
+            );
+          }
+          this.rateLimitAfterStart = true;
+        }
+
+        // Content moderation check
+        const moderation = await this._detectContentModeration();
+        if (moderation.detected) {
+          this.logger.warn(`[Attempt ${index + 1}] Content moderation detected: ${moderation.message}`);
+          throw new Error(`CONTENT_MODERATED: ${moderation.message}`);
+        }
+
+        // Network error check
+        const networkError = await this._detectNetworkError();
+        if (networkError.detected) {
+          this.logger.warn(`[Attempt ${index + 1}] Network error detected: ${networkError.message}`);
+          throw new Error(`NETWORK_ERROR: ${networkError.message}`);
+        }
+
+        // General generation error check
+        const genError = await this._detectGenerationError();
+        if (genError.detected) {
+          this.logger.warn(`[Attempt ${index + 1}] Generation error detected: ${genError.message}`);
+          throw new Error(`GENERATION_ERROR: ${genError.message}`);
+        }
+      }
+
       // 4. Log progress periodically
       if (elapsed - lastProgressLog >= 10) {
-        if (loading) {
-          this.logger.debug(`[Attempt ${index + 1}] Still generating... (${elapsed}s)`);
-        }
+        const status = generationInProgress ? `${percentageProgress.percentage}%` : 'waiting';
+        this.logger.debug(`[Attempt ${index + 1}] Still generating... (${elapsed}s, ${status})`);
         lastProgressLog = elapsed;
       }
 
