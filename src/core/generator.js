@@ -91,9 +91,30 @@ export class VideoGenerator {
   }
 
   /**
+   * Dismiss any announcement banners that may block UI elements
+   * @private
+   */
+  async _dismissBanners() {
+    try {
+      const dismissButton = await this.page.$(selectors.ANNOUNCEMENT_BANNER_DISMISS);
+      if (dismissButton) {
+        const isVisible = await dismissButton.isVisible().catch(() => false);
+        if (isVisible) {
+          await dismissButton.click();
+          this.logger.debug('Dismissed announcement banner');
+          await sleep(300);
+        }
+      }
+    } catch (error) {
+      // Silently ignore - banner dismissal is best-effort
+    }
+  }
+
+  /**
    * Click the "Make video" or "Redo" button
    */
   async _clickGenerationButton(index) {
+    await this._dismissBanners();
     this.logger.debug(`[Attempt ${index + 1}] Looking for generation button`);
 
     const waitTimeout = Math.max(3000, config.ELEMENT_WAIT_TIMEOUT);

@@ -147,6 +147,9 @@ export const selectors = {
   UPSCALE_MENU_ITEM: '[role="menuitem"]:has-text("Upscale"), [role="menuitem"]:has-text("upscale")',
   UPSCALING_INDICATOR: 'text=/upscaling/i',
   HD_BADGE: 'text=/^HD$/i',
+
+  // Announcement banner dismiss button (X button inside z-[9999] banner)
+  ANNOUNCEMENT_BANNER_DISMISS: 'div.absolute[class*="z-[9999]"] button:has(svg.lucide-x)',
 };
 
 export default config;

@@ -152,6 +152,8 @@ export class PostProcessor {
    * @private
    */
   async _performDownload(index) {
+    await this._dismissBanners();
+
     // Ensure download directory exists
     if (!this.downloadDirCreated) {
       await fs.mkdir(this.downloadDir, { recursive: true });
@@ -212,6 +214,26 @@ export class PostProcessor {
         fileSize: null,
         error: error.message,
       };
+    }
+  }
+
+  /**
+   * Dismiss any announcement banners that may block UI elements
+   * @private
+   */
+  async _dismissBanners() {
+    try {
+      const dismissButton = await this.page.$(selectors.ANNOUNCEMENT_BANNER_DISMISS);
+      if (dismissButton) {
+        const isVisible = await dismissButton.isVisible().catch(() => false);
+        if (isVisible) {
+          await dismissButton.click();
+          this.logger.debug('Dismissed announcement banner');
+          await sleep(300);
+        }
+      }
+    } catch (error) {
+      // Silently ignore - banner dismissal is best-effort
     }
   }
 
@@ -288,6 +310,8 @@ export class PostProcessor {
    * @private
    */
   async _performDelete(index) {
+    await this._dismissBanners();
+
     try {
       // Step 1: Find and click the "More options" menu button
       const menuButton = await this._findMenuButton();
@@ -443,6 +467,8 @@ export class PostProcessor {
    * @private
    */
   async _performUpscale(index, originalPath) {
+    await this._dismissBanners();
+
     try {
       // Step 1: Click the "More options" menu button
       const menuButton = await this._findMenuButton();
