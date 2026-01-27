@@ -229,7 +229,7 @@ export class PostProcessor {
         if (isVisible) {
           await dismissButton.click();
           this.logger.debug('Dismissed announcement banner');
-          await sleep(300);
+          await sleep(config.UI_ACTION_DELAY);
         }
       }
     } catch (error) {
@@ -320,7 +320,7 @@ export class PostProcessor {
       }
 
       await menuButton.click();
-      await sleep(500); // Wait for menu to open
+      await sleep(config.UI_ACTION_DELAY); // Wait for menu to open
 
       // Step 2: Find and click "Delete video" menu item
       const deleteItem = await this.page.$(selectors.DELETE_MENU_ITEM);
@@ -331,7 +331,7 @@ export class PostProcessor {
       }
 
       await deleteItem.click();
-      await sleep(500); // Wait for confirmation modal
+      await sleep(config.UI_ACTION_DELAY); // Wait for confirmation modal
 
       // Step 3: Find and click confirm button in modal
       const confirmButton = await this.page.$(selectors.DELETE_CONFIRM_BUTTON);
