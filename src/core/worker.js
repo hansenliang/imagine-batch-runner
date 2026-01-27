@@ -219,7 +219,7 @@ export class ParallelWorker {
       await sleep(config.UI_ACTION_DELAY); // Wait for menu to close
 
       this.selectedDuration = `${maxDuration.duration}s`;
-      this.logger.debug(`[Worker ${this.workerId}] Selected video duration: ${this.selectedDuration}`);
+      this.logger.info(`[Worker ${this.workerId}] Selected video duration: ${this.selectedDuration}`);
     } catch (error) {
       this.logger.warn(`[Worker ${this.workerId}] Duration selection failed: ${error.message}, using default`);
       this.selectedDuration = null;
