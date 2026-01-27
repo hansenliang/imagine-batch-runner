@@ -670,6 +670,15 @@ export class AutoRunner {
     if (this.sessionStats.totalRateLimited > 0) {
       lines.push(`  Rate limited: ${this.sessionStats.totalRateLimited}`);
     }
+    if (this.sessionStats.totalDownloaded > 0) {
+      lines.push(`    Downloaded: ${this.sessionStats.totalDownloaded}`);
+    }
+    if (this.sessionStats.totalUpscaled > 0) {
+      lines.push(`    Upscaled: ${this.sessionStats.totalUpscaled}`);
+    }
+    if (this.sessionStats.totalDeleted > 0) {
+      lines.push(`    Deleted: ${this.sessionStats.totalDeleted}`);
+    }
     lines.push('---');
     lines.push('');
 
@@ -693,6 +702,15 @@ export class AutoRunner {
       lines.push(`  Status: ${cycle.stats.status}`);
       if (cycle.stats.stopReason) {
         lines.push(`  Stop reason: ${cycle.stats.stopReason}`);
+      }
+      if (cycle.stats.downloaded > 0) {
+        lines.push(`    Downloaded: ${cycle.stats.downloaded}`);
+      }
+      if (cycle.stats.upscaled > 0) {
+        lines.push(`    Upscaled: ${cycle.stats.upscaled}`);
+      }
+      if (cycle.stats.deleted > 0) {
+        lines.push(`    Deleted: ${cycle.stats.deleted}`);
       }
       lines.push('---');
       lines.push('');
