@@ -232,9 +232,14 @@ export class ParallelRunner {
   async _printSummary() {
     const summary = this.manifest.getSummary();
 
+    // Get duration setting from first worker that has one
+    const selectedDuration = this.workers.find(w => w.selectedDuration)?.selectedDuration;
+    const durationDisplay = selectedDuration ? `max (${selectedDuration})` : 'default';
+
     // Console output: color-coded emoji summary
     console.log(chalk.blue('\n📊 Run Summary:\n'));
     console.log(chalk.gray(`  Workers: ${this.parallelism}`));
+    console.log(chalk.gray(`  Duration setting: ${durationDisplay}`));
     console.log(chalk.gray(`  Total attempts: ${summary.totalAttempts}`));
     console.log(chalk.green(`    ✓ Successful: ${summary.successful}`));
     if (summary.contentModerated > 0) {
@@ -273,6 +278,7 @@ export class ParallelRunner {
     // File log only (console already has emoji summary above)
     await this.logger.logToFileOnly('=== Run Summary ===');
     await this.logger.logToFileOnly(`Workers: ${this.parallelism}`);
+    await this.logger.logToFileOnly(`Duration setting: ${durationDisplay}`);
     await this.logger.logToFileOnly(`Total attempts: ${summary.totalAttempts}`);
     await this.logger.logToFileOnly(`  Successful: ${summary.successful}`);
     if (summary.contentModerated > 0) {
