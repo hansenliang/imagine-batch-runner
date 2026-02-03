@@ -32,6 +32,10 @@ export class ParallelWorker {
     this.downloadDir = options.downloadDir || null;
     this.jobName = options.jobName || null;
 
+    // Video settings selection (opt-in)
+    this.selectMaxDuration = options.selectMaxDuration || false;
+    this.selectMaxResolution = options.selectMaxResolution || false;
+
     // Browser resources
     this.context = null;
     this.page = null;
@@ -106,9 +110,13 @@ export class ParallelWorker {
         throw new Error('AUTH_REQUIRED: Not authenticated. Worker cannot proceed.');
       }
 
-      // Select maximum video duration and resolution (once per worker session)
-      await this._selectMaxDuration();
-      await this._selectMaxResolution();
+      // Select maximum video duration and resolution (once per worker session, if enabled)
+      if (this.selectMaxDuration) {
+        await this._selectMaxDuration();
+      }
+      if (this.selectMaxResolution) {
+        await this._selectMaxResolution();
+      }
 
       // Create video generator
       this.generator = new VideoGenerator(this.page, this.logger);

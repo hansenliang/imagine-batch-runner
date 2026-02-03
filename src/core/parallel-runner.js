@@ -21,6 +21,8 @@ export class ParallelRunner {
       autoDownload = false,
       autoUpscale = false,
       autoDelete = false,
+      selectMaxDuration = false,
+      selectMaxResolution = false,
       logFilePath = null,  // Optional: caller can specify exact log file path
     } = options;
 
@@ -33,6 +35,8 @@ export class ParallelRunner {
     this.autoDownload = autoDownload;
     this.autoUpscale = autoUpscale;
     this.autoDelete = autoDelete;
+    this.selectMaxDuration = selectMaxDuration;
+    this.selectMaxResolution = selectMaxResolution;
 
     // Runtime state
     // If logFilePath provided, use it; otherwise default to logs/runs/<jobName>.log
@@ -102,6 +106,8 @@ export class ParallelRunner {
             autoDownload: this.autoDownload,
             autoUpscale: this.autoUpscale,
             autoDelete: this.autoDelete,
+            selectMaxDuration: this.selectMaxDuration,
+            selectMaxResolution: this.selectMaxResolution,
             downloadDir: this.downloadDir,
             jobName: this.jobName,
           }

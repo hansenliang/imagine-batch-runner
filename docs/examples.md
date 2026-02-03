@@ -36,6 +36,24 @@ Create `batch-config.json`:
 }
 ```
 
+### Video Quality Settings
+
+By default, videos use Grok's default duration and resolution. To automatically select maximum values:
+
+```json
+{
+  "account": "primary-account",
+  "permalink": "https://grok.com/imagine/post/YOUR_POST_ID",
+  "prompt": "cinematic slow pan over landscape",
+  "count": 20,
+  "selectMaxDuration": true,
+  "selectMaxResolution": true
+}
+```
+
+- `selectMaxDuration: true` — Selects longest available duration (e.g., 10s over 6s)
+- `selectMaxResolution: true` — Selects highest available resolution (e.g., 720p over 480p)
+
 Run:
 ```bash
 node src/cli.js run start --config batch-config.json
