@@ -149,7 +149,7 @@ export const selectors = {
   UPSCALING_INDICATOR: 'text=/upscaling/i',
   HD_BADGE: 'text=/^HD$/i',
 
-  // Video duration selection
+  // Video options menu (duration and resolution selection)
   VIDEO_OPTIONS_BUTTON: 'button[aria-label="Video Options"]',
 
   // Announcement banner dismiss button (X button inside z-[9999] banner)

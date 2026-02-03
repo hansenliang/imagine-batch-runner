@@ -45,6 +45,7 @@ export class ParallelWorker {
     this.isRunning = false;
     this.shouldStop = false;
     this.selectedDuration = null; // Track selected video duration for logging
+    this.selectedResolution = null; // Track selected video resolution for logging
   }
 
   /**
@@ -105,8 +106,9 @@ export class ParallelWorker {
         throw new Error('AUTH_REQUIRED: Not authenticated. Worker cannot proceed.');
       }
 
-      // Select maximum video duration (once per worker session)
+      // Select maximum video duration and resolution (once per worker session)
       await this._selectMaxDuration();
+      await this._selectMaxResolution();
 
       // Create video generator
       this.generator = new VideoGenerator(this.page, this.logger);
@@ -205,7 +207,7 @@ export class ParallelWorker {
 
       if (durationButtons.length === 0) {
         this.logger.warn(`[Worker ${this.workerId}] No duration buttons found, using default duration`);
-        // Close menu by clicking elsewhere
+        // Close menu by pressing Escape
         await this.page.keyboard.press('Escape');
         return;
       }
@@ -223,6 +225,69 @@ export class ParallelWorker {
     } catch (error) {
       this.logger.warn(`[Worker ${this.workerId}] Duration selection failed: ${error.message}, using default`);
       this.selectedDuration = null;
+    }
+  }
+
+  /**
+   * Select the maximum available video resolution.
+   * Called once per worker session during initialization.
+   * @private
+   */
+  async _selectMaxResolution() {
+    try {
+      // Click video options button to open menu
+      const optionsButton = await this.page.$(selectors.VIDEO_OPTIONS_BUTTON);
+      if (!optionsButton) {
+        this.logger.warn(`[Worker ${this.workerId}] Video options button not found, using default resolution`);
+        return;
+      }
+
+      await optionsButton.click();
+      await sleep(config.UI_ACTION_DELAY); // Wait for menu to open
+
+      // Find all buttons in the menu and filter for resolution patterns (e.g., "480p", "720p")
+      const buttons = await this.page.$$('button');
+      const resolutionButtons = [];
+
+      for (const button of buttons) {
+        const isVisible = await button.isVisible().catch(() => false);
+        if (!isVisible) continue;
+
+        const ariaLabel = await button.getAttribute('aria-label').catch(() => '');
+        const text = await button.innerText().catch(() => '');
+        const label = ariaLabel || text;
+
+        // Match resolution pattern: digits followed by 'p' (e.g., "480p", "720p", "1080p")
+        const match = label.match(/^(\d+)p$/);
+        if (match) {
+          resolutionButtons.push({
+            button,
+            resolution: parseInt(match[1], 10),
+            label,
+          });
+        }
+      }
+
+      if (resolutionButtons.length === 0) {
+        this.logger.warn(`[Worker ${this.workerId}] No resolution buttons found, using default resolution`);
+        // Close menu by pressing Escape
+        await this.page.keyboard.press('Escape');
+        return;
+      }
+
+      // Find and click the maximum resolution
+      const maxResolution = resolutionButtons.reduce((max, curr) =>
+        curr.resolution > max.resolution ? curr : max
+      );
+
+      await maxResolution.button.click();
+      await sleep(config.UI_ACTION_DELAY); // Wait for menu to close
+
+      this.selectedResolution = `${maxResolution.resolution}p`;
+      this.logger.info(`[Worker ${this.workerId}] Selected video resolution: ${this.selectedResolution}`);
+    } catch (error) {
+      this.logger.warn(`[Worker ${this.workerId}] Resolution selection failed: ${error.message}, using default`);
+      this.selectedResolution = null;
     }
   }
 
@@ -290,9 +355,10 @@ export class ParallelWorker {
             this.workerId
           );
 
-          const durationInfo = this.selectedDuration ? ` (${this.selectedDuration} video)` : '';
+          const settingsInfo = [this.selectedDuration, this.selectedResolution].filter(Boolean).join(', ');
+          const settingsSuffix = settingsInfo ? ` (${settingsInfo})` : '';
           this.logger.success(
-            `[Worker ${this.workerId}] Attempt ${index + 1}: Success in ${duration}s${durationInfo} - ${this.page.url()}`
+            `[Worker ${this.workerId}] Attempt ${index + 1}: Success in ${duration}s${settingsSuffix} - ${this.page.url()}`
           );
 
           // Post-processing: download and/or delete
