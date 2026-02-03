@@ -44,6 +44,7 @@ export class ParallelWorker {
     // State
     this.isRunning = false;
     this.shouldStop = false;
+    this.selectedDuration = null; // Track selected video duration for logging
   }
 
   /**
@@ -104,6 +105,9 @@ export class ParallelWorker {
         throw new Error('AUTH_REQUIRED: Not authenticated. Worker cannot proceed.');
       }
 
+      // Select maximum video duration (once per worker session)
+      await this._selectMaxDuration();
+
       // Create video generator
       this.generator = new VideoGenerator(this.page, this.logger);
 
@@ -156,6 +160,69 @@ export class ParallelWorker {
       await sleep(500);
     } catch (error) {
       this.logger.warn(`[Worker ${this.workerId}] UI readiness check timed out: ${error.message}`);
+    }
+  }
+
+  /**
+   * Select the maximum available video duration.
+   * Called once per worker session during initialization.
+   * @private
+   */
+  async _selectMaxDuration() {
+    try {
+      // Click video options button to open duration menu
+      const optionsButton = await this.page.$(selectors.VIDEO_OPTIONS_BUTTON);
+      if (!optionsButton) {
+        this.logger.warn(`[Worker ${this.workerId}] Video options button not found, using default duration`);
+        return;
+      }
+
+      await optionsButton.click();
+      await sleep(config.UI_ACTION_DELAY); // Wait for menu to open
+
+      // Find all buttons in the menu and filter for duration patterns (e.g., "6s", "10s")
+      const buttons = await this.page.$$('button');
+      const durationButtons = [];
+
+      for (const button of buttons) {
+        const isVisible = await button.isVisible().catch(() => false);
+        if (!isVisible) continue;
+
+        const ariaLabel = await button.getAttribute('aria-label').catch(() => '');
+        const text = await button.innerText().catch(() => '');
+        const label = ariaLabel || text;
+
+        // Match duration pattern: digits followed by 's' (e.g., "6s", "10s")
+        const match = label.match(/^(\d+)s$/);
+        if (match) {
+          durationButtons.push({
+            button,
+            duration: parseInt(match[1], 10),
+            label,
+          });
+        }
+      }
+
+      if (durationButtons.length === 0) {
+        this.logger.warn(`[Worker ${this.workerId}] No duration buttons found, using default duration`);
+        // Close menu by clicking elsewhere
+        await this.page.keyboard.press('Escape');
+        return;
+      }
+
+      // Find and click the maximum duration
+      const maxDuration = durationButtons.reduce((max, curr) =>
+        curr.duration > max.duration ? curr : max
+      );
+
+      await maxDuration.button.click();
+      await sleep(config.UI_ACTION_DELAY); // Wait for menu to close
+
+      this.selectedDuration = `${maxDuration.duration}s`;
+      this.logger.info(`[Worker ${this.workerId}] Selected video duration: ${this.selectedDuration}`);
+    } catch (error) {
+      this.logger.warn(`[Worker ${this.workerId}] Duration selection failed: ${error.message}, using default`);
+      this.selectedDuration = null;
     }
   }
 
@@ -223,8 +290,9 @@ export class ParallelWorker {
             this.workerId
           );
 
+          const durationInfo = this.selectedDuration ? ` (${this.selectedDuration} video)` : '';
           this.logger.success(
-            `[Worker ${this.workerId}] Attempt ${index + 1}: Success in ${duration}s - ${this.page.url()}`
+            `[Worker ${this.workerId}] Attempt ${index + 1}: Success in ${duration}s${durationInfo} - ${this.page.url()}`
           );
 
           // Post-processing: download and/or delete

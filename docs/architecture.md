@@ -23,6 +23,7 @@ CLI (cli.js)
 
 ### ParallelWorker (`src/core/worker.js`)
 - Maintains dedicated browser context with isolated Chrome profile copy
+- Selects maximum available video duration on initialization (e.g., 10s over 6s)
 - Claims work items atomically from manifest
 - Runs generation loop: claim → generate → update manifest → repeat
 - Signals `RATE_LIMIT_STOP` to coordinator when rate limit detected

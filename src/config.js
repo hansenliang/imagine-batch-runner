@@ -56,6 +56,7 @@ export const config = {
   VIDEO_GENERATION_TIMEOUT: 60000, // 60 seconds
   PAGE_LOAD_TIMEOUT: 30000,
   ELEMENT_WAIT_TIMEOUT: parseInt(process.env.ELEMENT_WAIT_TIMEOUT, 10) || 30000, // 30 seconds (configurable via env var)
+  UI_ACTION_DELAY: 1000, // 1 second delay after UI actions (menu open/close, button clicks)
 
   // Content moderation retry configuration
   MODERATION_RETRY_MAX: 100, // Max retries for content moderation errors
@@ -147,6 +148,9 @@ export const selectors = {
   UPSCALE_MENU_ITEM: '[role="menuitem"]:has-text("Upscale"), [role="menuitem"]:has-text("upscale")',
   UPSCALING_INDICATOR: 'text=/upscaling/i',
   HD_BADGE: 'text=/^HD$/i',
+
+  // Video duration selection
+  VIDEO_OPTIONS_BUTTON: 'button[aria-label="Video Options"]',
 
   // Announcement banner dismiss button (X button inside z-[9999] banner)
   ANNOUNCEMENT_BANNER_DISMISS: 'div.absolute[class*="z-[9999]"] button:has(svg.lucide-x)',

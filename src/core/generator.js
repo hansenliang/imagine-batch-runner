@@ -102,7 +102,7 @@ export class VideoGenerator {
         if (isVisible) {
           await dismissButton.click();
           this.logger.debug('Dismissed announcement banner');
-          await sleep(300);
+          await sleep(config.UI_ACTION_DELAY);
         }
       }
     } catch (error) {
@@ -203,7 +203,7 @@ export class VideoGenerator {
     this.logger.debug(`[Attempt ${index + 1}] Clicked generation button`);
 
     // Wait for UI to respond
-    await sleep(1000);
+    await sleep(config.UI_ACTION_DELAY);
   }
 
   /**
