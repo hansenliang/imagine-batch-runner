@@ -363,7 +363,8 @@ export class ParallelWorker {
             this.workerId
           );
 
-          const settingsInfo = [this.selectedDuration, this.selectedResolution].filter(Boolean).join(', ');
+          const effectiveResolution = result.actualResolution || this.selectedResolution;
+          const settingsInfo = [this.selectedDuration, effectiveResolution].filter(Boolean).join(', ');
           const settingsSuffix = settingsInfo ? ` (${settingsInfo})` : '';
           this.logger.success(
             `[Worker ${this.workerId}] Attempt ${index + 1}: Success in ${duration}s${settingsSuffix} - ${this.page.url()}`

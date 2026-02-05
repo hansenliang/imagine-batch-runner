@@ -38,7 +38,7 @@ export class VideoGenerator {
       await this._clickGenerationButton(index);
 
       // Step 3: Wait for video generation to complete
-      await this._waitForCompletion(index);
+      const completionResult = await this._waitForCompletion(index);
 
       const duration = Date.now() - startTime;
       return {
@@ -47,6 +47,7 @@ export class VideoGenerator {
         attempted: true,
         contentModerated: false,
         durationMs: duration,
+        actualResolution: completionResult?.actualResolution || null,
       };
     } catch (error) {
       // Rate limit detected before generation starts - doesn't count as attempt
@@ -341,18 +342,40 @@ export class VideoGenerator {
   }
 
   /**
-   * Detect rate limit from UI
+   * Detect rate limit from UI (requires Upgrade button to be visible)
    */
   async _detectRateLimit() {
     try {
-      const rateLimitMsg = await this.page.$(selectors.RATE_LIMIT_TOAST);
-      if (rateLimitMsg) {
-        const text = await rateLimitMsg.textContent().catch(() => '');
-        return { detected: true, message: text };
+      const upgradeButton = await this.page.$(selectors.RATE_LIMIT_TOAST);
+      if (upgradeButton) {
+        const isVisible = await upgradeButton.isVisible().catch(() => false);
+        if (isVisible) {
+          return { detected: true, message: 'Rate limit reached (Upgrade button visible)' };
+        }
       }
       return { detected: false, message: null };
     } catch (error) {
       return { detected: false, message: null };
+    }
+  }
+
+  /**
+   * Detect resolution downgrade toast and extract actual resolution
+   * Returns: { detected: boolean, actualResolution: string | null, message: string | null }
+   */
+  async _detectResolutionDowngrade() {
+    try {
+      const downgradeMsg = await this.page.$(selectors.RESOLUTION_DOWNGRADE_TOAST);
+      if (downgradeMsg) {
+        const text = await downgradeMsg.textContent().catch(() => '');
+        // Extract resolution from "switched to 480p" pattern
+        const match = text.match(/switched.*?(\d+p)/i);
+        const actualResolution = match ? match[1] : null;
+        return { detected: true, actualResolution, message: text };
+      }
+      return { detected: false, actualResolution: null, message: null };
+    } catch (error) {
+      return { detected: false, actualResolution: null, message: null };
     }
   }
 
@@ -461,6 +484,7 @@ export class VideoGenerator {
     const startTime = Date.now();
     const checkInterval = 2000;
     let loggedStart = false;
+    let actualResolution = null; // Track if resolution was downgraded
 
     while (true) {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -470,6 +494,15 @@ export class VideoGenerator {
 
       // % > 0 means generation is actively in progress
       const generationInProgress = percentageProgress.detected && percentageProgress.percentage > 0;
+
+      // Check for resolution downgrade once, early in generation (before loggedStart)
+      if (!actualResolution && !loggedStart) {
+        const downgrade = await this._detectResolutionDowngrade();
+        if (downgrade.detected) {
+          actualResolution = downgrade.actualResolution;
+          this.logger.info(`[Attempt ${index + 1}] Resolution downgraded: ${downgrade.message}`);
+        }
+      }
 
       // Log once when generation starts
       if (generationInProgress && !loggedStart) {
@@ -483,7 +516,7 @@ export class VideoGenerator {
         const isPlayable = await this._verifyVideoPlayable(video);
         if (isPlayable) {
           this.logger.success(`[Attempt ${index + 1}] Video ready and verified`);
-          return { success: true };
+          return { success: true, actualResolution };
         }
       }
 

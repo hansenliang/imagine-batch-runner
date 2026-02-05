@@ -77,7 +77,7 @@ All manifest writes use `FileLock.withLock()`:
 ## Configuration (`src/config.js`)
 
 Key values:
-- `VIDEO_GENERATION_TIMEOUT`: 60000ms (increase if videos take longer)
+- `VIDEO_GENERATION_TIMEOUT`: 120000ms (increased for higher resolutions/durations)
 - `DEFAULT_PARALLELISM`: 10 workers
 - `MODERATION_RETRY_MAX`: 100 retries for content moderation
 - `HEADED_MODE`: true (set false for production)
