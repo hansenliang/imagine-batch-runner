@@ -363,6 +363,11 @@ export class ParallelWorker {
             this.workerId
           );
 
+          // Track A/B test occurrences
+          if (result.abTestDetected) {
+            await this.manifest.incrementCounterAtomic('abTestCount');
+          }
+
           const effectiveResolution = result.actualResolution || this.selectedResolution;
           const settingsInfo = [this.selectedDuration, effectiveResolution].filter(Boolean).join(', ');
           const settingsSuffix = settingsInfo ? ` (${settingsInfo})` : '';

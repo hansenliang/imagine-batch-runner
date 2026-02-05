@@ -48,6 +48,7 @@ export class VideoGenerator {
         contentModerated: false,
         durationMs: duration,
         actualResolution: completionResult?.actualResolution || null,
+        abTestDetected: completionResult?.abTestDetected || false,
       };
     } catch (error) {
       // Rate limit detected before generation starts - doesn't count as attempt
@@ -412,6 +413,83 @@ export class VideoGenerator {
   }
 
   /**
+   * Detect A/B test state (two playable videos shown for comparison)
+   * Uses structural detection (counting playable videos) rather than button text for robustness
+   * @returns {{ detected: boolean, videoCount: number }}
+   */
+  async _detectABTest() {
+    try {
+      const videos = await this.page.$$(selectors.VIDEO_CONTAINER);
+      let playableCount = 0;
+
+      for (const video of videos) {
+        const isVisible = await video.isVisible().catch(() => false);
+        if (!isVisible) continue;
+
+        const src = await video.getAttribute('src').catch(() => null);
+        const duration = await video.evaluate(v => v.duration).catch(() => 0);
+
+        if (src && duration > 0) {
+          playableCount++;
+        }
+      }
+
+      return { detected: playableCount === 2, videoCount: playableCount };
+    } catch (error) {
+      this.logger.debug(`A/B test detection error: ${error.message}`);
+      return { detected: false, videoCount: 0 };
+    }
+  }
+
+  /**
+   * Dismiss A/B test by clicking the first preference button
+   * Finds buttons near video elements and clicks the first one found
+   * @param {number} index - Current attempt index for logging
+   * @returns {Promise<boolean>} - Whether dismissal was successful
+   */
+  async _dismissABTest(index) {
+    try {
+      const videos = await this.page.$$(selectors.VIDEO_CONTAINER);
+
+      for (const video of videos) {
+        const isVisible = await video.isVisible().catch(() => false);
+        if (!isVisible) continue;
+
+        // Find parent container that holds both video and button
+        // Walk up the DOM tree to find a container with a button
+        const container = await video.evaluateHandle(el => {
+          let parent = el.parentElement;
+          for (let i = 0; i < 6 && parent; i++) {
+            if (parent.querySelector('button')) return parent;
+            parent = parent.parentElement;
+          }
+          return el.parentElement;
+        });
+
+        const containerElement = container.asElement();
+        if (!containerElement) continue;
+
+        const button = await containerElement.$('button');
+        if (button) {
+          const isButtonVisible = await button.isVisible().catch(() => false);
+          if (isButtonVisible) {
+            this.logger.info(`[Attempt ${index + 1}] A/B test detected, selecting first variation`);
+            await button.click();
+            await sleep(2000); // Wait for UI transition
+            return true;
+          }
+        }
+      }
+
+      this.logger.warn(`[Attempt ${index + 1}] A/B test detected but could not find dismiss button`);
+      return false;
+    } catch (error) {
+      this.logger.warn(`[Attempt ${index + 1}] A/B test dismissal error: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
    * Detect progress percentage in button text (e.g., "45%", "100%")
    * Grok shows generation progress as percentage text in the button area
    */
@@ -515,8 +593,25 @@ export class VideoGenerator {
       if (video && loggedStart) {
         const isPlayable = await this._verifyVideoPlayable(video);
         if (isPlayable) {
+          // Check for A/B test state (two playable videos shown for comparison)
+          const abTest = await this._detectABTest();
+          if (abTest.detected) {
+            const dismissed = await this._dismissABTest(index);
+            if (dismissed) {
+              // Wait for UI to settle after dismissal
+              await sleep(2000);
+              // Verify we're back to normal state (single video)
+              const recheck = await this._detectABTest();
+              if (recheck.detected) {
+                this.logger.warn(`[Attempt ${index + 1}] A/B test still present after dismiss attempt`);
+              }
+            }
+            this.logger.success(`[Attempt ${index + 1}] Video ready and verified (A/B test dismissed)`);
+            return { success: true, actualResolution, abTestDetected: true };
+          }
+
           this.logger.success(`[Attempt ${index + 1}] Video ready and verified`);
-          return { success: true, actualResolution };
+          return { success: true, actualResolution, abTestDetected: false };
         }
       }
 

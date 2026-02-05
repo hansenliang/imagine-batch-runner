@@ -101,6 +101,7 @@ export class AutoRunner {
       totalUpscaleFailed: 0,
       totalDeleted: 0,
       totalDeleteFailed: 0,
+      totalABTestCount: 0,
       parallelism: 0,
     };
 
@@ -271,6 +272,7 @@ export class AutoRunner {
       upscaleFailed: 0,
       deleted: 0,
       deleteFailed: 0,
+      abTestCount: 0,
       parallelism: 0,
       status: 'COMPLETED',
       stopReason: null,
@@ -306,6 +308,7 @@ export class AutoRunner {
         cycleStats.upscaleFailed += result.upscaleFailed || 0;
         cycleStats.deleted += result.deleted || 0;
         cycleStats.deleteFailed += result.deleteFailed || 0;
+        cycleStats.abTestCount += result.abTestCount || 0;
         cycleStats.parallelism = Math.max(cycleStats.parallelism, parallelism);
 
         if (result.status === 'COMPLETED') {
@@ -340,6 +343,7 @@ export class AutoRunner {
     this.sessionStats.totalUpscaleFailed += cycleStats.upscaleFailed;
     this.sessionStats.totalDeleted += cycleStats.deleted;
     this.sessionStats.totalDeleteFailed += cycleStats.deleteFailed;
+    this.sessionStats.totalABTestCount += cycleStats.abTestCount;
     this.sessionStats.parallelism = Math.max(this.sessionStats.parallelism, cycleStats.parallelism);
 
     // Print cycle summary
@@ -681,6 +685,9 @@ export class AutoRunner {
     if (this.sessionStats.totalDeleted > 0) {
       lines.push(`    Deleted: ${this.sessionStats.totalDeleted}`);
     }
+    if (this.sessionStats.totalABTestCount > 0) {
+      lines.push(`  A/B tests auto-dismissed: ${this.sessionStats.totalABTestCount}`);
+    }
     lines.push('---');
     lines.push('');
 
@@ -713,6 +720,9 @@ export class AutoRunner {
       }
       if (cycle.stats.deleted > 0) {
         lines.push(`    Deleted: ${cycle.stats.deleted}`);
+      }
+      if (cycle.stats.abTestCount > 0) {
+        lines.push(`  A/B tests auto-dismissed: ${cycle.stats.abTestCount}`);
       }
       lines.push('---');
       lines.push('');
@@ -765,6 +775,9 @@ export class AutoRunner {
         console.log(chalk.yellow(`  Delete failed: ${this.sessionStats.totalDeleteFailed}`));
       }
     }
+    if (this.sessionStats.totalABTestCount > 0) {
+      console.log(chalk.gray(`  A/B tests auto-dismissed: ${this.sessionStats.totalABTestCount}`));
+    }
     console.log(chalk.gray(`\nSummary log: ${this.summaryLogPath}`));
     console.log(chalk.gray(`Detailed logs: ${this.sessionDir}\n`));
 
@@ -786,6 +799,9 @@ export class AutoRunner {
     if (this.sessionStats.totalDeleted > 0 || this.sessionStats.totalDeleteFailed > 0) {
       await this.logger.info(`  Deleted: ${this.sessionStats.totalDeleted}`);
       await this.logger.info(`  Delete failed: ${this.sessionStats.totalDeleteFailed}`);
+    }
+    if (this.sessionStats.totalABTestCount > 0) {
+      await this.logger.info(`  A/B tests auto-dismissed: ${this.sessionStats.totalABTestCount}`);
     }
   }
 }

@@ -275,6 +275,9 @@ export class ParallelRunner {
         console.log(chalk.yellow(`    Delete failed: ${summary.deleteFailed}`));
       }
     }
+    if (summary.abTestCount > 0) {
+      console.log(chalk.gray(`  A/B tests auto-dismissed: ${summary.abTestCount}`));
+    }
     console.log(chalk.gray(`  Status: ${summary.status}`));
     if (summary.stopReason) {
       console.log(chalk.yellow(`  Stop reason: ${summary.stopReason}`));
@@ -313,6 +316,9 @@ export class ParallelRunner {
       if (summary.deleteFailed > 0) {
         await this.logger.logToFileOnly(`  Delete failed: ${summary.deleteFailed}`);
       }
+    }
+    if (summary.abTestCount > 0) {
+      await this.logger.logToFileOnly(`  A/B tests auto-dismissed: ${summary.abTestCount}`);
     }
     await this.logger.logToFileOnly(`Status: ${summary.status}`);
     if (summary.stopReason) {
