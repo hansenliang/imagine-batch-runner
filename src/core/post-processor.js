@@ -45,6 +45,7 @@ export class PostProcessor {
     this.downloadDir = options.downloadDir || config.DOWNLOAD_DIR;
     this.jobName = options.jobName || 'unknown';
     this.downloadDirCreated = false;
+    this._knownUUIDs = new Set(); // Track UUIDs seen in this session for faster dedup
   }
 
   /**
@@ -116,6 +117,72 @@ export class PostProcessor {
   }
 
   /**
+   * Check if current video is already HD
+   * @returns {Promise<boolean>} True if HD badge is detected
+   */
+  async isHD() {
+    const result = await this._detectHDBadge();
+    return result.detected;
+  }
+
+  /**
+   * Process an existing video (for cleanup workflow)
+   * Handles both HD and non-HD videos appropriately
+   * @param {number} index - Index for logging
+   * @returns {Promise<Object>} Result with download/upscale/delete status
+   */
+  async processExistingVideo(index) {
+    const result = {
+      downloaded: false,
+      downloadPath: null,
+      fileSize: null,
+      upscaled: false,
+      upscaleDownloadPath: null,
+      upscaleFileSize: null,
+      upscaleError: null,
+      deleted: false,
+      downloadError: null,
+      deleteError: null,
+      alreadyHD: false,
+    };
+
+    // Check if video is already HD
+    const isAlreadyHD = await this.isHD();
+    result.alreadyHD = isAlreadyHD;
+
+    if (isAlreadyHD) {
+      // Video is already HD - just download HD version and delete
+      this.logger.debug(`[Cleanup ${index + 1}] Video already HD, downloading HD version`);
+      
+      const hdDownloadResult = await this._downloadHDVideo(index, null);
+      result.downloaded = hdDownloadResult.success;
+      result.downloadPath = hdDownloadResult.filePath;
+      result.fileSize = hdDownloadResult.fileSize;
+      result.downloadError = hdDownloadResult.error;
+      result.upscaled = true; // Mark as upscaled since it was already HD
+      result.upscaleDownloadPath = hdDownloadResult.filePath;
+      result.upscaleFileSize = hdDownloadResult.fileSize;
+
+      // Delete if download succeeded
+      if (result.downloaded) {
+        await sleep(config.POST_DOWNLOAD_DELAY);
+        const deleteResult = await this._deleteWithRetry(index);
+        result.deleted = deleteResult.success;
+        result.deleteError = deleteResult.error;
+      } else {
+        result.deleteError = 'Skipped - download failed';
+      }
+    } else {
+      // Video is not HD - use full process() flow (download original, upscale, download HD, delete)
+      this.logger.debug(`[Cleanup ${index + 1}] Video not HD, running full download/upscale/delete flow`);
+      const fullResult = await this.process(index);
+      Object.assign(result, fullResult);
+    }
+
+    return result;
+  }
+
+  /**
    * Download with retry logic
    * @private
    */
@@ -171,10 +238,22 @@ export class PostProcessor {
       };
     }
 
-    // Generate filename with timestamp
+    // Extract video UUID for deduplication
+    const uuid = await this._extractVideoUUID();
+    const uuid8 = uuid ? uuid.substring(0, 8) : 'unknown';
+
+    // Check for duplicates
+    const duplicateCheck = await this._checkForDuplicate(uuid8);
+
+    // Generate filename with timestamp and UUID
     const timestamp = formatTimestamp();
-    const filename = `video_${timestamp}.mp4`;
+    const baseFilename = `video_${timestamp}_${uuid8}.mp4`;
+    const filename = duplicateCheck.isDuplicate ? `DUPLICATE_${baseFilename}` : baseFilename;
     const filePath = path.join(this.downloadDir, filename);
+
+    if (duplicateCheck.isDuplicate) {
+      this.logger.warn(`[Attempt ${index + 1}] Duplicate detected (UUID ${uuid8} exists in ${duplicateCheck.existingFile}), saving as ${filename}`);
+    }
 
     try {
       // Set up download handler and click button
@@ -197,6 +276,11 @@ export class PostProcessor {
         };
       }
 
+      // Track this UUID as downloaded
+      if (uuid8 !== 'unknown') {
+        this._knownUUIDs.add(uuid8);
+      }
+
       // Get file size
       const stats = await fs.stat(filePath);
       const fileSize = this._formatFileSize(stats.size);
@@ -206,6 +290,7 @@ export class PostProcessor {
         filePath,
         fileSize,
         error: null,
+        isDuplicate: duplicateCheck.isDuplicate,
       };
     } catch (error) {
       return {
@@ -214,6 +299,61 @@ export class PostProcessor {
         fileSize: null,
         error: error.message,
       };
+    }
+  }
+
+  /**
+   * Extract video UUID from the current video's src URL
+   * URL pattern: /generated/{UUID}/...
+   * @private
+   * @returns {Promise<string|null>} UUID or null if not found
+   */
+  async _extractVideoUUID() {
+    try {
+      const video = await this.page.$(selectors.VIDEO_CONTAINER);
+      if (!video) return null;
+
+      const src = await video.getAttribute('src').catch(() => null);
+      if (!src) return null;
+
+      // Extract UUID from pattern /generated/{UUID}/
+      const match = src.match(/\/generated\/([a-f0-9-]+)\//i);
+      return match ? match[1] : null;
+    } catch (error) {
+      this.logger.debug(`UUID extraction failed: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Check if a video with the given UUID already exists in downloads
+   * @private
+   * @param {string} uuid8 - First 8 chars of UUID
+   * @returns {Promise<{isDuplicate: boolean, existingFile: string|null}>}
+   */
+  async _checkForDuplicate(uuid8) {
+    if (!uuid8 || uuid8 === 'unknown') {
+      return { isDuplicate: false, existingFile: null };
+    }
+
+    // Quick check against in-memory set first
+    if (this._knownUUIDs.has(uuid8)) {
+      return { isDuplicate: true, existingFile: '(in current session)' };
+    }
+
+    try {
+      // Scan download directory for files containing this UUID
+      const files = await fs.readdir(this.downloadDir).catch(() => []);
+      for (const file of files) {
+        // Check if filename contains the UUID (but not if it's already marked as DUPLICATE)
+        if (file.includes(uuid8) && !file.startsWith('DUPLICATE_')) {
+          return { isDuplicate: true, existingFile: file };
+        }
+      }
+      return { isDuplicate: false, existingFile: null };
+    } catch (error) {
+      // If we can't check, assume no duplicate to avoid blocking downloads
+      return { isDuplicate: false, existingFile: null };
     }
   }
 
@@ -690,15 +830,36 @@ export class PostProcessor {
       };
     }
 
-    // Generate HD filename from original path
-    // e.g., video_20240115_143022.mp4 -> video_20240115_143022_hd.mp4
+    // Generate HD filename from original path or create new one with UUID
     let hdFilename;
+    let uuid8ForTracking = null; // Track UUID for standalone HD downloads
+    
     if (originalPath) {
+      // Derive from original: video_TIMESTAMP_UUID.mp4 -> video_TIMESTAMP_UUID_hd.mp4
       const originalFilename = path.basename(originalPath, '.mp4');
-      hdFilename = `${originalFilename}_hd.mp4`;
+      // Remove DUPLICATE_ prefix if present for HD version naming
+      const cleanFilename = originalFilename.replace(/^DUPLICATE_/, '');
+      hdFilename = `${cleanFilename}_hd.mp4`;
+      
+      // Check if original was a duplicate - if so, HD should also be marked
+      if (originalFilename.startsWith('DUPLICATE_')) {
+        hdFilename = `DUPLICATE_${cleanFilename}_hd.mp4`;
+      }
     } else {
+      // No original path - extract UUID and create filename
+      const uuid = await this._extractVideoUUID();
+      const uuid8 = uuid ? uuid.substring(0, 8) : 'unknown';
+      uuid8ForTracking = uuid8 !== 'unknown' ? uuid8 : null;
       const timestamp = formatTimestamp();
-      hdFilename = `video_${timestamp}_hd.mp4`;
+      
+      // Check for duplicates (for HD-only downloads during cleanup)
+      const duplicateCheck = await this._checkForDuplicate(uuid8);
+      const baseFilename = `video_${timestamp}_${uuid8}_hd.mp4`;
+      hdFilename = duplicateCheck.isDuplicate ? `DUPLICATE_${baseFilename}` : baseFilename;
+      
+      if (duplicateCheck.isDuplicate) {
+        this.logger.warn(`[Attempt ${index + 1}] Duplicate HD detected (UUID ${uuid8} exists in ${duplicateCheck.existingFile}), saving as ${hdFilename}`);
+      }
     }
     const hdFilePath = path.join(this.downloadDir, hdFilename);
 
@@ -721,6 +882,11 @@ export class PostProcessor {
           fileSize: null,
           error: 'HD download verification failed - file empty or missing',
         };
+      }
+
+      // Track UUID for standalone HD downloads (no original path)
+      if (uuid8ForTracking) {
+        this._knownUUIDs.add(uuid8ForTracking);
       }
 
       // Get file size

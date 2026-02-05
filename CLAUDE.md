@@ -24,7 +24,7 @@ Automates Grok Imagine video generation via Playwright. Runs 1-100 parallel work
   - `run.log` — session-level events
 - Downloads: `./downloads/<job-name>/` (if autoDownload enabled)
 - Cache cleaned up after each run; only logs persist
-- Summaries include duration setting: `max (10s)` or `default` if detection failed
+- If `selectMaxDuration`/`selectMaxResolution` enabled in config, logs show selected settings (e.g., `10s, 720p`)
 
 ## Key Rules
 - **Content moderation is expected** — log as WARN, never ERROR

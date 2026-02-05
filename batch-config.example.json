@@ -7,5 +7,6 @@
   "parallel": 10,
   "autoDownload": true,
   "autoUpscale": true,
-  "autoDelete": false
+  "autoDelete": false,
+  "downloadAndDeleteRemainingVideos": false
 }

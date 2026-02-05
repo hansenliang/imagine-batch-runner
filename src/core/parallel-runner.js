@@ -21,6 +21,9 @@ export class ParallelRunner {
       autoDownload = false,
       autoUpscale = false,
       autoDelete = false,
+      selectMaxDuration = false,
+      selectMaxResolution = false,
+      downloadAndDeleteRemainingVideos = false,
       logFilePath = null,  // Optional: caller can specify exact log file path
     } = options;
 
@@ -30,9 +33,14 @@ export class ParallelRunner {
     this.batchSize = batchSize;
     this.jobName = jobName;
     this.parallelism = parallelism;
-    this.autoDownload = autoDownload;
+    this.downloadAndDeleteRemainingVideos = downloadAndDeleteRemainingVideos;
+    
+    // When downloadAndDeleteRemainingVideos is enabled, force autoDownload and autoDelete
+    this.autoDownload = downloadAndDeleteRemainingVideos ? true : autoDownload;
     this.autoUpscale = autoUpscale;
-    this.autoDelete = autoDelete;
+    this.autoDelete = downloadAndDeleteRemainingVideos ? true : autoDelete;
+    this.selectMaxDuration = selectMaxDuration;
+    this.selectMaxResolution = selectMaxResolution;
 
     // Runtime state
     // If logFilePath provided, use it; otherwise default to logs/runs/<jobName>.log
@@ -40,7 +48,8 @@ export class ParallelRunner {
     this.cacheDir = path.join(config.CACHE_DIR, this.jobName);  // ephemeral files (manifest, worker-profiles)
     // downloadBaseName allows consolidating downloads by base job name (without timestamp)
     const downloadFolderName = options.downloadBaseName || this.jobName;
-    this.downloadDir = autoDownload ? path.join(config.DOWNLOAD_DIR, downloadFolderName) : null;
+    // Enable downloadDir if autoDownload or cleanup is enabled
+    this.downloadDir = (this.autoDownload || downloadAndDeleteRemainingVideos) ? path.join(config.DOWNLOAD_DIR, downloadFolderName) : null;
     this.manifest = null;
     this.logger = null;
     this.workers = [];
@@ -65,6 +74,9 @@ export class ParallelRunner {
     await this.logger.info(`Batch size: ${this.batchSize}`);
     await this.logger.info(`Parallelism: ${this.parallelism} workers`);
     await this.logger.info(`Permalink: ${this.permalink}`);
+    if (this.downloadAndDeleteRemainingVideos) {
+      await this.logger.info('downloadAndDeleteRemainingVideos enabled - autoDownload and autoDelete forced to true');
+    }
 
     // Initialize manifest (stored in cacheDir)
     this.manifest = new ManifestManager(this.cacheDir);
@@ -102,6 +114,9 @@ export class ParallelRunner {
             autoDownload: this.autoDownload,
             autoUpscale: this.autoUpscale,
             autoDelete: this.autoDelete,
+            selectMaxDuration: this.selectMaxDuration,
+            selectMaxResolution: this.selectMaxResolution,
+            downloadAndDeleteRemainingVideos: this.downloadAndDeleteRemainingVideos,
             downloadDir: this.downloadDir,
             jobName: this.jobName,
           }
@@ -167,6 +182,21 @@ export class ParallelRunner {
         await this.manifest.updateStatusAtomic('FAILED', 'All workers failed');
       } else {
         await this.manifest.updateStatusAtomic('COMPLETED');
+      }
+
+      // Run cleanup on worker 0 if downloadAndDeleteRemainingVideos is enabled
+      if (this.downloadAndDeleteRemainingVideos && successfulWorkers.length > 0) {
+        const cleanupWorker = successfulWorkers[0];
+        if (cleanupWorker.context && cleanupWorker.page) {
+          await this.logger.info('Starting cleanup of remaining videos...');
+          try {
+            await cleanupWorker.cleanupRemainingVideos();
+          } catch (error) {
+            await this.logger.error('Cleanup failed', error);
+          }
+        } else {
+          await this.logger.warn('Cannot run cleanup - worker 0 context not available');
+        }
       }
 
       // Print final summary
@@ -269,6 +299,12 @@ export class ParallelRunner {
         console.log(chalk.yellow(`    Delete failed: ${summary.deleteFailed}`));
       }
     }
+    if (summary.abTestCount > 0) {
+      console.log(chalk.gray(`  A/B tests auto-dismissed: ${summary.abTestCount}`));
+    }
+    if (this.downloadAndDeleteRemainingVideos && (summary.cleanupDownloaded > 0 || summary.cleanupDeleted > 0 || summary.cleanupFailed > 0)) {
+      console.log(chalk.cyan(`  Cleanup: ${summary.cleanupDownloaded} downloaded, ${summary.cleanupDeleted} deleted, ${summary.cleanupFailed} failed`));
+    }
     console.log(chalk.gray(`  Status: ${summary.status}`));
     if (summary.stopReason) {
       console.log(chalk.yellow(`  Stop reason: ${summary.stopReason}`));
@@ -307,6 +343,12 @@ export class ParallelRunner {
       if (summary.deleteFailed > 0) {
         await this.logger.logToFileOnly(`  Delete failed: ${summary.deleteFailed}`);
       }
+    }
+    if (summary.abTestCount > 0) {
+      await this.logger.logToFileOnly(`  A/B tests auto-dismissed: ${summary.abTestCount}`);
+    }
+    if (this.downloadAndDeleteRemainingVideos && (summary.cleanupDownloaded > 0 || summary.cleanupDeleted > 0 || summary.cleanupFailed > 0)) {
+      await this.logger.logToFileOnly(`  Cleanup: ${summary.cleanupDownloaded} downloaded, ${summary.cleanupDeleted} deleted, ${summary.cleanupFailed} failed`);
     }
     await this.logger.logToFileOnly(`Status: ${summary.status}`);
     if (summary.stopReason) {

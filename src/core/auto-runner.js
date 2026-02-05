@@ -101,6 +101,10 @@ export class AutoRunner {
       totalUpscaleFailed: 0,
       totalDeleted: 0,
       totalDeleteFailed: 0,
+      totalABTestCount: 0,
+      totalCleanupDownloaded: 0,
+      totalCleanupDeleted: 0,
+      totalCleanupFailed: 0,
       parallelism: 0,
     };
 
@@ -271,6 +275,10 @@ export class AutoRunner {
       upscaleFailed: 0,
       deleted: 0,
       deleteFailed: 0,
+      abTestCount: 0,
+      cleanupDownloaded: 0,
+      cleanupDeleted: 0,
+      cleanupFailed: 0,
       parallelism: 0,
       status: 'COMPLETED',
       stopReason: null,
@@ -306,6 +314,10 @@ export class AutoRunner {
         cycleStats.upscaleFailed += result.upscaleFailed || 0;
         cycleStats.deleted += result.deleted || 0;
         cycleStats.deleteFailed += result.deleteFailed || 0;
+        cycleStats.abTestCount += result.abTestCount || 0;
+        cycleStats.cleanupDownloaded += result.cleanupDownloaded || 0;
+        cycleStats.cleanupDeleted += result.cleanupDeleted || 0;
+        cycleStats.cleanupFailed += result.cleanupFailed || 0;
         cycleStats.parallelism = Math.max(cycleStats.parallelism, parallelism);
 
         if (result.status === 'COMPLETED') {
@@ -340,6 +352,10 @@ export class AutoRunner {
     this.sessionStats.totalUpscaleFailed += cycleStats.upscaleFailed;
     this.sessionStats.totalDeleted += cycleStats.deleted;
     this.sessionStats.totalDeleteFailed += cycleStats.deleteFailed;
+    this.sessionStats.totalABTestCount += cycleStats.abTestCount;
+    this.sessionStats.totalCleanupDownloaded += cycleStats.cleanupDownloaded;
+    this.sessionStats.totalCleanupDeleted += cycleStats.cleanupDeleted;
+    this.sessionStats.totalCleanupFailed += cycleStats.cleanupFailed;
     this.sessionStats.parallelism = Math.max(this.sessionStats.parallelism, cycleStats.parallelism);
 
     // Print cycle summary
@@ -400,6 +416,9 @@ export class AutoRunner {
         autoDownload: configData.autoDownload !== false,  // default true
         autoUpscale: configData.autoUpscale !== false,    // default true
         autoDelete: configData.autoDelete || false,       // default false
+        downloadAndDeleteRemainingVideos: configData.downloadAndDeleteRemainingVideos || false, // default false
+        selectMaxDuration: configData.selectMaxDuration || false,   // default false
+        selectMaxResolution: configData.selectMaxResolution || false, // default false
         logFilePath,  // Pass the detailed log path
         downloadBaseName: baseName,  // Use base name (without timestamp) for download folder
       });
@@ -426,6 +445,10 @@ export class AutoRunner {
         upscaleFailed: summary.upscaleFailed || 0,
         deleted: summary.deleted || 0,
         deleteFailed: summary.deleteFailed || 0,
+        abTestCount: summary.abTestCount || 0,
+        cleanupDownloaded: summary.cleanupDownloaded || 0,
+        cleanupDeleted: summary.cleanupDeleted || 0,
+        cleanupFailed: summary.cleanupFailed || 0,
         stopReason: summary.stopReason,
       };
     } catch (error) {
@@ -679,6 +702,12 @@ export class AutoRunner {
     if (this.sessionStats.totalDeleted > 0) {
       lines.push(`    Deleted: ${this.sessionStats.totalDeleted}`);
     }
+    if (this.sessionStats.totalABTestCount > 0) {
+      lines.push(`  A/B tests auto-dismissed: ${this.sessionStats.totalABTestCount}`);
+    }
+    if (this.sessionStats.totalCleanupDownloaded > 0 || this.sessionStats.totalCleanupDeleted > 0 || this.sessionStats.totalCleanupFailed > 0) {
+      lines.push(`  Cleanup: ${this.sessionStats.totalCleanupDownloaded} downloaded, ${this.sessionStats.totalCleanupDeleted} deleted, ${this.sessionStats.totalCleanupFailed} failed`);
+    }
     lines.push('---');
     lines.push('');
 
@@ -711,6 +740,12 @@ export class AutoRunner {
       }
       if (cycle.stats.deleted > 0) {
         lines.push(`    Deleted: ${cycle.stats.deleted}`);
+      }
+      if (cycle.stats.abTestCount > 0) {
+        lines.push(`  A/B tests auto-dismissed: ${cycle.stats.abTestCount}`);
+      }
+      if (cycle.stats.cleanupDownloaded > 0 || cycle.stats.cleanupDeleted > 0 || cycle.stats.cleanupFailed > 0) {
+        lines.push(`  Cleanup: ${cycle.stats.cleanupDownloaded} downloaded, ${cycle.stats.cleanupDeleted} deleted, ${cycle.stats.cleanupFailed} failed`);
       }
       lines.push('---');
       lines.push('');
@@ -763,6 +798,12 @@ export class AutoRunner {
         console.log(chalk.yellow(`  Delete failed: ${this.sessionStats.totalDeleteFailed}`));
       }
     }
+    if (this.sessionStats.totalABTestCount > 0) {
+      console.log(chalk.gray(`  A/B tests auto-dismissed: ${this.sessionStats.totalABTestCount}`));
+    }
+    if (this.sessionStats.totalCleanupDownloaded > 0 || this.sessionStats.totalCleanupDeleted > 0 || this.sessionStats.totalCleanupFailed > 0) {
+      console.log(chalk.cyan(`  Cleanup: ${this.sessionStats.totalCleanupDownloaded} downloaded, ${this.sessionStats.totalCleanupDeleted} deleted, ${this.sessionStats.totalCleanupFailed} failed`));
+    }
     console.log(chalk.gray(`\nSummary log: ${this.summaryLogPath}`));
     console.log(chalk.gray(`Detailed logs: ${this.sessionDir}\n`));
 
@@ -784,6 +825,12 @@ export class AutoRunner {
     if (this.sessionStats.totalDeleted > 0 || this.sessionStats.totalDeleteFailed > 0) {
       await this.logger.info(`  Deleted: ${this.sessionStats.totalDeleted}`);
       await this.logger.info(`  Delete failed: ${this.sessionStats.totalDeleteFailed}`);
+    }
+    if (this.sessionStats.totalABTestCount > 0) {
+      await this.logger.info(`  A/B tests auto-dismissed: ${this.sessionStats.totalABTestCount}`);
+    }
+    if (this.sessionStats.totalCleanupDownloaded > 0 || this.sessionStats.totalCleanupDeleted > 0 || this.sessionStats.totalCleanupFailed > 0) {
+      await this.logger.info(`  Cleanup: ${this.sessionStats.totalCleanupDownloaded} downloaded, ${this.sessionStats.totalCleanupDeleted} deleted, ${this.sessionStats.totalCleanupFailed} failed`);
     }
   }
 }
