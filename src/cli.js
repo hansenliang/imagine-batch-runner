@@ -97,6 +97,7 @@ run
   .option('--auto-download', 'Automatically download generated videos', true)
   .option('--auto-upscale', 'Automatically upscale videos to HD (requires --auto-download)', true)
   .option('--auto-delete', 'Automatically delete videos after download (requires --auto-download)', false)
+  .option('--download-and-delete-remaining', 'Download and delete any remaining videos at end of run (forces --auto-download and --auto-delete)', false)
   .action(async (options) => {
     try {
       // Load config file if specified
@@ -138,6 +139,11 @@ run
         // If auto-delete wasn't explicitly set on CLI, use config value
         if (autoDeleteWasDefault && configData.autoDelete !== undefined) {
           options.autoDelete = configData.autoDelete;
+        }
+
+        // Handle downloadAndDeleteRemainingVideos from config
+        if (configData.downloadAndDeleteRemainingVideos !== undefined) {
+          options.downloadAndDeleteRemaining = configData.downloadAndDeleteRemainingVideos;
         }
       }
 
@@ -190,14 +196,18 @@ run
       console.log(chalk.gray(`Permalink: ${options.permalink}`));
       console.log(chalk.gray(`Batch size: ${batchSize}`));
       console.log(chalk.gray(`Parallelism: ${parallelism} workers`));
-      if (options.autoDownload) {
-        console.log(chalk.gray(`Auto-download: enabled`));
-      }
-      if (options.autoUpscale) {
-        console.log(chalk.gray(`Auto-upscale: enabled`));
-      }
-      if (options.autoDelete) {
-        console.log(chalk.gray(`Auto-delete: enabled`));
+      if (options.downloadAndDeleteRemaining) {
+        console.log(chalk.gray(`Download and delete remaining: enabled (autoDownload and autoDelete forced to true)`));
+      } else {
+        if (options.autoDownload) {
+          console.log(chalk.gray(`Auto-download: enabled`));
+        }
+        if (options.autoUpscale) {
+          console.log(chalk.gray(`Auto-upscale: enabled`));
+        }
+        if (options.autoDelete) {
+          console.log(chalk.gray(`Auto-delete: enabled`));
+        }
       }
       console.log('');
 
@@ -212,6 +222,7 @@ run
         autoDownload: options.autoDownload || false,
         autoUpscale: options.autoUpscale || false,
         autoDelete: options.autoDelete || false,
+        downloadAndDeleteRemainingVideos: options.downloadAndDeleteRemaining || false,
       });
 
       await runner.init();

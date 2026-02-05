@@ -113,6 +113,33 @@ autorun-configs/
 └── job3.json
 ```
 
+## Cleanup Remaining Videos
+
+Sometimes videos remain on the server due to failed downloads or deletes. The `downloadAndDeleteRemainingVideos` option runs a cleanup at the end of each batch to ensure all videos are downloaded and deleted:
+
+```json
+{
+  "account": "primary-account",
+  "permalink": "https://grok.com/imagine/post/YOUR_POST_ID",
+  "prompt": "cinematic slow pan over landscape",
+  "count": 20,
+  "autoUpscale": true,
+  "downloadAndDeleteRemainingVideos": true
+}
+```
+
+When enabled:
+- `autoDownload` and `autoDelete` are automatically forced to `true`
+- After generation completes, any remaining videos on the server are downloaded and deleted
+- For non-HD videos: downloads original, upscales (if autoUpscale enabled), downloads HD, then deletes
+- For already-HD videos: downloads HD version, then deletes
+- Duplicate detection: videos are named with UUIDs (e.g., `video_20240115-143022_94fab9d4.mp4`). If the same video is downloaded again, it's prefixed with `DUPLICATE_` for manual review
+
+CLI usage:
+```bash
+npm start run start --config batch-config.json --download-and-delete-remaining
+```
+
 ## Viewing Generated Videos
 
 Videos are generated in the Grok UI but not auto-downloaded by default. To view:

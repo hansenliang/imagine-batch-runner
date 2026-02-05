@@ -78,6 +78,7 @@ export const config = {
   DEFAULT_DOWNLOAD_ENABLED: true,
   DEFAULT_UPSCALE_ENABLED: true,
   DEFAULT_DELETE_ENABLED: false,
+  DEFAULT_DOWNLOAD_AND_DELETE_REMAINING: false, // Cleanup remaining videos at end of run
   DOWNLOAD_DIR: path.resolve(__dirname, '..', 'downloads'),
   DOWNLOAD_TIMEOUT: 60000, // 60 seconds
   DOWNLOAD_RETRY_MAX: 3,
@@ -157,6 +158,9 @@ export const selectors = {
 
   // Announcement banner dismiss button (X button inside z-[9999] banner)
   ANNOUNCEMENT_BANNER_DISMISS: 'div.absolute[class*="z-[9999]"] button:has(svg.lucide-x)',
+
+  // Thumbnail navigation for cleanup (uses semantic alt text, excludes Favorites button)
+  THUMBNAIL_BUTTON: 'button:has(img[alt^="Thumbnail"]):not([aria-label="Favorites"])',
 };
 
 export default config;

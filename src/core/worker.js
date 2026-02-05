@@ -31,6 +31,7 @@ export class ParallelWorker {
     this.autoDelete = options.autoDelete || false;
     this.downloadDir = options.downloadDir || null;
     this.jobName = options.jobName || null;
+    this.downloadAndDeleteRemainingVideos = options.downloadAndDeleteRemainingVideos || false;
 
     // Video settings selection (opt-in)
     this.selectMaxDuration = options.selectMaxDuration || false;
@@ -121,13 +122,13 @@ export class ParallelWorker {
       // Create video generator
       this.generator = new VideoGenerator(this.page, this.logger);
 
-      // Create post-processor if download/upscale/delete enabled
-      if (this.autoDownload) {
+      // Create post-processor if download/upscale/delete enabled, or if cleanup is enabled
+      if (this.autoDownload || this.downloadAndDeleteRemainingVideos) {
         const { PostProcessor } = await import('./post-processor.js');
         this.postProcessor = new PostProcessor(this.page, this.logger, {
-          autoDownload: this.autoDownload,
+          autoDownload: this.autoDownload || this.downloadAndDeleteRemainingVideos,
           autoUpscale: this.autoUpscale,
-          autoDelete: this.autoDelete,
+          autoDelete: this.autoDelete || this.downloadAndDeleteRemainingVideos,
           downloadDir: this.downloadDir,
           jobName: this.jobName,
         });
@@ -495,6 +496,184 @@ export class ParallelWorker {
     if (!this.shouldStop) {
       this.logger.info(`[Worker ${this.workerId}] Stop signal received`);
       this.shouldStop = true;
+    }
+  }
+
+  /**
+   * Cleanup remaining videos on the server
+   * Called after generation completes to download and delete any leftover videos
+   * @returns {Promise<{downloaded: number, deleted: number, failed: number}>}
+   */
+  async cleanupRemainingVideos() {
+    if (!this.downloadAndDeleteRemainingVideos) {
+      return { downloaded: 0, deleted: 0, failed: 0 };
+    }
+
+    if (!this.postProcessor) {
+      this.logger.warn(`[Worker ${this.workerId}] Cannot cleanup - no PostProcessor available`);
+      return { downloaded: 0, deleted: 0, failed: 0 };
+    }
+
+    if (!this.page || !this.context) {
+      this.logger.warn(`[Worker ${this.workerId}] Cannot cleanup - browser context not available`);
+      return { downloaded: 0, deleted: 0, failed: 0 };
+    }
+
+    this.logger.info(`[Worker ${this.workerId}] Starting cleanup of remaining videos...`);
+
+    const stats = { downloaded: 0, deleted: 0, failed: 0 };
+    let cleanupIndex = 0;
+
+    while (true) {
+      // Detect remaining videos
+      const remaining = await this._detectRemainingVideos();
+
+      if (remaining.count === 0) {
+        this.logger.info(`[Worker ${this.workerId}] No more videos to cleanup`);
+        break;
+      }
+
+      this.logger.info(`[Worker ${this.workerId}] ${remaining.count} video(s) remaining, processing...`);
+
+      // Navigate to the last video if there are multiple
+      if (remaining.count > 1) {
+        const clicked = await this._clickLastThumbnail();
+        if (!clicked) {
+          this.logger.warn(`[Worker ${this.workerId}] Failed to click last thumbnail, stopping cleanup`);
+          stats.failed++;
+          break;
+        }
+        // Wait for video to load after navigation
+        await this._waitForVideoLoad();
+      }
+
+      // Process this video (download, upscale if needed, delete)
+      const result = await this.postProcessor.processExistingVideo(cleanupIndex);
+
+      if (result.downloaded) {
+        stats.downloaded++;
+        await this.manifest.incrementCounterAtomic('cleanupDownloadedCount');
+        this.logger.success(
+          `[Worker ${this.workerId}] Cleanup ${cleanupIndex + 1}: Downloaded ${result.downloadPath} (${result.fileSize})`
+        );
+      }
+
+      if (result.deleted) {
+        stats.deleted++;
+        await this.manifest.incrementCounterAtomic('cleanupDeletedCount');
+        this.logger.success(`[Worker ${this.workerId}] Cleanup ${cleanupIndex + 1}: Deleted from server`);
+      } else {
+        // Delete failed - stop to avoid infinite loop
+        stats.failed++;
+        await this.manifest.incrementCounterAtomic('cleanupFailedCount');
+        this.logger.error(
+          `[Worker ${this.workerId}] Cleanup ${cleanupIndex + 1}: Delete failed - ${result.deleteError}, stopping cleanup`
+        );
+        break;
+      }
+
+      cleanupIndex++;
+
+      // Small delay between cleanups
+      await sleep(1000);
+    }
+
+    this.logger.info(
+      `[Worker ${this.workerId}] Cleanup complete: ${stats.downloaded} downloaded, ${stats.deleted} deleted, ${stats.failed} failed`
+    );
+
+    return stats;
+  }
+
+  /**
+   * Get all visible thumbnail buttons
+   * @private
+   * @returns {Promise<Array>} Array of visible thumbnail elements
+   */
+  async _getVisibleThumbnails() {
+    const thumbnails = await this.page.$$(selectors.THUMBNAIL_BUTTON);
+    const visible = [];
+    for (const thumb of thumbnails) {
+      const isVisible = await thumb.isVisible().catch(() => false);
+      if (isVisible) {
+        visible.push(thumb);
+      }
+    }
+    return visible;
+  }
+
+  /**
+   * Detect remaining videos by counting thumbnail buttons
+   * @private
+   * @returns {Promise<{count: number, hasThumbnails: boolean}>}
+   */
+  async _detectRemainingVideos() {
+    try {
+      const visibleThumbnails = await this._getVisibleThumbnails();
+
+      if (visibleThumbnails.length > 0) {
+        return { count: visibleThumbnails.length, hasThumbnails: true };
+      }
+
+      // No thumbnails - check if there's a single video playing
+      const video = await this.page.$(selectors.VIDEO_CONTAINER);
+      if (video) {
+        const isVisible = await video.isVisible().catch(() => false);
+        const src = await video.getAttribute('src').catch(() => null);
+        if (isVisible && src) {
+          // Single video with no thumbnails means it's the last one
+          return { count: 1, hasThumbnails: false };
+        }
+      }
+
+      // No videos found
+      return { count: 0, hasThumbnails: false };
+    } catch (error) {
+      this.logger.debug(`[Worker ${this.workerId}] Error detecting remaining videos: ${error.message}`);
+      return { count: 0, hasThumbnails: false };
+    }
+  }
+
+  /**
+   * Click the last thumbnail button to select that video
+   * @private
+   * @returns {Promise<boolean>} True if click succeeded
+   */
+  async _clickLastThumbnail() {
+    try {
+      const visibleThumbnails = await this._getVisibleThumbnails();
+
+      if (visibleThumbnails.length === 0) {
+        return false;
+      }
+
+      // Click the last thumbnail
+      const lastThumbnail = visibleThumbnails[visibleThumbnails.length - 1];
+      await lastThumbnail.click();
+      this.logger.debug(`[Worker ${this.workerId}] Clicked last thumbnail (${visibleThumbnails.length} total)`);
+
+      await sleep(config.UI_ACTION_DELAY);
+      return true;
+    } catch (error) {
+      this.logger.debug(`[Worker ${this.workerId}] Error clicking last thumbnail: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Wait for video to load after navigation
+   * @private
+   */
+  async _waitForVideoLoad() {
+    try {
+      // Wait for video element to be present and have a src
+      await this.page.waitForSelector(`${selectors.VIDEO_CONTAINER}[src]`, {
+        timeout: 10000,
+      });
+      // Give video a moment to fully load
+      await sleep(1000);
+    } catch (error) {
+      this.logger.debug(`[Worker ${this.workerId}] Video load wait timed out: ${error.message}`);
     }
   }
 
