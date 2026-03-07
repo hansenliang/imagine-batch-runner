@@ -449,7 +449,7 @@ export class VideoGenerator {
         const isVisible = await video.isVisible().catch(() => false);
         if (!isVisible) continue;
 
-        const src = await video.getAttribute('src').catch(() => null);
+        const src = await video.evaluate(v => v.currentSrc || v.src || '').catch(() => '');
         const duration = await video.evaluate(v => v.duration).catch(() => 0);
 
         if (src && duration > 0) {
@@ -523,20 +523,21 @@ export class VideoGenerator {
     try {
       await this._dismissBanners();
 
-      // Step 1: Click the "..." (More options) menu button
-      const menuButton = await this.page.$(selectors.VIDEO_MENU_BUTTON);
-      if (!menuButton) {
-        this.logger.debug(`[Attempt ${index + 1}] More options button not found for extend`);
+      // Step 1: Click the Settings button (same button used for mode selection).
+      // When a video is already generated, its menu includes "Extend video".
+      const settingsButton = await this.page.$(selectors.SETTINGS_BUTTON);
+      if (!settingsButton) {
+        this.logger.debug(`[Attempt ${index + 1}] Settings button not found for extend`);
         return false;
       }
 
-      const isVisible = await menuButton.isVisible().catch(() => false);
+      const isVisible = await settingsButton.isVisible().catch(() => false);
       if (!isVisible) {
-        this.logger.debug(`[Attempt ${index + 1}] More options button not visible for extend`);
+        this.logger.debug(`[Attempt ${index + 1}] Settings button not visible for extend`);
         return false;
       }
 
-      await menuButton.click();
+      await settingsButton.click();
       await sleep(config.UI_ACTION_DELAY);
 
       // Step 2: Click "Extend video" menu item
@@ -557,7 +558,7 @@ export class VideoGenerator {
       }
 
       if (!extendItem) {
-        this.logger.debug(`[Attempt ${index + 1}] Extend video menu item not found`);
+        this.logger.debug(`[Attempt ${index + 1}] Extend video menu item not found in Settings menu`);
         await this.page.keyboard.press('Escape');
         return false;
       }
@@ -572,7 +573,7 @@ export class VideoGenerator {
       await extendItem.click();
       await sleep(config.UI_ACTION_DELAY);
 
-      this.logger.debug(`[Attempt ${index + 1}] Extend mode triggered`);
+      this.logger.debug(`[Attempt ${index + 1}] Extend mode triggered via Settings menu`);
       return true;
     } catch (error) {
       this.logger.debug(`[Attempt ${index + 1}] Extend mode trigger failed: ${error.message}`);
@@ -594,9 +595,13 @@ export class VideoGenerator {
           const match = walker.currentNode.textContent.match(/(\d{1,3})%/);
           if (match) {
             const el = walker.currentNode.parentElement;
-            // Visibility check: offsetParent is null for hidden elements (except fixed/body)
-            if (el && (el.offsetParent !== null || el.style?.position === 'fixed')) {
-              return { percentage: parseInt(match[1], 10), text: el.innerText.trim() };
+            // Visibility check: use getBoundingClientRect which works regardless of
+            // CSS positioning context (fixed, absolute, grid overlays, etc.)
+            if (el) {
+              const rect = el.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) {
+                return { percentage: parseInt(match[1], 10), text: el.innerText.trim() };
+              }
             }
           }
         }
@@ -617,10 +622,11 @@ export class VideoGenerator {
    */
   async _verifyVideoPlayable(videoElement) {
     try {
-      // 1. Check if video has src attribute
-      const src = await videoElement.getAttribute('src');
+      // 1. Check if video has a source (currentSrc works regardless of whether
+      // src is on the <video> tag, via <source> children, or set programmatically)
+      const src = await videoElement.evaluate(v => v.currentSrc || v.src || '');
       if (!src) {
-        this.logger.debug('Video verification failed: no src attribute');
+        this.logger.debug('Video verification failed: no src/currentSrc');
         return false;
       }
 
