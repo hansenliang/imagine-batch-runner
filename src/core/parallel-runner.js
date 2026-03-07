@@ -23,6 +23,7 @@ export class ParallelRunner {
       autoDelete = false,
       selectMaxDuration = false,
       selectMaxResolution = false,
+      autoExtend = 0,
       downloadAndDeleteRemainingVideos = false,
       logFilePath = null,  // Optional: caller can specify exact log file path
     } = options;
@@ -41,6 +42,7 @@ export class ParallelRunner {
     this.autoDelete = downloadAndDeleteRemainingVideos ? true : autoDelete;
     this.selectMaxDuration = selectMaxDuration;
     this.selectMaxResolution = selectMaxResolution;
+    this.autoExtend = autoExtend;
 
     // Runtime state
     // If logFilePath provided, use it; otherwise default to logs/runs/<jobName>.log
@@ -74,6 +76,9 @@ export class ParallelRunner {
     await this.logger.info(`Batch size: ${this.batchSize}`);
     await this.logger.info(`Parallelism: ${this.parallelism} workers`);
     await this.logger.info(`Permalink: ${this.permalink}`);
+    if (this.autoExtend > 0) {
+      await this.logger.info(`Auto-extend: ${this.autoExtend}x per video`);
+    }
     if (this.downloadAndDeleteRemainingVideos) {
       await this.logger.info('downloadAndDeleteRemainingVideos enabled - autoDownload and autoDelete forced to true');
     }
@@ -116,6 +121,7 @@ export class ParallelRunner {
             autoDelete: this.autoDelete,
             selectMaxDuration: this.selectMaxDuration,
             selectMaxResolution: this.selectMaxResolution,
+            autoExtend: this.autoExtend,
             downloadAndDeleteRemainingVideos: this.downloadAndDeleteRemainingVideos,
             downloadDir: this.downloadDir,
             jobName: this.jobName,
@@ -299,6 +305,12 @@ export class ParallelRunner {
         console.log(chalk.yellow(`    Delete failed: ${summary.deleteFailed}`));
       }
     }
+    if (summary.extended > 0) {
+      console.log(chalk.green(`    Extended: ${summary.extended}`));
+      if (summary.extendAttempts > summary.extended) {
+        console.log(chalk.yellow(`    Extend retries: ${summary.extendAttempts - summary.extended}`));
+      }
+    }
     if (summary.abTestCount > 0) {
       console.log(chalk.gray(`  A/B tests auto-dismissed: ${summary.abTestCount}`));
     }
@@ -342,6 +354,12 @@ export class ParallelRunner {
       await this.logger.logToFileOnly(`  Deleted: ${summary.deleted}`);
       if (summary.deleteFailed > 0) {
         await this.logger.logToFileOnly(`  Delete failed: ${summary.deleteFailed}`);
+      }
+    }
+    if (summary.extended > 0) {
+      await this.logger.logToFileOnly(`  Extended: ${summary.extended}`);
+      if (summary.extendAttempts > summary.extended) {
+        await this.logger.logToFileOnly(`  Extend retries: ${summary.extendAttempts - summary.extended}`);
       }
     }
     if (summary.abTestCount > 0) {

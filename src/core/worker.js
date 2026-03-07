@@ -37,6 +37,9 @@ export class ParallelWorker {
     this.selectMaxDuration = options.selectMaxDuration || false;
     this.selectMaxResolution = options.selectMaxResolution || false;
 
+    // Auto-extend settings
+    this.autoExtend = options.autoExtend || 0;
+
     // Browser resources
     this.context = null;
     this.page = null;
@@ -176,22 +179,24 @@ export class ParallelWorker {
 
   /**
    * Select the maximum available video duration.
-   * Called once per worker session during initialization.
+   * New UI: duration pills appear inline below the prompt when it's focused.
+   * Accepts an optional regex pattern to match different duration formats:
+   *   - Regular mode: /^\d+s$/ matches "6s", "10s"
+   *   - Extend mode: /^\+?\d+s$/ matches "+6s", "+10s", "6s", "10s"
+   * @param {RegExp} [pattern] - Optional regex for duration label matching
    * @private
    */
-  async _selectMaxDuration() {
+  async _selectMaxDuration(pattern = null) {
+    const durationPattern = pattern || /^\d+s$/;
     try {
-      // Click video options button to open duration menu
-      const optionsButton = await this.page.$(selectors.VIDEO_OPTIONS_BUTTON);
-      if (!optionsButton) {
-        this.logger.warn(`[Worker ${this.workerId}] Video options button not found, using default duration`);
-        return;
+      // Focus prompt input to reveal inline duration/resolution pills (new UI)
+      const promptInput = await this.page.$(selectors.PROMPT_INPUT);
+      if (promptInput) {
+        await promptInput.click();
+        await sleep(config.UI_ACTION_DELAY);
       }
 
-      await optionsButton.click();
-      await sleep(config.UI_ACTION_DELAY); // Wait for menu to open
-
-      // Find all buttons in the menu and filter for duration patterns (e.g., "6s", "10s")
+      // Find all visible buttons matching the duration pattern
       const buttons = await this.page.$$('button');
       const durationButtons = [];
 
@@ -201,23 +206,21 @@ export class ParallelWorker {
 
         const ariaLabel = await button.getAttribute('aria-label').catch(() => '');
         const text = await button.innerText().catch(() => '');
-        const label = ariaLabel || text;
+        const label = (ariaLabel || text).trim();
 
-        // Match duration pattern: digits followed by 's' (e.g., "6s", "10s")
-        const match = label.match(/^(\d+)s$/);
-        if (match) {
+        if (durationPattern.test(label)) {
+          // Extract numeric part (e.g., "10" from "10s" or "+10s")
+          const numericPart = parseInt(label.replace(/[^\d]/g, ''), 10);
           durationButtons.push({
             button,
-            duration: parseInt(match[1], 10),
+            duration: numericPart,
             label,
           });
         }
       }
 
       if (durationButtons.length === 0) {
-        this.logger.warn(`[Worker ${this.workerId}] No duration buttons found, using default duration`);
-        // Close menu by pressing Escape
-        await this.page.keyboard.press('Escape');
+        this.logger.warn(`[Worker ${this.workerId}] No duration buttons found (pattern: ${durationPattern}), using default`);
         return;
       }
 
@@ -227,9 +230,9 @@ export class ParallelWorker {
       );
 
       await maxDuration.button.click();
-      await sleep(config.UI_ACTION_DELAY); // Wait for menu to close
+      await sleep(config.UI_ACTION_DELAY);
 
-      this.selectedDuration = `${maxDuration.duration}s`;
+      this.selectedDuration = maxDuration.label;
       this.logger.info(`[Worker ${this.workerId}] Selected video duration: ${this.selectedDuration}`);
     } catch (error) {
       this.logger.warn(`[Worker ${this.workerId}] Duration selection failed: ${error.message}, using default`);
@@ -239,22 +242,19 @@ export class ParallelWorker {
 
   /**
    * Select the maximum available video resolution.
-   * Called once per worker session during initialization.
+   * New UI: resolution pills appear inline below the prompt when it's focused.
    * @private
    */
   async _selectMaxResolution() {
     try {
-      // Click video options button to open menu
-      const optionsButton = await this.page.$(selectors.VIDEO_OPTIONS_BUTTON);
-      if (!optionsButton) {
-        this.logger.warn(`[Worker ${this.workerId}] Video options button not found, using default resolution`);
-        return;
+      // Focus prompt input to reveal inline duration/resolution pills (new UI)
+      const promptInput = await this.page.$(selectors.PROMPT_INPUT);
+      if (promptInput) {
+        await promptInput.click();
+        await sleep(config.UI_ACTION_DELAY);
       }
 
-      await optionsButton.click();
-      await sleep(config.UI_ACTION_DELAY); // Wait for menu to open
-
-      // Find all buttons in the menu and filter for resolution patterns (e.g., "480p", "720p")
+      // Find all visible buttons matching resolution pattern (e.g., "480p", "720p")
       const buttons = await this.page.$$('button');
       const resolutionButtons = [];
 
@@ -264,9 +264,8 @@ export class ParallelWorker {
 
         const ariaLabel = await button.getAttribute('aria-label').catch(() => '');
         const text = await button.innerText().catch(() => '');
-        const label = ariaLabel || text;
+        const label = (ariaLabel || text).trim();
 
-        // Match resolution pattern: digits followed by 'p' (e.g., "480p", "720p", "1080p")
         const match = label.match(/^(\d+)p$/);
         if (match) {
           resolutionButtons.push({
@@ -279,8 +278,6 @@ export class ParallelWorker {
 
       if (resolutionButtons.length === 0) {
         this.logger.warn(`[Worker ${this.workerId}] No resolution buttons found, using default resolution`);
-        // Close menu by pressing Escape
-        await this.page.keyboard.press('Escape');
         return;
       }
 
@@ -290,7 +287,7 @@ export class ParallelWorker {
       );
 
       await maxResolution.button.click();
-      await sleep(config.UI_ACTION_DELAY); // Wait for menu to close
+      await sleep(config.UI_ACTION_DELAY);
 
       this.selectedResolution = `${maxResolution.resolution}p`;
       this.logger.info(`[Worker ${this.workerId}] Selected video resolution: ${this.selectedResolution}`);
@@ -376,7 +373,66 @@ export class ParallelWorker {
             `[Worker ${this.workerId}] Attempt ${index + 1}: Success in ${duration}s${settingsSuffix} - ${this.page.url()}`
           );
 
-          // Post-processing: download and/or delete
+          // Extend loop: extend the video up to autoExtend times before post-processing
+          if (this.autoExtend > 0) {
+            let successfulExtends = 0;
+            let totalExtendAttempts = 0;
+            const maxExtendRetries = config.MODERATION_RETRY_MAX;
+
+            while (successfulExtends < this.autoExtend && totalExtendAttempts < maxExtendRetries) {
+              totalExtendAttempts++;
+
+              this.logger.info(
+                `[Worker ${this.workerId}] Extend ${successfulExtends + 1}/${this.autoExtend} (attempt ${totalExtendAttempts})`
+              );
+
+              // Step 1: Trigger extend mode via "..." menu → "Extend video"
+              const triggered = await this.generator.triggerExtendMode(index);
+              if (!triggered) {
+                this.logger.warn(`[Worker ${this.workerId}] Could not trigger extend mode, stopping extends`);
+                break;
+              }
+
+              // Step 2: Select max extend duration (+10s pills)
+              await this._selectMaxDuration(/^\+?\d+s$/);
+
+              // Step 3: Generate extended video (reuses same generate flow)
+              const extResult = await this.generator.generate(index, this.prompt);
+              const extDuration = Math.round((extResult.durationMs || 0) / 1000);
+
+              if (extResult.success) {
+                successfulExtends++;
+                await this.manifest.incrementCounterAtomic('extendedCount');
+                this.logger.success(
+                  `[Worker ${this.workerId}] Extend ${successfulExtends}/${this.autoExtend} succeeded in ${extDuration}s`
+                );
+              } else if (extResult.rateLimited) {
+                await this.manifest.incrementCounterAtomic('extendAttemptCount');
+                this.logger.warn(`[Worker ${this.workerId}] Rate limit during extend`);
+                throw new Error('RATE_LIMIT_STOP');
+              } else if (extResult.contentModerated) {
+                await this.manifest.incrementCounterAtomic('extendAttemptCount');
+                this.logger.warn(
+                  `[Worker ${this.workerId}] Extend attempt ${totalExtendAttempts} content moderated, retrying...`
+                );
+                // Continue to retry — don't count toward successful extends
+              } else {
+                await this.manifest.incrementCounterAtomic('extendAttemptCount');
+                this.logger.warn(
+                  `[Worker ${this.workerId}] Extend attempt ${totalExtendAttempts} failed: ${extResult.error}, retrying...`
+                );
+                // Continue to retry
+              }
+            }
+
+            if (successfulExtends > 0) {
+              this.logger.info(
+                `[Worker ${this.workerId}] Extends complete: ${successfulExtends}/${this.autoExtend} successful (${totalExtendAttempts} total attempts)`
+              );
+            }
+          }
+
+          // Post-processing: download and/or delete (operates on the final video after all extensions)
           if (this.postProcessor) {
             const postResult = await this.postProcessor.process(index);
 

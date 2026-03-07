@@ -113,7 +113,9 @@ export class VideoGenerator {
   }
 
   /**
-   * Click the "Make video" or "Redo" button
+   * Click the generation submit button.
+   * New UI: button[aria-label="Make video"] wrapping an arrow SVG.
+   * Old UI: button with text "Make video" or "Redo".
    */
   async _clickGenerationButton(index) {
     await this._dismissBanners();
@@ -133,9 +135,10 @@ export class VideoGenerator {
     let buttonLabel = null;
 
     if (!button) {
-      const promptButton = await this._findGenerationButtonNearPrompt(index);
-      if (promptButton) {
-        button = promptButton;
+      const promptResult = await this._findGenerationButtonNearPrompt(index);
+      if (promptResult.element) {
+        button = promptResult.element;
+        buttonLabel = promptResult.label;
       }
     }
 
@@ -192,11 +195,11 @@ export class VideoGenerator {
       throw new Error('Generation button not found');
     }
 
-    const buttonText = buttonLabel || await button.textContent();
+    const buttonText = buttonLabel || await button.textContent().catch(() => '(unknown)');
     this.logger.debug(`[Attempt ${index + 1}] Found button: "${buttonText}"`);
 
     // Check if button is disabled (might indicate rate limit)
-    const isDisabled = await button.isDisabled();
+    const isDisabled = await button.isDisabled().catch(() => false);
     if (isDisabled) {
       throw new Error('RATE_LIMIT: Generation button is disabled');
     }
@@ -209,12 +212,14 @@ export class VideoGenerator {
   }
 
   /**
-   * Find the generation button near the prompt input field
+   * Find the generation button near the prompt input field.
+   * Returns: { element, label } or { element: null }
    */
   async _findGenerationButtonNearPrompt(index) {
+    const empty = { element: null, label: null };
     try {
       const promptInput = await this.page.$(selectors.PROMPT_INPUT);
-      if (!promptInput) return null;
+      if (!promptInput) return empty;
 
       const containerHandle = await promptInput.evaluateHandle((el) => {
         return (
@@ -228,10 +233,10 @@ export class VideoGenerator {
         );
       });
       const container = containerHandle.asElement();
-      if (!container) return null;
+      if (!container) return empty;
 
       const candidates = await container.$$('button, [role="button"]');
-      if (candidates.length === 0) return null;
+      if (candidates.length === 0) return empty;
 
       const matchers = [
         /make\s+video/i,
@@ -278,10 +283,10 @@ export class VideoGenerator {
         );
       }
 
-      return best;
+      return { element: best, label: bestLabel };
     } catch (error) {
       this.logger.debug(`[Attempt ${index + 1}] Prompt-adjacent button lookup failed: ${error.message}`);
-      return null;
+      return empty;
     }
   }
 
@@ -490,27 +495,98 @@ export class VideoGenerator {
   }
 
   /**
-   * Detect progress percentage in button text (e.g., "45%", "100%")
-   * Grok shows generation progress as percentage text in the button area
+   * Trigger extend mode by clicking "..." menu → "Extend video".
+   * After this, the UI transitions to extend mode where generate() can be called
+   * with the same prompt to extend the video.
+   * @param {number} index - Current attempt index for logging
+   * @returns {Promise<boolean>} - Whether extend mode was triggered successfully
+   */
+  async triggerExtendMode(index) {
+    try {
+      await this._dismissBanners();
+
+      // Step 1: Click the "..." (More options) menu button
+      const menuButton = await this.page.$(selectors.VIDEO_MENU_BUTTON);
+      if (!menuButton) {
+        this.logger.debug(`[Attempt ${index + 1}] More options button not found for extend`);
+        return false;
+      }
+
+      const isVisible = await menuButton.isVisible().catch(() => false);
+      if (!isVisible) {
+        this.logger.debug(`[Attempt ${index + 1}] More options button not visible for extend`);
+        return false;
+      }
+
+      await menuButton.click();
+      await sleep(config.UI_ACTION_DELAY);
+
+      // Step 2: Click "Extend video" menu item
+      let extendItem = await this.page.$(selectors.EXTEND_MENU_ITEM);
+
+      // Fallback: scan menu items for extend text
+      if (!extendItem) {
+        const menuItems = await this.page.$$('[role="menuitem"]');
+        for (const item of menuItems) {
+          const itemVisible = await item.isVisible().catch(() => false);
+          if (!itemVisible) continue;
+          const text = await item.innerText().catch(() => '');
+          if (/extend\s+video/i.test(text)) {
+            extendItem = item;
+            break;
+          }
+        }
+      }
+
+      if (!extendItem) {
+        this.logger.debug(`[Attempt ${index + 1}] Extend video menu item not found`);
+        await this.page.keyboard.press('Escape');
+        return false;
+      }
+
+      const itemVisible = await extendItem.isVisible().catch(() => false);
+      if (!itemVisible) {
+        this.logger.debug(`[Attempt ${index + 1}] Extend video menu item not visible`);
+        await this.page.keyboard.press('Escape');
+        return false;
+      }
+
+      await extendItem.click();
+      await sleep(config.UI_ACTION_DELAY);
+
+      this.logger.debug(`[Attempt ${index + 1}] Extend mode triggered`);
+      return true;
+    } catch (error) {
+      this.logger.debug(`[Attempt ${index + 1}] Extend mode trigger failed: ${error.message}`);
+      try { await this.page.keyboard.press('Escape'); } catch { /* ignore */ }
+      return false;
+    }
+  }
+
+  /**
+   * Detect progress percentage anywhere on screen (e.g., "Generating 16%", "45%")
+   * New UI shows progress as overlay text on the video area, not inside a button.
+   * Uses DOM tree walker for efficient full-page scan.
    */
   async _detectProgressPercentage() {
     try {
-      const candidates = await this.page.$$('button, [role="button"]');
-
-      for (const candidate of candidates) {
-        const isVisible = await candidate.isVisible().catch(() => false);
-        if (!isVisible) continue;
-
-        const text = await candidate.innerText().catch(() => '');
-        // Match patterns like "45%", "100%", "0%"
-        const percentMatch = text.match(/(\d{1,3})%/);
-        if (percentMatch) {
-          return {
-            detected: true,
-            percentage: parseInt(percentMatch[1], 10),
-            text: text.trim(),
-          };
+      const result = await this.page.evaluate(() => {
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          const match = walker.currentNode.textContent.match(/(\d{1,3})%/);
+          if (match) {
+            const el = walker.currentNode.parentElement;
+            // Visibility check: offsetParent is null for hidden elements (except fixed/body)
+            if (el && (el.offsetParent !== null || el.style?.position === 'fixed')) {
+              return { percentage: parseInt(match[1], 10), text: el.innerText.trim() };
+            }
+          }
         }
+        return null;
+      });
+
+      if (result) {
+        return { detected: true, percentage: result.percentage, text: result.text };
       }
       return { detected: false, percentage: null, text: null };
     } catch (error) {
