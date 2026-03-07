@@ -114,6 +114,9 @@ export class ParallelWorker {
         throw new Error('AUTH_REQUIRED: Not authenticated. Worker cannot proceed.');
       }
 
+      // Switch to video mode if on an image page (Settings → Make Video)
+      await this._selectVideoMode();
+
       // Select maximum video duration and resolution (once per worker session, if enabled)
       if (this.selectMaxDuration) {
         await this._selectMaxDuration();
@@ -174,6 +177,71 @@ export class ParallelWorker {
       await sleep(500);
     } catch (error) {
       this.logger.warn(`[Worker ${this.workerId}] UI readiness check timed out: ${error.message}`);
+    }
+  }
+
+  /**
+   * Switch from image mode to video mode if a Settings button is present.
+   * On Grok Imagine image pages, a "Settings" gear button opens a menu
+   * with a "Make Video" option to switch to video generation mode.
+   * If the Settings button is not found (already in video mode), this is a no-op.
+   * @private
+   */
+  async _selectVideoMode() {
+    try {
+      const settingsButton = await this.page.$(selectors.SETTINGS_BUTTON);
+      if (!settingsButton) {
+        this.logger.debug(`[Worker ${this.workerId}] No Settings button found, assuming video mode`);
+        return;
+      }
+
+      const isVisible = await settingsButton.isVisible().catch(() => false);
+      if (!isVisible) {
+        this.logger.debug(`[Worker ${this.workerId}] Settings button not visible, assuming video mode`);
+        return;
+      }
+
+      // Click Settings to open the mode menu
+      await settingsButton.click();
+      await sleep(config.UI_ACTION_DELAY);
+
+      // Look for "Make Video" menu item
+      let makeVideoItem = await this.page.$(selectors.MAKE_VIDEO_MODE_ITEM);
+
+      // Fallback: scan menu items for "Make Video" text
+      if (!makeVideoItem) {
+        const menuItems = await this.page.$$('[role="menuitem"]');
+        for (const item of menuItems) {
+          const itemVisible = await item.isVisible().catch(() => false);
+          if (!itemVisible) continue;
+          const text = await item.innerText().catch(() => '');
+          if (/make\s+video/i.test(text)) {
+            makeVideoItem = item;
+            break;
+          }
+        }
+      }
+
+      if (!makeVideoItem) {
+        this.logger.debug(`[Worker ${this.workerId}] "Make Video" menu item not found, closing menu`);
+        await this.page.keyboard.press('Escape');
+        return;
+      }
+
+      const itemVisible = await makeVideoItem.isVisible().catch(() => false);
+      if (!itemVisible) {
+        this.logger.debug(`[Worker ${this.workerId}] "Make Video" menu item not visible, closing menu`);
+        await this.page.keyboard.press('Escape');
+        return;
+      }
+
+      await makeVideoItem.click();
+      await sleep(config.UI_ACTION_DELAY);
+
+      this.logger.info(`[Worker ${this.workerId}] Switched to video mode via Settings → Make Video`);
+    } catch (error) {
+      this.logger.warn(`[Worker ${this.workerId}] Video mode selection failed: ${error.message}`);
+      try { await this.page.keyboard.press('Escape'); } catch { /* ignore */ }
     }
   }
 
