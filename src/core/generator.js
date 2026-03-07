@@ -590,13 +590,24 @@ export class VideoGenerator {
   async _detectProgressPercentage() {
     try {
       const result = await this.page.evaluate(() => {
+        // Strategy 1: Look for the tabular-nums span (new UI progress indicator)
+        const tabularSpans = document.querySelectorAll('span.tabular-nums');
+        for (const span of tabularSpans) {
+          const match = span.textContent.match(/(\d{1,3})%/);
+          if (match) {
+            const rect = span.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              return { percentage: parseInt(match[1], 10), text: span.textContent.trim() };
+            }
+          }
+        }
+
+        // Strategy 2: TreeWalker fallback for any visible percentage text
         const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
         while (walker.nextNode()) {
           const match = walker.currentNode.textContent.match(/(\d{1,3})%/);
           if (match) {
             const el = walker.currentNode.parentElement;
-            // Visibility check: use getBoundingClientRect which works regardless of
-            // CSS positioning context (fixed, absolute, grid overlays, etc.)
             if (el) {
               const rect = el.getBoundingClientRect();
               if (rect.width > 0 && rect.height > 0) {
@@ -672,6 +683,13 @@ export class VideoGenerator {
 
       // % > 0 means generation is actively in progress
       const generationInProgress = percentageProgress.detected && percentageProgress.percentage > 0;
+
+      // TODO: TEMPORARY diagnostic — remove after progress detection is confirmed working
+      if (!loggedStart && elapsed > 0 && elapsed % 10 === 0) {
+        this.logger.info(
+          `[Attempt ${index + 1}] Polling ${elapsed}s: progress=${JSON.stringify(percentageProgress)}, video=${!!video}`
+        );
+      }
 
       // Check for resolution downgrade once, early in generation (before loggedStart)
       if (!actualResolution && !loggedStart) {
