@@ -111,8 +111,8 @@ export const selectors = {
   MAKE_VIDEO_BUTTON: 'button[aria-label*="make video" i], button[aria-label*="generate video" i], button[aria-label*="create video" i], button:has-text("Make video"), button:has-text("make video"), button:has-text("Create video"), button:has-text("create video"), button[title*="make video" i], button[title*="generate video" i], button[title*="create video" i]',
   REDO_BUTTON: 'button:has-text("Redo"), button:has-text("redo"), button[aria-label*="redo" i], button[title*="redo" i]',
 
-  // Prompt input
-  PROMPT_INPUT: 'textarea[placeholder*="prompt"], input[placeholder*="prompt"], textarea, input[type="text"]',
+  // Prompt input (new UI uses TipTap/ProseMirror contenteditable div; old UI uses textarea/input)
+  PROMPT_INPUT: '[contenteditable="true"].tiptap, [contenteditable="true"].ProseMirror, textarea[placeholder*="prompt"], input[placeholder*="prompt"], [contenteditable="true"], textarea, input[type="text"]',
 
   // Video generation states
   VIDEO_CONTAINER: 'video, [role="video"]',

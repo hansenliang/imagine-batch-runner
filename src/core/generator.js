@@ -297,7 +297,7 @@ export class VideoGenerator {
     // Wait for prompt input to be available
     const waitTimeout = Math.max(5000, config.ELEMENT_WAIT_TIMEOUT);
     let promptInput;
-    
+
     try {
       await this.page.waitForSelector(selectors.PROMPT_INPUT, { timeout: waitTimeout });
       promptInput = await this.page.$(selectors.PROMPT_INPUT);
@@ -309,25 +309,43 @@ export class VideoGenerator {
       throw new Error('Prompt input element not found');
     }
 
-    // Read current value
-    const currentValue = await promptInput.inputValue().catch(() => '');
-    
+    // Detect if this is a contenteditable element (TipTap/ProseMirror) vs native input/textarea
+    const isContentEditable = await promptInput.evaluate(
+      (el) => el.getAttribute('contenteditable') === 'true'
+    ).catch(() => false);
+
+    // Read current value (different API for contenteditable vs native input)
+    const currentValue = isContentEditable
+      ? await promptInput.innerText().catch(() => '')
+      : await promptInput.inputValue().catch(() => '');
+
     // Only fill if value doesn't match
     if (currentValue.trim() === prompt.trim()) {
       this.logger.debug(`[Attempt ${index + 1}] Prompt already set correctly`);
       return;
     }
 
-    // Clear and fill with correct prompt
-    await promptInput.click({ clickCount: 3 }); // Triple-click to select all
-    await promptInput.fill(prompt);
-    
+    // Playwright's fill() supports both native inputs and contenteditable elements.
+    // Click to focus first, then fill. Fall back to pressSequentially if fill() fails.
+    await promptInput.click();
+    try {
+      await promptInput.fill(prompt);
+    } catch (fillError) {
+      this.logger.debug(`[Attempt ${index + 1}] fill() failed (${fillError.message}), falling back to pressSequentially`);
+      await this.page.keyboard.press('Control+a');
+      await this.page.keyboard.press('Backspace');
+      await promptInput.pressSequentially(prompt, { delay: 10 });
+    }
+
     // Verify the value was set correctly
-    const verifyValue = await promptInput.inputValue().catch(() => '');
+    const verifyValue = isContentEditable
+      ? await promptInput.innerText().catch(() => '')
+      : await promptInput.inputValue().catch(() => '');
+
     if (verifyValue.trim() !== prompt.trim()) {
       throw new Error(`Prompt verification failed: expected "${prompt.slice(0, 50)}..." but got "${verifyValue.slice(0, 50)}..."`);
     }
-    
+
     this.logger.debug(`[Attempt ${index + 1}] Prompt entered and verified`);
   }
 
