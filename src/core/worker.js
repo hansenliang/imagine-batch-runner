@@ -441,20 +441,21 @@ export class ParallelWorker {
             `[Worker ${this.workerId}] Attempt ${index + 1}: Success in ${duration}s${settingsSuffix} - ${this.page.url()}`
           );
 
-          // Extend loop: extend the video up to autoExtend times before post-processing
+          // Extend loop: extend the video up to autoExtend times before post-processing.
+          // Only successful extends count toward autoExtend; content moderation and other
+          // errors retry up to 100 times without counting. Rate limit on extend breaks
+          // the loop (does not stop the worker) since extend rate limits are separate.
           if (this.autoExtend > 0) {
             let successfulExtends = 0;
-            let totalExtendAttempts = 0;
-            const maxExtendRetries = config.MODERATION_RETRY_MAX;
+            let failedAttempts = 0;
+            const maxFailedAttempts = 100;
 
-            while (successfulExtends < this.autoExtend && totalExtendAttempts < maxExtendRetries) {
-              totalExtendAttempts++;
-
+            while (successfulExtends < this.autoExtend && failedAttempts < maxFailedAttempts) {
               this.logger.info(
-                `[Worker ${this.workerId}] Extend ${successfulExtends + 1}/${this.autoExtend} (attempt ${totalExtendAttempts})`
+                `[Worker ${this.workerId}] Extend ${successfulExtends + 1}/${this.autoExtend} (failures: ${failedAttempts})`
               );
 
-              // Step 1: Trigger extend mode via "..." menu → "Extend video"
+              // Step 1: Trigger extend mode via Settings menu → "Extend video"
               const triggered = await this.generator.triggerExtendMode(index);
               if (!triggered) {
                 this.logger.warn(`[Worker ${this.workerId}] Could not trigger extend mode, stopping extends`);
@@ -470,32 +471,37 @@ export class ParallelWorker {
 
               if (extResult.success) {
                 successfulExtends++;
+                failedAttempts = 0; // Reset on success
                 await this.manifest.incrementCounterAtomic('extendedCount');
                 this.logger.success(
                   `[Worker ${this.workerId}] Extend ${successfulExtends}/${this.autoExtend} succeeded in ${extDuration}s`
                 );
               } else if (extResult.rateLimited) {
                 await this.manifest.incrementCounterAtomic('extendAttemptCount');
-                this.logger.warn(`[Worker ${this.workerId}] Rate limit during extend`);
-                throw new Error('RATE_LIMIT_STOP');
+                this.logger.warn(`[Worker ${this.workerId}] Rate limit during extend, moving on`);
+                break;
               } else if (extResult.contentModerated) {
+                failedAttempts++;
                 await this.manifest.incrementCounterAtomic('extendAttemptCount');
                 this.logger.warn(
-                  `[Worker ${this.workerId}] Extend attempt ${totalExtendAttempts} content moderated, retrying...`
+                  `[Worker ${this.workerId}] Extend content moderated (${failedAttempts}/${maxFailedAttempts}), retrying...`
                 );
-                // Continue to retry — don't count toward successful extends
               } else {
+                failedAttempts++;
                 await this.manifest.incrementCounterAtomic('extendAttemptCount');
                 this.logger.warn(
-                  `[Worker ${this.workerId}] Extend attempt ${totalExtendAttempts} failed: ${extResult.error}, retrying...`
+                  `[Worker ${this.workerId}] Extend failed (${failedAttempts}/${maxFailedAttempts}): ${extResult.error}, retrying...`
                 );
-                // Continue to retry
               }
             }
 
             if (successfulExtends > 0) {
               this.logger.info(
-                `[Worker ${this.workerId}] Extends complete: ${successfulExtends}/${this.autoExtend} successful (${totalExtendAttempts} total attempts)`
+                `[Worker ${this.workerId}] Extends complete: ${successfulExtends}/${this.autoExtend} successful`
+              );
+            } else if (failedAttempts >= maxFailedAttempts) {
+              this.logger.warn(
+                `[Worker ${this.workerId}] Extends exhausted ${maxFailedAttempts} retries with no success, continuing to post-processing`
               );
             }
           }
