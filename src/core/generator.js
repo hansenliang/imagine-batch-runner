@@ -684,13 +684,6 @@ export class VideoGenerator {
       // % > 0 means generation is actively in progress
       const generationInProgress = percentageProgress.detected && percentageProgress.percentage > 0;
 
-      // TODO: TEMPORARY diagnostic — remove after progress detection is confirmed working
-      if (!loggedStart && elapsed > 0 && elapsed % 10 === 0) {
-        this.logger.info(
-          `[Attempt ${index + 1}] Polling ${elapsed}s: progress=${JSON.stringify(percentageProgress)}, video=${!!video}`
-        );
-      }
-
       // Check for resolution downgrade once, early in generation (before loggedStart)
       if (!actualResolution && !loggedStart) {
         const downgrade = await this._detectResolutionDowngrade();

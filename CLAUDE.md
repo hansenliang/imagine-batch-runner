@@ -31,6 +31,13 @@ Automates Grok Imagine video generation via Playwright. Runs 1-100 parallel work
 - **Never print prompt text** to CLI or logs (privacy)
 - **UI selectors** are in `src/config.js` — update there, not inline
 
+## Grok UI Notes (updated March 2026)
+- **Dual video elements**: Grok now renders `<video id="sd-video">` (visible, has `src`) and `<video id="hd-video">` (hidden, no `src` until HD ready). Always use `currentSrc` or `v.currentSrc || v.src` — never `getAttribute('src')`.
+- **Progress indicator**: Progress is shown as a floating overlay pill with `<span class="tabular-nums">15%</span>`. Detected via `span.tabular-nums` selector + `getBoundingClientRect` visibility check. The old `offsetParent` approach fails on overlay-positioned elements.
+- **Extend video**: The Settings button (`aria-label="Settings"`) shows "Extend video" as a menu item when a video is already generated. No need to use the "More options" (`...`) menu.
+- **Rate limits are separate**: Generation and extension have independent rate limits. Extension rate limit should `break` out of the extend loop (not stop the worker). Generation rate limit still throws `RATE_LIMIT_STOP`.
+- **Extend loop**: Only successful extends count toward `autoExtend` cap. Content moderation and errors retry up to 100 times without counting. Post-processing (download/delete/upscale) always runs after extends regardless of outcome.
+
 ## When to Read More
 - Setup or install issues → `docs/quickstart.md`
 - Modifying core logic or architecture → `docs/architecture.md`
