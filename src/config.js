@@ -53,7 +53,7 @@ export const config = {
   CACHE_DIR: path.resolve(__dirname, '..', 'cache'),
 
   // Timeouts (milliseconds)
-  VIDEO_GENERATION_TIMEOUT: 60000, // 60 seconds
+  VIDEO_GENERATION_TIMEOUT: 120000, // 120 seconds (increased for higher resolutions/durations)
   PAGE_LOAD_TIMEOUT: 30000,
   ELEMENT_WAIT_TIMEOUT: parseInt(process.env.ELEMENT_WAIT_TIMEOUT, 10) || 30000, // 30 seconds (configurable via env var)
   UI_ACTION_DELAY: 1000, // 1 second delay after UI actions (menu open/close, button clicks)
@@ -78,6 +78,7 @@ export const config = {
   DEFAULT_DOWNLOAD_ENABLED: true,
   DEFAULT_UPSCALE_ENABLED: true,
   DEFAULT_DELETE_ENABLED: false,
+  DEFAULT_DOWNLOAD_AND_DELETE_REMAINING: false, // Cleanup remaining videos at end of run
   DOWNLOAD_DIR: path.resolve(__dirname, '..', 'downloads'),
   DOWNLOAD_TIMEOUT: 60000, // 60 seconds
   DOWNLOAD_RETRY_MAX: 3,
@@ -118,8 +119,11 @@ export const selectors = {
   NETWORK_ERROR_MESSAGE: 'text=/network error|connection lost|failed to load/i',
   GENERATION_ERROR_MESSAGE: 'text=/generation failed|error generating|something went wrong/i',
 
-  // Rate limit indicators
-  RATE_LIMIT_TOAST: 'text=/try again later|rate limit|too many requests|usage limit|video limit|limit reached|daily limit|hourly limit|quota exceeded|maximum.*reached/i',
+  // Rate limit indicators (must have Upgrade button to be a true rate limit)
+  RATE_LIMIT_TOAST: 'button:has-text("Upgrade")',
+
+  // Resolution downgrade toast (informational, generation continues at lower resolution)
+  RESOLUTION_DOWNGRADE_TOAST: 'text=/\\d+p.*rate limit.*switched.*\\d+p/i',
 
   // Success indicators
   VIDEO_DOWNLOAD_BUTTON: 'button:has-text("Download"), button:has-text("Save"), a[download]',
@@ -149,11 +153,14 @@ export const selectors = {
   UPSCALING_INDICATOR: 'text=/upscaling/i',
   HD_BADGE: 'text=/^HD$/i',
 
-  // Video duration selection
+  // Video options menu (duration and resolution selection)
   VIDEO_OPTIONS_BUTTON: 'button[aria-label="Video Options"]',
 
   // Announcement banner dismiss button (X button inside z-[9999] banner)
   ANNOUNCEMENT_BANNER_DISMISS: 'div.absolute[class*="z-[9999]"] button:has(svg.lucide-x)',
+
+  // Thumbnail navigation for cleanup (uses semantic alt text, excludes Favorites button)
+  THUMBNAIL_BUTTON: 'button:has(img[alt^="Thumbnail"]):not([aria-label="Favorites"])',
 };
 
 export default config;

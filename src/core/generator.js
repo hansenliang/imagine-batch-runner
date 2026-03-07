@@ -38,7 +38,7 @@ export class VideoGenerator {
       await this._clickGenerationButton(index);
 
       // Step 3: Wait for video generation to complete
-      await this._waitForCompletion(index);
+      const completionResult = await this._waitForCompletion(index);
 
       const duration = Date.now() - startTime;
       return {
@@ -47,6 +47,8 @@ export class VideoGenerator {
         attempted: true,
         contentModerated: false,
         durationMs: duration,
+        actualResolution: completionResult?.actualResolution || null,
+        abTestDetected: completionResult?.abTestDetected || false,
       };
     } catch (error) {
       // Rate limit detected before generation starts - doesn't count as attempt
@@ -341,18 +343,40 @@ export class VideoGenerator {
   }
 
   /**
-   * Detect rate limit from UI
+   * Detect rate limit from UI (requires Upgrade button to be visible)
    */
   async _detectRateLimit() {
     try {
-      const rateLimitMsg = await this.page.$(selectors.RATE_LIMIT_TOAST);
-      if (rateLimitMsg) {
-        const text = await rateLimitMsg.textContent().catch(() => '');
-        return { detected: true, message: text };
+      const upgradeButton = await this.page.$(selectors.RATE_LIMIT_TOAST);
+      if (upgradeButton) {
+        const isVisible = await upgradeButton.isVisible().catch(() => false);
+        if (isVisible) {
+          return { detected: true, message: 'Rate limit reached (Upgrade button visible)' };
+        }
       }
       return { detected: false, message: null };
     } catch (error) {
       return { detected: false, message: null };
+    }
+  }
+
+  /**
+   * Detect resolution downgrade toast and extract actual resolution
+   * Returns: { detected: boolean, actualResolution: string | null, message: string | null }
+   */
+  async _detectResolutionDowngrade() {
+    try {
+      const downgradeMsg = await this.page.$(selectors.RESOLUTION_DOWNGRADE_TOAST);
+      if (downgradeMsg) {
+        const text = await downgradeMsg.textContent().catch(() => '');
+        // Extract resolution from "switched to 480p" pattern
+        const match = text.match(/switched.*?(\d+p)/i);
+        const actualResolution = match ? match[1] : null;
+        return { detected: true, actualResolution, message: text };
+      }
+      return { detected: false, actualResolution: null, message: null };
+    } catch (error) {
+      return { detected: false, actualResolution: null, message: null };
     }
   }
 
@@ -385,6 +409,83 @@ export class VideoGenerator {
       return { detected: false, message: null };
     } catch (error) {
       return { detected: false, message: null };
+    }
+  }
+
+  /**
+   * Detect A/B test state (two playable videos shown for comparison)
+   * Uses structural detection (counting playable videos) rather than button text for robustness
+   * @returns {{ detected: boolean, videoCount: number }}
+   */
+  async _detectABTest() {
+    try {
+      const videos = await this.page.$$(selectors.VIDEO_CONTAINER);
+      let playableCount = 0;
+
+      for (const video of videos) {
+        const isVisible = await video.isVisible().catch(() => false);
+        if (!isVisible) continue;
+
+        const src = await video.getAttribute('src').catch(() => null);
+        const duration = await video.evaluate(v => v.duration).catch(() => 0);
+
+        if (src && duration > 0) {
+          playableCount++;
+        }
+      }
+
+      return { detected: playableCount === 2, videoCount: playableCount };
+    } catch (error) {
+      this.logger.debug(`A/B test detection error: ${error.message}`);
+      return { detected: false, videoCount: 0 };
+    }
+  }
+
+  /**
+   * Dismiss A/B test by clicking the first preference button
+   * Finds buttons near video elements and clicks the first one found
+   * @param {number} index - Current attempt index for logging
+   * @returns {Promise<boolean>} - Whether dismissal was successful
+   */
+  async _dismissABTest(index) {
+    try {
+      const videos = await this.page.$$(selectors.VIDEO_CONTAINER);
+
+      for (const video of videos) {
+        const isVisible = await video.isVisible().catch(() => false);
+        if (!isVisible) continue;
+
+        // Find parent container that holds both video and button
+        // Walk up the DOM tree to find a container with a button
+        const container = await video.evaluateHandle(el => {
+          let parent = el.parentElement;
+          for (let i = 0; i < 6 && parent; i++) {
+            if (parent.querySelector('button')) return parent;
+            parent = parent.parentElement;
+          }
+          return el.parentElement;
+        });
+
+        const containerElement = container.asElement();
+        if (!containerElement) continue;
+
+        const button = await containerElement.$('button');
+        if (button) {
+          const isButtonVisible = await button.isVisible().catch(() => false);
+          if (isButtonVisible) {
+            this.logger.info(`[Attempt ${index + 1}] A/B test detected, selecting first variation`);
+            await button.click();
+            await sleep(2000); // Wait for UI transition
+            return true;
+          }
+        }
+      }
+
+      this.logger.warn(`[Attempt ${index + 1}] A/B test detected but could not find dismiss button`);
+      return false;
+    } catch (error) {
+      this.logger.warn(`[Attempt ${index + 1}] A/B test dismissal error: ${error.message}`);
+      return false;
     }
   }
 
@@ -461,6 +562,7 @@ export class VideoGenerator {
     const startTime = Date.now();
     const checkInterval = 2000;
     let loggedStart = false;
+    let actualResolution = null; // Track if resolution was downgraded
 
     while (true) {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -470,6 +572,15 @@ export class VideoGenerator {
 
       // % > 0 means generation is actively in progress
       const generationInProgress = percentageProgress.detected && percentageProgress.percentage > 0;
+
+      // Check for resolution downgrade once, early in generation (before loggedStart)
+      if (!actualResolution && !loggedStart) {
+        const downgrade = await this._detectResolutionDowngrade();
+        if (downgrade.detected) {
+          actualResolution = downgrade.actualResolution;
+          this.logger.info(`[Attempt ${index + 1}] Resolution downgraded: ${downgrade.message}`);
+        }
+      }
 
       // Log once when generation starts
       if (generationInProgress && !loggedStart) {
@@ -482,8 +593,25 @@ export class VideoGenerator {
       if (video && loggedStart) {
         const isPlayable = await this._verifyVideoPlayable(video);
         if (isPlayable) {
+          // Check for A/B test state (two playable videos shown for comparison)
+          const abTest = await this._detectABTest();
+          if (abTest.detected) {
+            const dismissed = await this._dismissABTest(index);
+            if (dismissed) {
+              // Wait for UI to settle after dismissal
+              await sleep(2000);
+              // Verify we're back to normal state (single video)
+              const recheck = await this._detectABTest();
+              if (recheck.detected) {
+                this.logger.warn(`[Attempt ${index + 1}] A/B test still present after dismiss attempt`);
+              }
+            }
+            this.logger.success(`[Attempt ${index + 1}] Video ready and verified (A/B test dismissed)`);
+            return { success: true, actualResolution, abTestDetected: true };
+          }
+
           this.logger.success(`[Attempt ${index + 1}] Video ready and verified`);
-          return { success: true };
+          return { success: true, actualResolution, abTestDetected: false };
         }
       }
 
