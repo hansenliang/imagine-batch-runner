@@ -733,7 +733,14 @@ export class VideoGenerator {
         throw new Error(`TIMEOUT: Video generation exceeded ${config.VIDEO_GENERATION_TIMEOUT / 1000}s`);
       }
 
-      // 3. Only check for errors when % is 0 or not visible
+      // 3. Check if page drifted away from Imagine post page (e.g. error → /imagine home)
+      if (!this.page.url().includes('/imagine/post/')) {
+        const driftUrl = this.page.url();
+        this.logger.warn(`[Attempt ${index + 1}] Page navigated away to ${driftUrl}`);
+        throw new Error(`PAGE_DRIFTED: Page navigated to ${driftUrl}`);
+      }
+
+      // 4. Only check for errors when % is 0 or not visible
       // This prevents false positives from stale toasts while generation is in progress
       if (!generationInProgress) {
         const rateLimit = await this._detectRateLimit();
