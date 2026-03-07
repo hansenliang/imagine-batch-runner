@@ -189,6 +189,17 @@ export class ParallelWorker {
    */
   async _selectVideoMode() {
     try {
+      // If any video element already has a src (e.g. from a previous run), we're already
+      // in video mode. Skip the Settings interaction to avoid triggering SPA navigation.
+      // Handles dual sd-video/hd-video elements (see claude.md "Dual video elements").
+      const hasExistingVideo = await this.page.$$eval(selectors.VIDEO_CONTAINER,
+        videos => videos.some(v => !!(v.currentSrc || v.src))
+      ).catch(() => false);
+      if (hasExistingVideo) {
+        this.logger.debug(`[Worker ${this.workerId}] Video already present, skipping mode selection`);
+        return;
+      }
+
       const settingsButton = await this.page.$(selectors.SETTINGS_BUTTON);
       if (!settingsButton) {
         this.logger.debug(`[Worker ${this.workerId}] No Settings button found, assuming video mode`);
@@ -398,6 +409,9 @@ export class ParallelWorker {
         }
 
         this.logger.info(`[Worker ${this.workerId}] Attempting generation ${index + 1}`);
+
+        // Ensure we're still on the permalink (SPA navigation can drift)
+        await this._ensureOnPermalink();
 
         // Generate video (returns result with success, rateLimited, attempted)
         const result = await this.generator.generate(index, this.prompt);
@@ -616,6 +630,28 @@ export class ParallelWorker {
       throw error;
     } finally {
       this.isRunning = false;
+    }
+  }
+
+  /**
+   * Verify the page is still on the expected permalink, re-navigate if not.
+   * @private
+   */
+  async _ensureOnPermalink() {
+    try {
+      const currentUrl = this.page.url();
+      const expectedPath = new URL(this.permalink).pathname;
+      if (!currentUrl.includes(expectedPath)) {
+        this.logger.warn(`[Worker ${this.workerId}] Page drifted to ${currentUrl}, re-navigating to permalink`);
+        await this.page.goto(this.permalink, {
+          waitUntil: 'domcontentloaded',
+          timeout: config.PAGE_LOAD_TIMEOUT,
+        });
+        await sleep(3000);
+        await this._waitForReadyUI();
+      }
+    } catch (error) {
+      this.logger.warn(`[Worker ${this.workerId}] _ensureOnPermalink failed: ${error.message}`);
     }
   }
 

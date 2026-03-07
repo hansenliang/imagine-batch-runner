@@ -302,7 +302,8 @@ export class VideoGenerator {
       await this.page.waitForSelector(selectors.PROMPT_INPUT, { timeout: waitTimeout });
       promptInput = await this.page.$(selectors.PROMPT_INPUT);
     } catch (error) {
-      throw new Error(`Prompt input not found after ${waitTimeout}ms`);
+      const currentPath = this.page.url().replace(/https?:\/\/[^/]+/, '');
+      throw new Error(`Prompt input not found after ${waitTimeout}ms (page: ${currentPath})`);
     }
 
     if (!promptInput) {
