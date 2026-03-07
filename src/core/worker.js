@@ -640,16 +640,20 @@ export class ParallelWorker {
   async _ensureOnPermalink() {
     try {
       const currentUrl = this.page.url();
-      const expectedPath = new URL(this.permalink).pathname;
-      if (!currentUrl.includes(expectedPath)) {
-        this.logger.warn(`[Worker ${this.workerId}] Page drifted to ${currentUrl}, re-navigating to permalink`);
-        await this.page.goto(this.permalink, {
-          waitUntil: 'domcontentloaded',
-          timeout: config.PAGE_LOAD_TIMEOUT,
-        });
-        await sleep(3000);
-        await this._waitForReadyUI();
+      // The SPA routes to a new /imagine/post/<uuid> on every generation start.
+      // That's expected — stay on whatever post page we're on. Only re-navigate
+      // if we've left Imagine post pages entirely (e.g. "post not found" redirect
+      // to /imagine home).
+      if (currentUrl.includes('/imagine/post/')) {
+        return;
       }
+      this.logger.warn(`[Worker ${this.workerId}] Page drifted to ${currentUrl}, re-navigating to permalink`);
+      await this.page.goto(this.permalink, {
+        waitUntil: 'domcontentloaded',
+        timeout: config.PAGE_LOAD_TIMEOUT,
+      });
+      await sleep(3000);
+      await this._waitForReadyUI();
     } catch (error) {
       this.logger.warn(`[Worker ${this.workerId}] _ensureOnPermalink failed: ${error.message}`);
     }
