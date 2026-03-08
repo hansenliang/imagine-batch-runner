@@ -743,10 +743,16 @@ export class VideoGenerator {
       // 4. Only check for errors when % is 0 or not visible
       // This prevents false positives from stale toasts while generation is in progress
       if (!generationInProgress) {
-        const rateLimit = await this._detectRateLimit();
-        if (rateLimit.detected) {
-          this.logger.warn(`[Attempt ${index + 1}] Rate limit detected: ${rateLimit.message}`);
-          throw new Error(`RATE_LIMIT: ${rateLimit.message}`);
+        // Only check rate limit if generation was never observed in progress.
+        // Once progress was seen (loggedStart), the generation was accepted by the
+        // server — progress disappearing means "video loading", not "rate limited".
+        // Account-wide rate limit toasts from other workers would cause false positives here.
+        if (!loggedStart) {
+          const rateLimit = await this._detectRateLimit();
+          if (rateLimit.detected) {
+            this.logger.warn(`[Attempt ${index + 1}] Rate limit detected: ${rateLimit.message}`);
+            throw new Error(`RATE_LIMIT: ${rateLimit.message}`);
+          }
         }
 
         const moderation = await this._detectContentModeration();
