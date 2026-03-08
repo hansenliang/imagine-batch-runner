@@ -181,6 +181,29 @@ export class ParallelWorker {
   }
 
   /**
+   * Wait for a video element with a src to be loaded on the page.
+   * Used after navigating back to a checkpoint permalink during extend retries —
+   * the "Extend video" menu option only appears when a video is present.
+   * @private
+   */
+  async _waitForVideoLoaded() {
+    try {
+      const timeout = Math.max(10000, config.ELEMENT_WAIT_TIMEOUT);
+      await this.page.waitForFunction(
+        (sel) => {
+          const videos = document.querySelectorAll(sel);
+          return [...videos].some(v => !!(v.currentSrc || v.src));
+        },
+        selectors.VIDEO_CONTAINER,
+        { timeout }
+      );
+      this.logger.debug(`[Worker ${this.workerId}] Video loaded on checkpoint page`);
+    } catch (error) {
+      this.logger.warn(`[Worker ${this.workerId}] Video load wait timed out: ${error.message}`);
+    }
+  }
+
+  /**
    * Switch from image mode to video mode if a Settings button is present.
    * On Grok Imagine image pages, a "Settings" gear button opens a menu
    * with a "Make Video" option to switch to video generation mode.
@@ -463,25 +486,35 @@ export class ParallelWorker {
             let successfulExtends = 0;
             let failedAttempts = 0;
             const maxFailedAttempts = 100;
-            // Capture the post URL where the video lives (may differ from this.permalink
-            // because the SPA routes to a new /imagine/post/<uuid> on generation)
-            const videoPostUrl = this.page.url();
+            // Checkpoint: last successful generation/extension permalink.
+            // Grok creates a new /imagine/post/<uuid> at the START of every generation
+            // (including extensions). If an extension fails, we navigate back here to retry.
+            let checkpointUrl = this.page.url();
 
             while (successfulExtends < this.autoExtend && failedAttempts < maxFailedAttempts) {
               this.logger.info(
                 `[Worker ${this.workerId}] Extend ${successfulExtends + 1}/${this.autoExtend} (failures: ${failedAttempts})`
               );
 
-              // Ensure we're still on the video's post page before attempting extend.
-              // Failed extends can cause Grok to redirect to /imagine home.
+              // Ensure we're on a valid post page before attempting extend.
+              // Failed extends cause Grok to redirect to /imagine home or leave us
+              // on a dead permalink. Navigate back to the last successful video.
               if (!this.page.url().includes('/imagine/post/')) {
-                this.logger.warn(`[Worker ${this.workerId}] Page drifted to ${this.page.url()}, re-navigating to video post`);
-                await this.page.goto(videoPostUrl, {
+                this.logger.warn(`[Worker ${this.workerId}] Page drifted to ${this.page.url()}, re-navigating to checkpoint ${checkpointUrl}`);
+                await this.page.goto(checkpointUrl, {
                   waitUntil: 'domcontentloaded',
                   timeout: config.PAGE_LOAD_TIMEOUT,
                 });
                 await sleep(3000);
                 await this._waitForReadyUI();
+                await this._waitForVideoLoaded();
+                // Grok may redirect stale/image permalinks to the latest video's permalink.
+                // Accept whatever /post/ URL we land on as the new checkpoint.
+                const landedUrl = this.page.url();
+                if (landedUrl.includes('/imagine/post/') && landedUrl !== checkpointUrl) {
+                  this.logger.info(`[Worker ${this.workerId}] Checkpoint redirected to ${landedUrl}`);
+                  checkpointUrl = landedUrl;
+                }
               }
 
               // Step 1: Trigger extend mode via Settings menu → "Extend video"
@@ -501,6 +534,7 @@ export class ParallelWorker {
               if (extResult.success) {
                 successfulExtends++;
                 failedAttempts = 0; // Reset on success
+                checkpointUrl = this.page.url(); // Advance checkpoint to this extension's permalink
                 await this.manifest.incrementCounterAtomic('extendedCount');
                 this.logger.success(
                   `[Worker ${this.workerId}] Extend ${successfulExtends}/${this.autoExtend} succeeded in ${extDuration}s`
