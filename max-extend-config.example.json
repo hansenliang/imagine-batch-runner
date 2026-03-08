@@ -1,0 +1,11 @@
+{
+  "account": "my-account-alias",
+  "permalink": "https://grok.com/imagine/post/YOUR_VIDEO_ID_HERE",
+  "prompt": "pixel art style, looping aesthetic",
+  "count": 5,
+  "jobName": "max_extend_run",
+  "parallel": 3,
+  "autoDownload": true,
+  "autoUpscale": true,
+  "autoDelete": false
+}

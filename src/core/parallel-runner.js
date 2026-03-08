@@ -24,6 +24,7 @@ export class ParallelRunner {
       selectMaxDuration = false,
       selectMaxResolution = false,
       autoExtend = 0,
+      maxExtendMode = false,
       downloadAndDeleteRemainingVideos = false,
       logFilePath = null,  // Optional: caller can specify exact log file path
     } = options;
@@ -43,6 +44,7 @@ export class ParallelRunner {
     this.selectMaxDuration = selectMaxDuration;
     this.selectMaxResolution = selectMaxResolution;
     this.autoExtend = autoExtend;
+    this.maxExtendMode = maxExtendMode;
 
     // Runtime state
     // If logFilePath provided, use it; otherwise default to logs/runs/<jobName>.log
@@ -76,7 +78,9 @@ export class ParallelRunner {
     await this.logger.info(`Batch size: ${this.batchSize}`);
     await this.logger.info(`Parallelism: ${this.parallelism} workers`);
     await this.logger.info(`Permalink: ${this.permalink}`);
-    if (this.autoExtend > 0) {
+    if (this.maxExtendMode) {
+      await this.logger.info(`Mode: max-extend (target ${config.MAX_VIDEO_DURATION}s)`);
+    } else if (this.autoExtend > 0) {
       await this.logger.info(`Auto-extend: ${this.autoExtend}x per video`);
     }
     if (this.downloadAndDeleteRemainingVideos) {
@@ -122,6 +126,7 @@ export class ParallelRunner {
             selectMaxDuration: this.selectMaxDuration,
             selectMaxResolution: this.selectMaxResolution,
             autoExtend: this.autoExtend,
+            maxExtendMode: this.maxExtendMode,
             downloadAndDeleteRemainingVideos: this.downloadAndDeleteRemainingVideos,
             downloadDir: this.downloadDir,
             jobName: this.jobName,
@@ -151,9 +156,11 @@ export class ParallelRunner {
       }
 
       // Start all workers in parallel
-      await this.logger.info('Starting parallel video generation...');
+      const modeLabel = this.maxExtendMode ? 'max-extend' : 'video generation';
+      await this.logger.info(`Starting parallel ${modeLabel}...`);
+      const runMethod = this.maxExtendMode ? 'runMaxExtend' : 'run';
       const workerPromises = successfulWorkers.map(worker =>
-        worker.run().catch(error => {
+        worker[runMethod]().catch(error => {
           // Catch errors but don't stop other workers
           if (error.message === 'RATE_LIMIT_STOP') {
             if (!this.rateLimitDetected) {

@@ -6,7 +6,31 @@ Automates Grok Imagine video generation via Playwright. Runs 1-100 parallel work
 - `npm start accounts add <alias>` — Add account (opens browser for login)
 - `npm start accounts list` — List accounts
 - `node src/cli.js run start --config batch-config.json` — Start batch run
+- `node src/cli.js run max-extend --config max-extend-config.json` — Extend existing video to 30s
 - `npm test` — Validate imports
+
+## Max-Extend Mode
+Extends an existing short video (< 30s) to the maximum 30s duration. Multiple workers branch independently from the same source video, producing parallel extension chains for curation.
+
+Example:
+```bash
+node src/cli.js run max-extend \
+  --account my-account \
+  --permalink "https://grok.com/imagine/post/abc123" \
+  --prompt "pixel art style, looping aesthetic" \
+  --count 5 \
+  --parallel 3 \
+  --auto-download \
+  --auto-upscale \
+  --auto-delete
+```
+
+- `--count` = number of independent extension chains (each aims for 30s)
+- `--parallel` = number of workers running chains simultaneously
+- `--auto-delete` deletes only the extension results, never the original video
+- Each chain: source video → extend → extend → ... → 30s → download/upscale/delete
+- Content moderation retries automatically (up to 100 times per chain)
+- Rate limit stops the affected worker; other workers continue
 
 ## Key Files
 - `src/cli.js` — CLI entry point

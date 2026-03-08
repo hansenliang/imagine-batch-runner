@@ -252,6 +252,137 @@ run
     }
   });
 
+run
+  .command('max-extend')
+  .description('Extend an existing video to maximum duration (30s) with parallel branching')
+  .option('--config <path>', 'Load config from JSON file')
+  .option('--account <alias>', 'Account alias to use')
+  .option('--permalink <url>', 'Existing video permalink (< 30s)')
+  .option('--prompt <text>', 'Prompt for extension generations')
+  .option('--count <number>', 'Number of independent extension chains', '1')
+  .option('--job-name <name>', 'Custom job name (default: auto-generated)')
+  .option('--parallel <count>', 'Number of parallel workers', '1')
+  .option('--auto-download', 'Automatically download extended videos', true)
+  .option('--auto-upscale', 'Automatically upscale videos to HD (requires --auto-download)', true)
+  .option('--auto-delete', 'Automatically delete extensions after download (never deletes original)', false)
+  .action(async (options) => {
+    try {
+      // Load config file if specified
+      if (options.config) {
+        console.log(chalk.gray(`Loading config from: ${options.config}\n`));
+        const configData = JSON.parse(await fs.readFile(options.config, 'utf-8'));
+
+        const parallelWasDefault = options.parallel === '1';
+        const countWasDefault = options.count === '1';
+        const autoDownloadWasDefault = options.autoDownload === true;
+        const autoUpscaleWasDefault = options.autoUpscale === true;
+        const autoDeleteWasDefault = options.autoDelete === false;
+
+        options = { ...configData, ...options };
+
+        if (parallelWasDefault && configData.parallel !== undefined) {
+          options.parallel = configData.parallel;
+        }
+        if (countWasDefault && configData.count !== undefined) {
+          options.count = configData.count;
+        }
+        if (autoDownloadWasDefault && configData.autoDownload !== undefined) {
+          options.autoDownload = configData.autoDownload;
+        }
+        if (autoUpscaleWasDefault && configData.autoUpscale !== undefined) {
+          options.autoUpscale = configData.autoUpscale;
+        }
+        if (autoDeleteWasDefault && configData.autoDelete !== undefined) {
+          options.autoDelete = configData.autoDelete;
+        }
+      }
+
+      // Validate auto-upscale requires auto-download
+      if (options.autoUpscale && !options.autoDownload) {
+        throw new Error('--auto-upscale requires --auto-download to be enabled');
+      }
+
+      // Validate auto-delete requires auto-download
+      if (options.autoDelete && !options.autoDownload) {
+        throw new Error('--auto-delete requires --auto-download to be enabled');
+      }
+
+      // Validate required fields
+      if (!options.account) {
+        throw new Error('--account is required (or specify in config file)');
+      }
+      if (!options.permalink) {
+        throw new Error('--permalink is required (or specify in config file)');
+      }
+      if (!options.prompt) {
+        throw new Error('--prompt is required (or specify in config file)');
+      }
+
+      // Validate inputs
+      const count = parseInt(options.count, 10);
+      if (isNaN(count) || count < 1 || count > 1000) {
+        throw new Error('Count must be between 1 and 1000');
+      }
+
+      const parallelism = parseInt(options.parallel, 10);
+      if (isNaN(parallelism) || parallelism < 1 || parallelism > 100) {
+        throw new Error('Parallel must be between 1 and 100');
+      }
+
+      if (!options.permalink.includes('grok.com/imagine')) {
+        throw new Error('Permalink must be a Grok Imagine URL');
+      }
+
+      // Check if account exists
+      const accountManager = new AccountManager();
+      const exists = await accountManager.accountExists(options.account);
+      if (!exists) {
+        throw new Error(`Account "${options.account}" not found. Run "grok-batch accounts add ${options.account}" first.`);
+      }
+
+      console.log(chalk.blue('\n🔄 Starting max-extend run...\n'));
+      console.log(chalk.gray(`Code version: ${await getCodeVersionLabel()}`));
+      console.log(chalk.gray(`Account: ${options.account}`));
+      console.log(chalk.gray(`Source video: ${options.permalink}`));
+      console.log(chalk.gray(`Extension chains: ${count}`));
+      console.log(chalk.gray(`Parallelism: ${parallelism} workers`));
+      console.log(chalk.gray(`Target: ${config.MAX_VIDEO_DURATION}s (max duration)`));
+      if (options.autoDownload) {
+        console.log(chalk.gray(`Auto-download: enabled`));
+      }
+      if (options.autoUpscale) {
+        console.log(chalk.gray(`Auto-upscale: enabled`));
+      }
+      if (options.autoDelete) {
+        console.log(chalk.gray(`Auto-delete: enabled (extensions only, original preserved)`));
+      }
+      console.log('');
+
+      const runner = new ParallelRunner({
+        accountAlias: options.account,
+        permalink: options.permalink,
+        prompt: options.prompt,
+        batchSize: count,
+        jobName: options.jobName,
+        parallelism,
+        autoDownload: options.autoDownload || false,
+        autoUpscale: options.autoUpscale || false,
+        autoDelete: options.autoDelete || false,
+        maxExtendMode: true,
+      });
+
+      await runner.init();
+      const summary = await runner.start();
+
+      // Update account last used
+      await accountManager.updateLastUsed(options.account);
+
+    } catch (error) {
+      console.error(chalk.red(`\n✗ Error: ${error.message}\n`));
+      process.exit(1);
+    }
+  });
+
 /**
  * Auto-run commands
  */

@@ -39,6 +39,7 @@ export class ParallelWorker {
 
     // Auto-extend settings
     this.autoExtend = options.autoExtend || 0;
+    this.maxExtendMode = options.maxExtendMode || false;
 
     // Browser resources
     this.context = null;
@@ -478,184 +479,16 @@ export class ParallelWorker {
             `[Worker ${this.workerId}] Attempt ${index + 1}: Success in ${duration}s${settingsSuffix} - ${this.page.url()}`
           );
 
-          // Extend loop: extend the video up to autoExtend times before post-processing.
-          // Only successful extends count toward autoExtend; content moderation and other
-          // errors retry up to 100 times without counting. Rate limit on extend breaks
-          // the loop (does not stop the worker) since extend rate limits are separate.
-          //
-          // Structure: outer loop (per-extension) triggers extend mode on the checkpoint,
-          // inner loop retries generate() on moderation without re-triggering extend mode.
+          // Extend loop (if autoExtend > 0): extend the video before post-processing
           if (this.autoExtend > 0) {
-            let successfulExtends = 0;
-            let failedAttempts = 0;
-            const maxFailedAttempts = 100;
-            // Checkpoint: last successful generation/extension permalink.
-            // Grok creates a new /imagine/post/<uuid> at the START of every generation
-            // (including extensions). If an extension fails, we navigate back here to retry.
-            let checkpointUrl = this.page.url();
-            let rateLimitedOnExtend = false;
-
-            while (successfulExtends < this.autoExtend && failedAttempts < maxFailedAttempts && !rateLimitedOnExtend) {
-              this.logger.info(
-                `[Worker ${this.workerId}] Extend ${successfulExtends + 1}/${this.autoExtend} (failures: ${failedAttempts})`
-              );
-
-              // Navigate back to checkpoint if we're not on the checkpoint page.
-              // After a failed extension we may be on the extension's /post/ URL (no video)
-              // or redirected to /imagine. Either way, go back to the checkpoint which has
-              // the completed video needed for "Extend video" to appear in the Settings menu.
-              const currentUrl = this.page.url();
-              if (currentUrl !== checkpointUrl) {
-                this.logger.info(`[Worker ${this.workerId}] Navigating to checkpoint ${checkpointUrl}`);
-                await this.page.goto(checkpointUrl, {
-                  waitUntil: 'domcontentloaded',
-                  timeout: config.PAGE_LOAD_TIMEOUT,
-                });
-                await sleep(3000);
-                await this._waitForReadyUI();
-                await this._waitForVideoLoaded();
-                // Grok may redirect stale/image permalinks to the latest video's permalink.
-                // Accept whatever /post/ URL we land on as the new checkpoint.
-                const landedUrl = this.page.url();
-                if (landedUrl.includes('/imagine/post/') && landedUrl !== checkpointUrl) {
-                  this.logger.info(`[Worker ${this.workerId}] Checkpoint redirected to ${landedUrl}`);
-                  checkpointUrl = landedUrl;
-                }
-              }
-
-              // Step 1: Trigger extend mode via Settings menu → "Extend video"
-              const triggered = await this.generator.triggerExtendMode(index);
-              if (!triggered) {
-                this.logger.warn(`[Worker ${this.workerId}] Could not trigger extend mode, stopping extends`);
-                break;
-              }
-
-              // Step 2: Select max extend duration (+10s pills)
-              await this._selectMaxDuration(/^\+?\d+s$/);
-
-              // Step 3: Inner retry loop — generate the extension, retrying on content
-              // moderation (just hit generate again, like normal moderation retries).
-              // Break back to outer loop on success, rate limit, or unrecoverable error.
-              while (failedAttempts < maxFailedAttempts) {
-                const extResult = await this.generator.generate(index, this.prompt);
-                const extDuration = Math.round((extResult.durationMs || 0) / 1000);
-
-                if (extResult.success) {
-                  successfulExtends++;
-                  failedAttempts = 0; // Reset on success
-                  checkpointUrl = this.page.url(); // Advance checkpoint
-                  await this.manifest.incrementCounterAtomic('extendedCount');
-                  this.logger.success(
-                    `[Worker ${this.workerId}] Extend ${successfulExtends}/${this.autoExtend} succeeded in ${extDuration}s`
-                  );
-                  break; // → outer loop continues for next extension
-                } else if (extResult.rateLimited) {
-                  await this.manifest.incrementCounterAtomic('extendAttemptCount');
-                  this.logger.warn(`[Worker ${this.workerId}] Rate limit during extend, moving on`);
-                  rateLimitedOnExtend = true;
-                  break; // → outer loop exits via flag
-                } else if (extResult.contentModerated) {
-                  failedAttempts++;
-                  await this.manifest.incrementCounterAtomic('extendAttemptCount');
-                  this.logger.warn(
-                    `[Worker ${this.workerId}] Extend content moderated (${failedAttempts}/${maxFailedAttempts}), retrying...`
-                  );
-
-                  // Cooldown before retry to let stale moderation messages clear
-                  await sleep(config.MODERATION_RETRY_COOLDOWN);
-
-                  // If page drifted away from /post/, break to outer loop which will
-                  // navigate back to checkpoint and re-trigger extend mode.
-                  if (!this.page.url().includes('/imagine/post/')) {
-                    this.logger.warn(
-                      `[Worker ${this.workerId}] Page drifted to ${this.page.url()} after moderation, will re-navigate to checkpoint`
-                    );
-                    break; // → outer loop handles recovery
-                  }
-                  // Still on a /post/ page — retry generate directly (UI still in extend mode)
-                  continue;
-                } else {
-                  failedAttempts++;
-                  await this.manifest.incrementCounterAtomic('extendAttemptCount');
-                  this.logger.warn(
-                    `[Worker ${this.workerId}] Extend failed (${failedAttempts}/${maxFailedAttempts}): ${extResult.error}, retrying...`
-                  );
-                  // Break to outer loop for recovery (navigate to checkpoint, re-trigger extend)
-                  break;
-                }
-              }
-            }
-
-            if (successfulExtends > 0) {
-              this.logger.info(
-                `[Worker ${this.workerId}] Extends complete: ${successfulExtends}/${this.autoExtend} successful`
-              );
-            } else if (failedAttempts >= maxFailedAttempts) {
-              this.logger.warn(
-                `[Worker ${this.workerId}] Extends exhausted ${maxFailedAttempts} retries with no success, continuing to post-processing`
-              );
-            }
+            await this._runExtendLoop(this.page.url(), {
+              maxExtends: this.autoExtend,
+              index,
+            });
           }
 
           // Post-processing: download and/or delete (operates on the final video after all extensions)
-          if (this.postProcessor) {
-            const postResult = await this.postProcessor.process(index);
-
-            // Update manifest with download results
-            if (postResult.downloaded) {
-              await this.manifest.incrementCounterAtomic('downloadedCount');
-              await this.manifest.updateItemAtomic(index, {
-                downloaded: true,
-                downloadPath: postResult.downloadPath,
-              }, this.workerId);
-              this.logger.success(
-                `[Worker ${this.workerId}] Attempt ${index + 1}: Downloaded to ${postResult.downloadPath} (${postResult.fileSize})`
-              );
-            } else if (this.autoDownload) {
-              await this.manifest.incrementCounterAtomic('downloadFailedCount');
-              this.logger.warn(
-                `[Worker ${this.workerId}] Attempt ${index + 1}: Download failed - ${postResult.downloadError}`
-              );
-            }
-
-            // Update manifest with upscale results
-            if (postResult.upscaled) {
-              await this.manifest.incrementCounterAtomic('upscaledCount');
-              await this.manifest.updateItemAtomic(index, {
-                upscaled: true,
-                upscaleDownloadPath: postResult.upscaleDownloadPath,
-              }, this.workerId);
-              this.logger.success(
-                `[Worker ${this.workerId}] Attempt ${index + 1}: Upscaled and downloaded HD to ${postResult.upscaleDownloadPath} (${postResult.upscaleFileSize})`
-              );
-            } else if (this.autoUpscale && postResult.downloaded) {
-              await this.manifest.incrementCounterAtomic('upscaleFailedCount');
-              this.logger.warn(
-                `[Worker ${this.workerId}] Attempt ${index + 1}: Upscale failed - ${postResult.upscaleError}`
-              );
-            }
-
-            // Update manifest with delete results
-            if (postResult.deleted) {
-              await this.manifest.incrementCounterAtomic('deletedCount');
-              await this.manifest.updateItemAtomic(index, { deleted: true }, this.workerId);
-              this.logger.success(
-                `[Worker ${this.workerId}] Attempt ${index + 1}: Deleted from server`
-              );
-            } else if (this.autoDelete && postResult.downloaded) {
-              // Only log delete failure if it wasn't skipped due to upscale failure
-              if (!this.autoUpscale || postResult.upscaled) {
-                await this.manifest.incrementCounterAtomic('deleteFailedCount');
-                this.logger.warn(
-                  `[Worker ${this.workerId}] Attempt ${index + 1}: Delete failed - ${postResult.deleteError}`
-                );
-              } else {
-                this.logger.info(
-                  `[Worker ${this.workerId}] Attempt ${index + 1}: Delete skipped - upscale failed`
-                );
-              }
-            }
-          }
+          await this._runPostProcessing(index);
         } else if (result.contentModerated) {
           // Content moderation - expected failure, already logged as WARN in generator
           await this.manifest.updateItemAtomic(
@@ -707,6 +540,394 @@ export class ParallelWorker {
       throw error;
     } finally {
       this.isRunning = false;
+    }
+  }
+
+  /**
+   * Run max-extend mode: extend an existing video at this.permalink to max duration.
+   * Each claimed manifest item = one independent extension chain from the same original.
+   * Workers branch independently, producing multiple 30s variations for curation.
+   *
+   * Safety: post-processing (including delete) only runs if at least one extension
+   * succeeded, so the original permalink video is never deleted.
+   */
+  async runMaxExtend() {
+    this.isRunning = true;
+    let stoppedEarly = false;
+
+    try {
+      while (!this.shouldStop) {
+        // Claim next item atomically
+        const item = await this.manifest.claimNextItem(this.workerId);
+
+        if (!item) {
+          this.logger.info(`[Worker ${this.workerId}] No more work available, exiting`);
+          break;
+        }
+
+        const index = item.index;
+
+        // Check if we should stop BEFORE starting new work
+        if (this.shouldStop) {
+          this.logger.info(`[Worker ${this.workerId}] Stop signal received, releasing unclaimed item ${index + 1}`);
+          await this.manifest.updateItemAtomic(
+            index,
+            { status: 'PENDING' },
+            this.workerId
+          );
+          stoppedEarly = true;
+          break;
+        }
+
+        this.logger.info(`[Worker ${this.workerId}] MaxExtend chain ${index + 1}: navigating to source video`);
+
+        // Navigate to the original permalink (each chain starts from the same video)
+        await this.page.goto(this.permalink, {
+          waitUntil: 'domcontentloaded',
+          timeout: config.PAGE_LOAD_TIMEOUT,
+        });
+        await sleep(3000);
+        await this._waitForReadyUI();
+        await this._waitForVideoLoaded();
+
+        // Verify video exists and is under the max duration
+        const initialDuration = await this._getVideoDuration();
+        if (initialDuration <= 0) {
+          this.logger.error(`[Worker ${this.workerId}] Chain ${index + 1}: No video found at permalink`);
+          await this.manifest.updateItemAtomic(
+            index,
+            { status: 'FAILED', error: 'No video found at permalink', attempts: 0 },
+            this.workerId
+          );
+          await sleep(2000);
+          continue;
+        }
+
+        if (initialDuration >= config.MAX_VIDEO_DURATION) {
+          this.logger.warn(
+            `[Worker ${this.workerId}] Chain ${index + 1}: Video already at max duration (${initialDuration.toFixed(1)}s), skipping`
+          );
+          await this.manifest.updateItemAtomic(
+            index,
+            { status: 'COMPLETED', error: 'Already at max duration', attempts: 0 },
+            this.workerId
+          );
+          await sleep(2000);
+          continue;
+        }
+
+        this.logger.info(
+          `[Worker ${this.workerId}] Chain ${index + 1}: Source video is ${initialDuration.toFixed(1)}s, extending to ${config.MAX_VIDEO_DURATION}s`
+        );
+
+        // The starting checkpoint is whatever /post/ URL we landed on
+        const startCheckpointUrl = this.page.url();
+
+        // Run the shared extend loop with duration-based stopping
+        const extResult = await this._runExtendLoop(startCheckpointUrl, {
+          untilDuration: config.MAX_VIDEO_DURATION,
+          index,
+        });
+
+        if (extResult.successfulExtends > 0) {
+          // At least one extension succeeded — mark completed and post-process
+          await this.manifest.updateItemAtomic(
+            index,
+            { status: 'COMPLETED', attempts: extResult.successfulExtends },
+            this.workerId
+          );
+
+          const finalDuration = await this._getVideoDuration();
+          this.logger.success(
+            `[Worker ${this.workerId}] Chain ${index + 1}: Complete — ${extResult.successfulExtends} extensions, final duration ${finalDuration.toFixed(1)}s`
+          );
+
+          // Post-process the EXTENSION result (not the original)
+          await this._runPostProcessing(index);
+        } else if (extResult.rateLimited) {
+          this.logger.warn(`[Worker ${this.workerId}] Rate limit during max-extend chain ${index + 1}`);
+          await this.manifest.updateItemAtomic(
+            index,
+            { status: 'RATE_LIMITED', error: 'Rate limited during extension', attempts: 0 },
+            this.workerId
+          );
+          throw new Error('RATE_LIMIT_STOP'); // Signal to coordinator
+        } else {
+          // No extensions succeeded — don't touch the original video
+          this.logger.warn(
+            `[Worker ${this.workerId}] Chain ${index + 1}: No extensions succeeded, original video untouched`
+          );
+          await this.manifest.updateItemAtomic(
+            index,
+            { status: 'FAILED', error: 'All extension attempts failed', attempts: 0 },
+            this.workerId
+          );
+        }
+
+        // Check if we should stop AFTER completing work
+        if (this.shouldStop) {
+          this.logger.info(`[Worker ${this.workerId}] Stop signal received, exiting after chain ${index + 1}`);
+          stoppedEarly = true;
+          break;
+        }
+
+        // Small delay between chains
+        await sleep(2000);
+      }
+
+      if (!stoppedEarly) {
+        this.logger.info(`[Worker ${this.workerId}] MaxExtend work loop completed`);
+      }
+    } catch (error) {
+      if (error.message === 'RATE_LIMIT_STOP') {
+        throw error; // Propagate to coordinator
+      }
+      this.logger.error(`[Worker ${this.workerId}] Fatal error in max-extend loop`, error);
+      throw error;
+    } finally {
+      this.isRunning = false;
+    }
+  }
+
+  /**
+   * Get the duration (in seconds) of the currently visible video on the page.
+   * Checks both SD and HD video elements, returning the first with a valid duration.
+   * @private
+   * @returns {Promise<number>} Duration in seconds, or 0 if not available
+   */
+  async _getVideoDuration() {
+    try {
+      return await this.page.evaluate((sel) => {
+        const videos = document.querySelectorAll(sel);
+        for (const v of videos) {
+          if ((v.currentSrc || v.src) && v.duration > 0) return v.duration;
+        }
+        return 0;
+      }, selectors.VIDEO_CONTAINER);
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Shared extend loop used by both run() (autoExtend) and runMaxExtend().
+   * Extends the video at checkpointUrl, retrying on content moderation/failures.
+   *
+   * Stop conditions (whichever comes first):
+   *   - maxExtends reached (count-based, for autoExtend)
+   *   - untilDuration reached (duration-based, for maxExtend mode)
+   *   - 100 consecutive failed attempts exhausted
+   *   - Rate limit hit on extension
+   *
+   * @param {string} startCheckpointUrl - URL of the video to start extending from
+   * @param {Object} options
+   * @param {number} [options.maxExtends=Infinity] - Max successful extensions
+   * @param {number|null} [options.untilDuration=null] - Target video duration in seconds
+   * @param {number} options.index - Manifest item index for logging/counters
+   * @returns {Promise<{successfulExtends: number, rateLimited: boolean, checkpointUrl: string}>}
+   * @private
+   */
+  async _runExtendLoop(startCheckpointUrl, { maxExtends = Infinity, untilDuration = null, index }) {
+    let successfulExtends = 0;
+    let failedAttempts = 0;
+    const maxFailedAttempts = 100;
+    let checkpointUrl = startCheckpointUrl;
+    let rateLimitedOnExtend = false;
+
+    const label = untilDuration ? 'MaxExtend' : 'Extend';
+    const capLabel = maxExtends === Infinity ? '∞' : String(maxExtends);
+
+    while (successfulExtends < maxExtends && failedAttempts < maxFailedAttempts && !rateLimitedOnExtend) {
+      this.logger.info(
+        `[Worker ${this.workerId}] ${label} ${successfulExtends + 1}/${capLabel} (failures: ${failedAttempts})`
+      );
+
+      // Navigate back to checkpoint if we're not on the checkpoint page.
+      // After a failed extension we may be on the extension's /post/ URL (no video)
+      // or redirected to /imagine. Either way, go back to the checkpoint which has
+      // the completed video needed for "Extend video" to appear in the Settings menu.
+      const currentUrl = this.page.url();
+      if (currentUrl !== checkpointUrl) {
+        this.logger.info(`[Worker ${this.workerId}] Navigating to checkpoint ${checkpointUrl}`);
+        await this.page.goto(checkpointUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout: config.PAGE_LOAD_TIMEOUT,
+        });
+        await sleep(3000);
+        await this._waitForReadyUI();
+        await this._waitForVideoLoaded();
+        // Grok may redirect stale/image permalinks to the latest video's permalink.
+        // Accept whatever /post/ URL we land on as the new checkpoint.
+        const landedUrl = this.page.url();
+        if (landedUrl.includes('/imagine/post/') && landedUrl !== checkpointUrl) {
+          this.logger.info(`[Worker ${this.workerId}] Checkpoint redirected to ${landedUrl}`);
+          checkpointUrl = landedUrl;
+        }
+      }
+
+      // Step 1: Trigger extend mode via Settings menu → "Extend video"
+      const triggered = await this.generator.triggerExtendMode(index);
+      if (!triggered) {
+        this.logger.warn(`[Worker ${this.workerId}] Could not trigger extend mode, stopping extends`);
+        break;
+      }
+
+      // Step 2: Select max extend duration (+10s pills)
+      await this._selectMaxDuration(/^\+?\d+s$/);
+
+      // Step 3: Inner retry loop — generate the extension, retrying on content
+      // moderation (just hit generate again, like normal moderation retries).
+      // Break back to outer loop on success, rate limit, or unrecoverable error.
+      while (failedAttempts < maxFailedAttempts) {
+        const extResult = await this.generator.generate(index, this.prompt);
+        const extDuration = Math.round((extResult.durationMs || 0) / 1000);
+
+        if (extResult.success) {
+          successfulExtends++;
+          failedAttempts = 0; // Reset on success
+          checkpointUrl = this.page.url(); // Advance checkpoint
+          await this.manifest.incrementCounterAtomic('extendedCount');
+
+          // Check video duration if we have a target
+          let videoDur = 0;
+          if (untilDuration) {
+            videoDur = await this._getVideoDuration();
+            this.logger.success(
+              `[Worker ${this.workerId}] ${label} ${successfulExtends} succeeded in ${extDuration}s — video now ${videoDur.toFixed(1)}s / ${untilDuration}s`
+            );
+            if (videoDur >= untilDuration) {
+              this.logger.success(
+                `[Worker ${this.workerId}] Reached target duration ${videoDur.toFixed(1)}s`
+              );
+              break; // → exit outer loop
+            }
+          } else {
+            this.logger.success(
+              `[Worker ${this.workerId}] ${label} ${successfulExtends}/${capLabel} succeeded in ${extDuration}s`
+            );
+          }
+          break; // → outer loop continues for next extension
+        } else if (extResult.rateLimited) {
+          await this.manifest.incrementCounterAtomic('extendAttemptCount');
+          this.logger.warn(`[Worker ${this.workerId}] Rate limit during extend, moving on`);
+          rateLimitedOnExtend = true;
+          break; // → outer loop exits via flag
+        } else if (extResult.contentModerated) {
+          failedAttempts++;
+          await this.manifest.incrementCounterAtomic('extendAttemptCount');
+          this.logger.warn(
+            `[Worker ${this.workerId}] ${label} content moderated (${failedAttempts}/${maxFailedAttempts}), retrying...`
+          );
+
+          // Cooldown before retry to let stale moderation messages clear
+          await sleep(config.MODERATION_RETRY_COOLDOWN);
+
+          // If page drifted away from /post/, break to outer loop which will
+          // navigate back to checkpoint and re-trigger extend mode.
+          if (!this.page.url().includes('/imagine/post/')) {
+            this.logger.warn(
+              `[Worker ${this.workerId}] Page drifted to ${this.page.url()} after moderation, will re-navigate to checkpoint`
+            );
+            break; // → outer loop handles recovery
+          }
+          // Still on a /post/ page — retry generate directly (UI still in extend mode)
+          continue;
+        } else {
+          failedAttempts++;
+          await this.manifest.incrementCounterAtomic('extendAttemptCount');
+          this.logger.warn(
+            `[Worker ${this.workerId}] ${label} failed (${failedAttempts}/${maxFailedAttempts}): ${extResult.error}, retrying...`
+          );
+          // Break to outer loop for recovery (navigate to checkpoint, re-trigger extend)
+          break;
+        }
+      }
+
+      // Check if we hit the duration target (need to re-check since break from inner loop
+      // goes to here, and the outer while condition doesn't know about duration)
+      if (untilDuration) {
+        const dur = await this._getVideoDuration();
+        if (dur >= untilDuration) break;
+      }
+    }
+
+    if (successfulExtends > 0) {
+      this.logger.info(
+        `[Worker ${this.workerId}] ${label} complete: ${successfulExtends} successful extensions`
+      );
+    } else if (failedAttempts >= maxFailedAttempts) {
+      this.logger.warn(
+        `[Worker ${this.workerId}] ${label} exhausted ${maxFailedAttempts} retries with no success`
+      );
+    }
+
+    return { successfulExtends, rateLimited: rateLimitedOnExtend, checkpointUrl };
+  }
+
+  /**
+   * Post-processing: download, upscale, and/or delete the current video.
+   * Extracted from run() for reuse by runMaxExtend().
+   * @param {number} index - Manifest item index
+   * @private
+   */
+  async _runPostProcessing(index) {
+    if (!this.postProcessor) return;
+
+    const postResult = await this.postProcessor.process(index);
+
+    // Update manifest with download results
+    if (postResult.downloaded) {
+      await this.manifest.incrementCounterAtomic('downloadedCount');
+      await this.manifest.updateItemAtomic(index, {
+        downloaded: true,
+        downloadPath: postResult.downloadPath,
+      }, this.workerId);
+      this.logger.success(
+        `[Worker ${this.workerId}] Attempt ${index + 1}: Downloaded to ${postResult.downloadPath} (${postResult.fileSize})`
+      );
+    } else if (this.autoDownload) {
+      await this.manifest.incrementCounterAtomic('downloadFailedCount');
+      this.logger.warn(
+        `[Worker ${this.workerId}] Attempt ${index + 1}: Download failed - ${postResult.downloadError}`
+      );
+    }
+
+    // Update manifest with upscale results
+    if (postResult.upscaled) {
+      await this.manifest.incrementCounterAtomic('upscaledCount');
+      await this.manifest.updateItemAtomic(index, {
+        upscaled: true,
+        upscaleDownloadPath: postResult.upscaleDownloadPath,
+      }, this.workerId);
+      this.logger.success(
+        `[Worker ${this.workerId}] Attempt ${index + 1}: Upscaled and downloaded HD to ${postResult.upscaleDownloadPath} (${postResult.upscaleFileSize})`
+      );
+    } else if (this.autoUpscale && postResult.downloaded) {
+      await this.manifest.incrementCounterAtomic('upscaleFailedCount');
+      this.logger.warn(
+        `[Worker ${this.workerId}] Attempt ${index + 1}: Upscale failed - ${postResult.upscaleError}`
+      );
+    }
+
+    // Update manifest with delete results
+    if (postResult.deleted) {
+      await this.manifest.incrementCounterAtomic('deletedCount');
+      await this.manifest.updateItemAtomic(index, { deleted: true }, this.workerId);
+      this.logger.success(
+        `[Worker ${this.workerId}] Attempt ${index + 1}: Deleted from server`
+      );
+    } else if (this.autoDelete && postResult.downloaded) {
+      // Only log delete failure if it wasn't skipped due to upscale failure
+      if (!this.autoUpscale || postResult.upscaled) {
+        await this.manifest.incrementCounterAtomic('deleteFailedCount');
+        this.logger.warn(
+          `[Worker ${this.workerId}] Attempt ${index + 1}: Delete failed - ${postResult.deleteError}`
+        );
+      } else {
+        this.logger.info(
+          `[Worker ${this.workerId}] Attempt ${index + 1}: Delete skipped - upscale failed`
+        );
+      }
     }
   }
 

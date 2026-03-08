@@ -76,6 +76,7 @@ export const config = {
 
   // Auto-extend settings
   DEFAULT_AUTOEXTEND: 0, // 0 = disabled, 1-N = extend N times per video
+  MAX_VIDEO_DURATION: 30, // seconds — Grok's maximum video length
 
   // Download/delete/upscale settings
   DEFAULT_DOWNLOAD_ENABLED: true,
