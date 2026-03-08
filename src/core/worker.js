@@ -463,11 +463,26 @@ export class ParallelWorker {
             let successfulExtends = 0;
             let failedAttempts = 0;
             const maxFailedAttempts = 100;
+            // Capture the post URL where the video lives (may differ from this.permalink
+            // because the SPA routes to a new /imagine/post/<uuid> on generation)
+            const videoPostUrl = this.page.url();
 
             while (successfulExtends < this.autoExtend && failedAttempts < maxFailedAttempts) {
               this.logger.info(
                 `[Worker ${this.workerId}] Extend ${successfulExtends + 1}/${this.autoExtend} (failures: ${failedAttempts})`
               );
+
+              // Ensure we're still on the video's post page before attempting extend.
+              // Failed extends can cause Grok to redirect to /imagine home.
+              if (!this.page.url().includes('/imagine/post/')) {
+                this.logger.warn(`[Worker ${this.workerId}] Page drifted to ${this.page.url()}, re-navigating to video post`);
+                await this.page.goto(videoPostUrl, {
+                  waitUntil: 'domcontentloaded',
+                  timeout: config.PAGE_LOAD_TIMEOUT,
+                });
+                await sleep(3000);
+                await this._waitForReadyUI();
+              }
 
               // Step 1: Trigger extend mode via Settings menu → "Extend video"
               const triggered = await this.generator.triggerExtendMode(index);

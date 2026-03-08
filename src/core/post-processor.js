@@ -256,11 +256,8 @@ export class PostProcessor {
     }
 
     try {
-      // Set up download handler and click button
-      const [download] = await Promise.all([
-        this.page.waitForEvent('download', { timeout: config.DOWNLOAD_TIMEOUT }),
-        downloadButton.click(),
-      ]);
+      // Click button and wait for download (handles both same-page and new-tab downloads)
+      const download = await this._clickAndWaitForDownload(downloadButton);
 
       // Save the download to our target path
       await download.saveAs(filePath);
@@ -412,6 +409,48 @@ export class PostProcessor {
     } catch (error) {
       this.logger.debug(`Download button search failed: ${error.message}`);
       return null;
+    }
+  }
+
+  /**
+   * Click a download button and wait for the download, handling both same-page
+   * downloads and new-tab downloads (Grok may use either).
+   * @private
+   * @param {import('playwright').ElementHandle} button - The download button to click
+   * @returns {Promise<import('playwright').Download>} The Playwright Download object
+   */
+  async _clickAndWaitForDownload(button) {
+    const context = this.page.context();
+    let newPage = null;
+
+    // Set up both listeners BEFORE clicking so we don't miss events
+    const samePagePromise = this.page.waitForEvent('download', { timeout: config.DOWNLOAD_TIMEOUT })
+      .then(download => ({ download, source: 'same-page' }));
+
+    const newTabPromise = context.waitForEvent('page', { timeout: config.DOWNLOAD_TIMEOUT })
+      .then(async (page) => {
+        newPage = page;
+        const download = await page.waitForEvent('download', { timeout: config.DOWNLOAD_TIMEOUT });
+        return { download, source: 'new-tab' };
+      });
+
+    // Suppress unhandled rejections on the losing race promise
+    samePagePromise.catch(() => {});
+    newTabPromise.catch(() => {});
+
+    // Click the download button
+    await button.click();
+
+    try {
+      // Race: whichever download path fires first wins
+      const result = await Promise.race([samePagePromise, newTabPromise]);
+      this.logger.debug(`Download initiated via ${result.source}`);
+      return result.download;
+    } finally {
+      // Always close the extra tab if one was opened
+      if (newPage && !newPage.isClosed()) {
+        await newPage.close().catch(() => {});
+      }
     }
   }
 
@@ -864,11 +903,8 @@ export class PostProcessor {
     const hdFilePath = path.join(this.downloadDir, hdFilename);
 
     try {
-      // Set up download handler and click button
-      const [download] = await Promise.all([
-        this.page.waitForEvent('download', { timeout: config.DOWNLOAD_TIMEOUT }),
-        downloadButton.click(),
-      ]);
+      // Click button and wait for download (handles both same-page and new-tab downloads)
+      const download = await this._clickAndWaitForDownload(downloadButton);
 
       // Save the download to our target path
       await download.saveAs(hdFilePath);
