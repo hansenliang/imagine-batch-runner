@@ -482,6 +482,9 @@ export class ParallelWorker {
           // Only successful extends count toward autoExtend; content moderation and other
           // errors retry up to 100 times without counting. Rate limit on extend breaks
           // the loop (does not stop the worker) since extend rate limits are separate.
+          //
+          // Structure: outer loop (per-extension) triggers extend mode on the checkpoint,
+          // inner loop retries generate() on moderation without re-triggering extend mode.
           if (this.autoExtend > 0) {
             let successfulExtends = 0;
             let failedAttempts = 0;
@@ -490,17 +493,20 @@ export class ParallelWorker {
             // Grok creates a new /imagine/post/<uuid> at the START of every generation
             // (including extensions). If an extension fails, we navigate back here to retry.
             let checkpointUrl = this.page.url();
+            let rateLimitedOnExtend = false;
 
-            while (successfulExtends < this.autoExtend && failedAttempts < maxFailedAttempts) {
+            while (successfulExtends < this.autoExtend && failedAttempts < maxFailedAttempts && !rateLimitedOnExtend) {
               this.logger.info(
                 `[Worker ${this.workerId}] Extend ${successfulExtends + 1}/${this.autoExtend} (failures: ${failedAttempts})`
               );
 
-              // Ensure we're on a valid post page before attempting extend.
-              // Failed extends cause Grok to redirect to /imagine home or leave us
-              // on a dead permalink. Navigate back to the last successful video.
-              if (!this.page.url().includes('/imagine/post/')) {
-                this.logger.warn(`[Worker ${this.workerId}] Page drifted to ${this.page.url()}, re-navigating to checkpoint ${checkpointUrl}`);
+              // Navigate back to checkpoint if we're not on the checkpoint page.
+              // After a failed extension we may be on the extension's /post/ URL (no video)
+              // or redirected to /imagine. Either way, go back to the checkpoint which has
+              // the completed video needed for "Extend video" to appear in the Settings menu.
+              const currentUrl = this.page.url();
+              if (currentUrl !== checkpointUrl) {
+                this.logger.info(`[Worker ${this.workerId}] Navigating to checkpoint ${checkpointUrl}`);
                 await this.page.goto(checkpointUrl, {
                   waitUntil: 'domcontentloaded',
                   timeout: config.PAGE_LOAD_TIMEOUT,
@@ -527,34 +533,56 @@ export class ParallelWorker {
               // Step 2: Select max extend duration (+10s pills)
               await this._selectMaxDuration(/^\+?\d+s$/);
 
-              // Step 3: Generate extended video (reuses same generate flow)
-              const extResult = await this.generator.generate(index, this.prompt);
-              const extDuration = Math.round((extResult.durationMs || 0) / 1000);
+              // Step 3: Inner retry loop — generate the extension, retrying on content
+              // moderation (just hit generate again, like normal moderation retries).
+              // Break back to outer loop on success, rate limit, or unrecoverable error.
+              while (failedAttempts < maxFailedAttempts) {
+                const extResult = await this.generator.generate(index, this.prompt);
+                const extDuration = Math.round((extResult.durationMs || 0) / 1000);
 
-              if (extResult.success) {
-                successfulExtends++;
-                failedAttempts = 0; // Reset on success
-                checkpointUrl = this.page.url(); // Advance checkpoint to this extension's permalink
-                await this.manifest.incrementCounterAtomic('extendedCount');
-                this.logger.success(
-                  `[Worker ${this.workerId}] Extend ${successfulExtends}/${this.autoExtend} succeeded in ${extDuration}s`
-                );
-              } else if (extResult.rateLimited) {
-                await this.manifest.incrementCounterAtomic('extendAttemptCount');
-                this.logger.warn(`[Worker ${this.workerId}] Rate limit during extend, moving on`);
-                break;
-              } else if (extResult.contentModerated) {
-                failedAttempts++;
-                await this.manifest.incrementCounterAtomic('extendAttemptCount');
-                this.logger.warn(
-                  `[Worker ${this.workerId}] Extend content moderated (${failedAttempts}/${maxFailedAttempts}), retrying...`
-                );
-              } else {
-                failedAttempts++;
-                await this.manifest.incrementCounterAtomic('extendAttemptCount');
-                this.logger.warn(
-                  `[Worker ${this.workerId}] Extend failed (${failedAttempts}/${maxFailedAttempts}): ${extResult.error}, retrying...`
-                );
+                if (extResult.success) {
+                  successfulExtends++;
+                  failedAttempts = 0; // Reset on success
+                  checkpointUrl = this.page.url(); // Advance checkpoint
+                  await this.manifest.incrementCounterAtomic('extendedCount');
+                  this.logger.success(
+                    `[Worker ${this.workerId}] Extend ${successfulExtends}/${this.autoExtend} succeeded in ${extDuration}s`
+                  );
+                  break; // → outer loop continues for next extension
+                } else if (extResult.rateLimited) {
+                  await this.manifest.incrementCounterAtomic('extendAttemptCount');
+                  this.logger.warn(`[Worker ${this.workerId}] Rate limit during extend, moving on`);
+                  rateLimitedOnExtend = true;
+                  break; // → outer loop exits via flag
+                } else if (extResult.contentModerated) {
+                  failedAttempts++;
+                  await this.manifest.incrementCounterAtomic('extendAttemptCount');
+                  this.logger.warn(
+                    `[Worker ${this.workerId}] Extend content moderated (${failedAttempts}/${maxFailedAttempts}), retrying...`
+                  );
+
+                  // Cooldown before retry to let stale moderation messages clear
+                  await sleep(config.MODERATION_RETRY_COOLDOWN);
+
+                  // If page drifted away from /post/, break to outer loop which will
+                  // navigate back to checkpoint and re-trigger extend mode.
+                  if (!this.page.url().includes('/imagine/post/')) {
+                    this.logger.warn(
+                      `[Worker ${this.workerId}] Page drifted to ${this.page.url()} after moderation, will re-navigate to checkpoint`
+                    );
+                    break; // → outer loop handles recovery
+                  }
+                  // Still on a /post/ page — retry generate directly (UI still in extend mode)
+                  continue;
+                } else {
+                  failedAttempts++;
+                  await this.manifest.incrementCounterAtomic('extendAttemptCount');
+                  this.logger.warn(
+                    `[Worker ${this.workerId}] Extend failed (${failedAttempts}/${maxFailedAttempts}): ${extResult.error}, retrying...`
+                  );
+                  // Break to outer loop for recovery (navigate to checkpoint, re-trigger extend)
+                  break;
+                }
               }
             }
 
