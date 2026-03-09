@@ -310,7 +310,9 @@ export class PostProcessor {
       const video = await this.page.$(selectors.VIDEO_CONTAINER);
       if (!video) return null;
 
-      const src = await video.getAttribute('src').catch(() => null);
+      // Use currentSrc (handles dual video elements and programmatic src).
+      // getAttribute('src') fails when src is set via <source> children or JS.
+      const src = await video.evaluate(v => v.currentSrc || v.src || '').catch(() => '');
       if (!src) return null;
 
       // Extract UUID from pattern /generated/{UUID}/

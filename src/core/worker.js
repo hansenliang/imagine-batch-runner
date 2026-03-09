@@ -600,6 +600,8 @@ export class ParallelWorker {
             const finalDuration = await this._getVideoDuration();
             if (finalDuration < config.MAX_VIDEO_DURATION) {
               this.autoDelete = false;
+              // Sync to post-processor — it has its own autoDelete property
+              if (this.postProcessor) this.postProcessor.autoDelete = false;
               this.logger.info(
                 `[Worker ${this.workerId}] Skipping delete — video is ${finalDuration.toFixed(1)}s (< ${config.MAX_VIDEO_DURATION}s), can be extended further`
               );
@@ -607,6 +609,7 @@ export class ParallelWorker {
           }
           await this._runPostProcessing(index);
           this.autoDelete = savedAutoDelete;
+          if (this.postProcessor) this.postProcessor.autoDelete = savedAutoDelete;
         }
 
         // Propagate rate limit after post-processing partial extensions.
@@ -721,7 +724,7 @@ export class ParallelWorker {
       // moderation (just hit generate again, like normal moderation retries).
       // Break back to outer loop on success, rate limit, or unrecoverable error.
       while (failedAttempts < maxFailedAttempts) {
-        const extResult = await this.generator.generate(index, this.prompt);
+        const extResult = await this.generator.generate(index, this.prompt, { logLabel: 'Extend' });
         const extDuration = Math.round((extResult.durationMs || 0) / 1000);
 
         if (extResult.success) {

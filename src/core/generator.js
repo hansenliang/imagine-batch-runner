@@ -18,6 +18,16 @@ export class VideoGenerator {
   constructor(page, logger) {
     this.page = page;
     this.logger = logger;
+    this._logLabel = 'Attempt'; // Default label; overridden per generate() call
+  }
+
+  /**
+   * Format the log prefix for the current attempt (e.g. "[Attempt 4]" or "[Extend 4]")
+   * @param {number} index - Zero-based attempt index
+   * @returns {string}
+   */
+  _tag(index) {
+    return `[${this._logLabel} ${index + 1}]`;
   }
 
   /**
@@ -25,8 +35,14 @@ export class VideoGenerator {
    * Returns: { success, rateLimited, attempted, error }
    *
    * See claude.md "Generation Outcome Classification" for outcome definitions and logging levels.
+   * @param {number} index - Attempt index for logging
+   * @param {string} prompt - The prompt to use
+   * @param {Object} [options] - Optional settings
+   * @param {string} [options.logLabel] - Label prefix for log messages (e.g. "Extend" vs default "Attempt")
    */
-  async generate(index, prompt) {
+  async generate(index, prompt, options = {}) {
+    // Store label on instance so inner methods (_waitForCompletion etc.) can use it
+    this._logLabel = options.logLabel || 'Attempt';
     let lastError = null;
     const startTime = Date.now();
 
@@ -53,7 +69,7 @@ export class VideoGenerator {
     } catch (error) {
       // Rate limit detected before generation starts - doesn't count as attempt
       if (error.message?.includes('RATE_LIMIT')) {
-        this.logger.warn(`[Attempt ${index + 1}] Rate limit detected (not attempted)`);
+        this.logger.warn(`${this._tag(index)} Rate limit detected (not attempted)`);
         return {
           success: false,
           rateLimited: true,
@@ -80,7 +96,7 @@ export class VideoGenerator {
 
     // Non-rate-limit error = failed attempt
     const duration = Date.now() - startTime;
-    this.logger.error(`[Attempt ${index + 1}] Failed: ${lastError?.message}`);
+    this.logger.error(`${this._tag(index)} Failed: ${lastError?.message}`);
 
     return {
       success: false,
@@ -119,7 +135,7 @@ export class VideoGenerator {
    */
   async _clickGenerationButton(index) {
     await this._dismissBanners();
-    this.logger.debug(`[Attempt ${index + 1}] Looking for generation button`);
+    this.logger.debug(`${this._tag(index)} Looking for generation button`);
 
     const waitTimeout = Math.max(3000, config.ELEMENT_WAIT_TIMEOUT);
     await Promise.race([
@@ -186,7 +202,7 @@ export class VideoGenerator {
         }
 
         this.logger.debug(
-          `[Attempt ${index + 1}] Visible buttons: ${visibleLabels.join(' | ') || 'none'}`
+          `${this._tag(index)} Visible buttons: ${visibleLabels.join(' | ') || 'none'}`
         );
       }
     }
@@ -196,7 +212,7 @@ export class VideoGenerator {
     }
 
     const buttonText = buttonLabel || await button.textContent().catch(() => '(unknown)');
-    this.logger.debug(`[Attempt ${index + 1}] Found button: "${buttonText}"`);
+    this.logger.debug(`${this._tag(index)} Found button: "${buttonText}"`);
 
     // Check if button is disabled (might indicate rate limit)
     const isDisabled = await button.isDisabled().catch(() => false);
@@ -205,7 +221,7 @@ export class VideoGenerator {
     }
 
     await button.click();
-    this.logger.debug(`[Attempt ${index + 1}] Clicked generation button`);
+    this.logger.debug(`${this._tag(index)} Clicked generation button`);
 
     // Wait for UI to respond
     await sleep(config.UI_ACTION_DELAY);
@@ -279,13 +295,13 @@ export class VideoGenerator {
 
       if (best) {
         this.logger.debug(
-          `[Attempt ${index + 1}] Found prompt-adjacent button: "${bestLabel || 'icon-only'}" (score=${bestScore})`
+          `${this._tag(index)} Found prompt-adjacent button: "${bestLabel || 'icon-only'}" (score=${bestScore})`
         );
       }
 
       return { element: best, label: bestLabel };
     } catch (error) {
-      this.logger.debug(`[Attempt ${index + 1}] Prompt-adjacent button lookup failed: ${error.message}`);
+      this.logger.debug(`${this._tag(index)} Prompt-adjacent button lookup failed: ${error.message}`);
       return empty;
     }
   }
@@ -322,7 +338,7 @@ export class VideoGenerator {
 
     // Only fill if value doesn't match
     if (currentValue.trim() === prompt.trim()) {
-      this.logger.debug(`[Attempt ${index + 1}] Prompt already set correctly`);
+      this.logger.debug(`${this._tag(index)} Prompt already set correctly`);
       return;
     }
 
@@ -332,7 +348,7 @@ export class VideoGenerator {
     try {
       await promptInput.fill(prompt);
     } catch (fillError) {
-      this.logger.debug(`[Attempt ${index + 1}] fill() failed (${fillError.message}), falling back to pressSequentially`);
+      this.logger.debug(`${this._tag(index)} fill() failed (${fillError.message}), falling back to pressSequentially`);
       await this.page.keyboard.press('Control+a');
       await this.page.keyboard.press('Backspace');
       await promptInput.pressSequentially(prompt, { delay: 10 });
@@ -347,7 +363,7 @@ export class VideoGenerator {
       throw new Error(`Prompt verification failed: expected "${prompt.slice(0, 50)}..." but got "${verifyValue.slice(0, 50)}..."`);
     }
 
-    this.logger.debug(`[Attempt ${index + 1}] Prompt entered and verified`);
+    this.logger.debug(`${this._tag(index)} Prompt entered and verified`);
   }
 
   /**
@@ -497,7 +513,7 @@ export class VideoGenerator {
         if (button) {
           const isButtonVisible = await button.isVisible().catch(() => false);
           if (isButtonVisible) {
-            this.logger.info(`[Attempt ${index + 1}] A/B test detected, selecting first variation`);
+            this.logger.info(`${this._tag(index)} A/B test detected, selecting first variation`);
             await button.click();
             await sleep(2000); // Wait for UI transition
             return true;
@@ -505,10 +521,10 @@ export class VideoGenerator {
         }
       }
 
-      this.logger.warn(`[Attempt ${index + 1}] A/B test detected but could not find dismiss button`);
+      this.logger.warn(`${this._tag(index)} A/B test detected but could not find dismiss button`);
       return false;
     } catch (error) {
-      this.logger.warn(`[Attempt ${index + 1}] A/B test dismissal error: ${error.message}`);
+      this.logger.warn(`${this._tag(index)} A/B test dismissal error: ${error.message}`);
       return false;
     }
   }
@@ -528,13 +544,13 @@ export class VideoGenerator {
       // When a video is already generated, its menu includes "Extend video".
       const settingsButton = await this.page.$(selectors.SETTINGS_BUTTON);
       if (!settingsButton) {
-        this.logger.debug(`[Attempt ${index + 1}] Settings button not found for extend`);
+        this.logger.debug(`${this._tag(index)} Settings button not found for extend`);
         return false;
       }
 
       const isVisible = await settingsButton.isVisible().catch(() => false);
       if (!isVisible) {
-        this.logger.debug(`[Attempt ${index + 1}] Settings button not visible for extend`);
+        this.logger.debug(`${this._tag(index)} Settings button not visible for extend`);
         return false;
       }
 
@@ -559,14 +575,14 @@ export class VideoGenerator {
       }
 
       if (!extendItem) {
-        this.logger.debug(`[Attempt ${index + 1}] Extend video menu item not found in Settings menu`);
+        this.logger.debug(`${this._tag(index)} Extend video menu item not found in Settings menu`);
         await this.page.keyboard.press('Escape');
         return false;
       }
 
       const itemVisible = await extendItem.isVisible().catch(() => false);
       if (!itemVisible) {
-        this.logger.debug(`[Attempt ${index + 1}] Extend video menu item not visible`);
+        this.logger.debug(`${this._tag(index)} Extend video menu item not visible`);
         await this.page.keyboard.press('Escape');
         return false;
       }
@@ -574,10 +590,10 @@ export class VideoGenerator {
       await extendItem.click();
       await sleep(config.UI_ACTION_DELAY);
 
-      this.logger.debug(`[Attempt ${index + 1}] Extend mode triggered via Settings menu`);
+      this.logger.debug(`${this._tag(index)} Extend mode triggered via Settings menu`);
       return true;
     } catch (error) {
-      this.logger.debug(`[Attempt ${index + 1}] Extend mode trigger failed: ${error.message}`);
+      this.logger.debug(`${this._tag(index)} Extend mode trigger failed: ${error.message}`);
       try { await this.page.keyboard.press('Escape'); } catch { /* ignore */ }
       return false;
     }
@@ -690,13 +706,13 @@ export class VideoGenerator {
         const downgrade = await this._detectResolutionDowngrade();
         if (downgrade.detected) {
           actualResolution = downgrade.actualResolution;
-          this.logger.info(`[Attempt ${index + 1}] Resolution downgraded: ${downgrade.message}`);
+          this.logger.info(`${this._tag(index)} Resolution downgraded: ${downgrade.message}`);
         }
       }
 
       // Log once when generation starts
       if (generationInProgress && !loggedStart) {
-        this.logger.info(`[Attempt ${index + 1}] Generation started: ${percentageProgress.percentage}%`);
+        this.logger.info(`${this._tag(index)} Generation started: ${percentageProgress.percentage}%`);
         loggedStart = true;
       }
 
@@ -715,28 +731,28 @@ export class VideoGenerator {
               // Verify we're back to normal state (single video)
               const recheck = await this._detectABTest();
               if (recheck.detected) {
-                this.logger.warn(`[Attempt ${index + 1}] A/B test still present after dismiss attempt`);
+                this.logger.warn(`${this._tag(index)} A/B test still present after dismiss attempt`);
               }
             }
-            this.logger.success(`[Attempt ${index + 1}] Video ready and verified (A/B test dismissed)`);
+            this.logger.success(`${this._tag(index)} Video ready and verified (A/B test dismissed)`);
             return { success: true, actualResolution, abTestDetected: true };
           }
 
-          this.logger.success(`[Attempt ${index + 1}] Video ready and verified`);
+          this.logger.success(`${this._tag(index)} Video ready and verified`);
           return { success: true, actualResolution, abTestDetected: false };
         }
       }
 
       // 2. Always check for timeout
       if (elapsed > config.VIDEO_GENERATION_TIMEOUT / 1000) {
-        this.logger.error(`[Attempt ${index + 1}] Generation timeout after ${elapsed}s`);
+        this.logger.error(`${this._tag(index)} Generation timeout after ${elapsed}s`);
         throw new Error(`TIMEOUT: Video generation exceeded ${config.VIDEO_GENERATION_TIMEOUT / 1000}s`);
       }
 
       // 3. Check if page drifted away from Imagine post page (e.g. error → /imagine home)
       if (!this.page.url().includes('/imagine/post/')) {
         const driftUrl = this.page.url();
-        this.logger.warn(`[Attempt ${index + 1}] Page navigated away to ${driftUrl}`);
+        this.logger.warn(`${this._tag(index)} Page navigated away to ${driftUrl}`);
         throw new Error(`PAGE_DRIFTED: Page navigated to ${driftUrl}`);
       }
 
@@ -750,26 +766,26 @@ export class VideoGenerator {
         if (!loggedStart) {
           const rateLimit = await this._detectRateLimit();
           if (rateLimit.detected) {
-            this.logger.warn(`[Attempt ${index + 1}] Rate limit detected: ${rateLimit.message}`);
+            this.logger.warn(`${this._tag(index)} Rate limit detected: ${rateLimit.message}`);
             throw new Error(`RATE_LIMIT: ${rateLimit.message}`);
           }
         }
 
         const moderation = await this._detectContentModeration();
         if (moderation.detected) {
-          this.logger.warn(`[Attempt ${index + 1}] Content moderation detected: ${moderation.message}`);
+          this.logger.warn(`${this._tag(index)} Content moderation detected: ${moderation.message}`);
           throw new Error(`CONTENT_MODERATED: ${moderation.message}`);
         }
 
         const networkError = await this._detectNetworkError();
         if (networkError.detected) {
-          this.logger.warn(`[Attempt ${index + 1}] Network error detected: ${networkError.message}`);
+          this.logger.warn(`${this._tag(index)} Network error detected: ${networkError.message}`);
           throw new Error(`NETWORK_ERROR: ${networkError.message}`);
         }
 
         const genError = await this._detectGenerationError();
         if (genError.detected) {
-          this.logger.warn(`[Attempt ${index + 1}] Generation error detected: ${genError.message}`);
+          this.logger.warn(`${this._tag(index)} Generation error detected: ${genError.message}`);
           throw new Error(`GENERATION_ERROR: ${genError.message}`);
         }
       }
