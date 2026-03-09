@@ -446,13 +446,7 @@ export class ParallelWorker {
         if (this.maxExtendMode) {
           // Max-extend: navigate to existing permalink, verify video
           this.logger.info(`[Worker ${this.workerId}] Chain ${index + 1}: navigating to source video`);
-          await this.page.goto(this.permalink, {
-            waitUntil: 'domcontentloaded',
-            timeout: config.PAGE_LOAD_TIMEOUT,
-          });
-          await sleep(3000);
-          await this._waitForReadyUI();
-          await this._waitForVideoLoaded();
+          await this._navigateToSourceVideo();
 
           const initialDuration = await this._getVideoDuration();
           if (initialDuration <= 0) {
@@ -1025,6 +1019,47 @@ export class ParallelWorker {
       this.logger.debug(`[Worker ${this.workerId}] Error detecting remaining videos: ${error.message}`);
       return { count: 0, hasThumbnails: false };
     }
+  }
+
+  /**
+   * Navigate to the source video for max-extend mode.
+   * Grok auto-redirects permalink URLs to the latest video for that post.
+   * To reach the original, we navigate to the permalink (accepting the redirect),
+   * then find the thumbnail whose img src contains the permalink UUID and click it.
+   * @private
+   */
+  async _navigateToSourceVideo() {
+    await this.page.goto(this.permalink, {
+      waitUntil: 'domcontentloaded',
+      timeout: config.PAGE_LOAD_TIMEOUT,
+    });
+    await sleep(3000);
+    await this._waitForReadyUI();
+    await this._waitForVideoLoaded();
+
+    // If we weren't redirected, we're already on the right video
+    if (this.page.url() === this.permalink) return;
+
+    // Extract UUID from permalink (last path segment)
+    const uuid = this.permalink.split('/').pop();
+    if (!uuid) return;
+
+    // Find the thumbnail whose img src contains the permalink UUID
+    const thumbnails = await this._getVisibleThumbnails();
+    for (const thumb of thumbnails) {
+      const img = await thumb.$('img');
+      if (!img) continue;
+      const src = await img.getAttribute('src').catch(() => '');
+      if (src && src.includes(uuid)) {
+        this.logger.info(`[Worker ${this.workerId}] Clicking source video thumbnail (redirected to latest)`);
+        await thumb.click();
+        await sleep(config.UI_ACTION_DELAY);
+        await this._waitForVideoLoaded();
+        return;
+      }
+    }
+
+    this.logger.warn(`[Worker ${this.workerId}] Could not find source thumbnail for UUID ${uuid}, using current video`);
   }
 
   /**

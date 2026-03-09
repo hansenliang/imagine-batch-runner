@@ -33,7 +33,7 @@ node src/cli.js run max-extend \
 - `--auto-delete` deletes only extensions that reached 30s, never the original video
 - Each chain: source video → extend → extend → ... → 30s → download/upscale/delete
 - Content moderation retries automatically (up to 100 times per chain)
-- Rate limit stops the affected worker; other workers continue
+- Rate limit stops the affected worker (after downloading any partial extensions); other workers continue
 
 ## Key Files
 - `src/cli.js` — CLI entry point
@@ -62,8 +62,10 @@ node src/cli.js run max-extend \
 - **Dual video elements**: Grok now renders `<video id="sd-video">` (visible, has `src`) and `<video id="hd-video">` (hidden, no `src` until HD ready). Always use `currentSrc` or `v.currentSrc || v.src` — never `getAttribute('src')`.
 - **Progress indicator**: Progress is shown as a floating overlay pill with `<span class="tabular-nums">15%</span>`. Detected via `span.tabular-nums` selector + `getBoundingClientRect` visibility check. The old `offsetParent` approach fails on overlay-positioned elements.
 - **Extend video**: The Settings button (`aria-label="Settings"`) shows "Extend video" as a menu item when a video is already generated. No need to use the "More options" (`...`) menu.
-- **Rate limits are separate**: Generation and extension have independent rate limits. Extension rate limit should `break` out of the extend loop (not stop the worker). Generation rate limit still throws `RATE_LIMIT_STOP`.
+- **Permalink redirect**: Navigating to a post permalink auto-redirects to the latest video for that post. In max-extend mode, `_navigateToSourceVideo()` handles this by matching the permalink UUID against thumbnail `img src` attributes and clicking the correct thumbnail (SPA navigation, no reload).
+- **Rate limits are separate**: Generation and extension have independent rate limits. Extension rate limit breaks the extend loop, navigates to the checkpoint URL for post-processing (download partial video), then throws `RATE_LIMIT_STOP`.
 - **Extend loop**: Extends until video reaches 30s (duration-based). Content moderation and errors retry up to 100 times. Auto-delete only runs if video reached 30s; partial extensions are preserved for future continuation.
+- **Checkpoint recovery**: After the extend loop exits (rate limit, exhausted retries, etc.), the page may not be on the video. The worker navigates back to `extResult.checkpointUrl` before post-processing to ensure downloads and duration checks operate on the actual video.
 - **Delete safety**: In max-extend mode, post-processing only runs if at least one extension succeeded, so the original video is never deleted. In both modes, auto-delete is suppressed for videos under 30s.
 
 ## When to Read More
