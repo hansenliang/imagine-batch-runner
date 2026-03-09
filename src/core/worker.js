@@ -527,6 +527,17 @@ export class ParallelWorker {
             this.logger.error(
               `[Worker ${this.workerId}] Attempt ${index + 1}: Failed - ${result.error || 'Unknown error'}`
             );
+
+            // Page may be in a broken state (e.g. prompt input not found).
+            // Reload to give the next attempt a clean slate.
+            this.logger.info(`[Worker ${this.workerId}] Reloading page after failure`);
+            try {
+              await this.page.reload({ waitUntil: 'domcontentloaded', timeout: config.PAGE_LOAD_TIMEOUT });
+              await sleep(3000);
+              await this._waitForReadyUI();
+            } catch (reloadError) {
+              this.logger.warn(`[Worker ${this.workerId}] Page reload failed: ${reloadError.message}`);
+            }
           }
         }
 

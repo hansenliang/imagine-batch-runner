@@ -66,6 +66,7 @@ node src/cli.js run max-extend \
 - **Rate limits are separate**: Generation and extension have independent rate limits. Extension rate limit breaks the extend loop, navigates to the checkpoint URL for post-processing (download partial video), then throws `RATE_LIMIT_STOP`.
 - **Extend loop**: Extends until video reaches 30s (duration-based). Content moderation and errors retry up to 100 times. Auto-delete only runs if video reached 30s; partial extensions are preserved for future continuation.
 - **Checkpoint recovery**: After the extend loop exits (rate limit, exhausted retries, etc.), the page may not be on the video. The worker navigates back to `extResult.checkpointUrl` before post-processing to ensure downloads and duration checks operate on the actual video.
+- **Page recovery**: After a generation failure in normal mode (e.g., "Prompt input not found"), the page is reloaded to give the next attempt a clean slate. Content moderation doesn't trigger recovery (the page is fine). Max-extend mode navigates fresh each chain, so it self-recovers.
 - **Delete safety**: In max-extend mode, post-processing only runs if at least one extension succeeded, so the original video is never deleted. In both modes, auto-delete is suppressed for videos under 30s.
 
 ## When to Read More
