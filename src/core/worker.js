@@ -638,12 +638,25 @@ export class ParallelWorker {
           );
 
           const finalDuration = await this._getVideoDuration();
+          const reachedMax = finalDuration >= config.MAX_VIDEO_DURATION;
           this.logger.success(
             `[Worker ${this.workerId}] Chain ${index + 1}: Complete — ${extResult.successfulExtends} extensions, final duration ${finalDuration.toFixed(1)}s`
           );
 
-          // Post-process the EXTENSION result (not the original)
+          // Post-process the EXTENSION result (not the original).
+          // Only delete if we reached max duration — partial extensions can still
+          // be continued later, so preserve them on the server.
+          const savedAutoDelete = this.autoDelete;
+          if (!reachedMax) {
+            this.autoDelete = false;
+            if (savedAutoDelete) {
+              this.logger.info(
+                `[Worker ${this.workerId}] Chain ${index + 1}: Skipping delete — video is ${finalDuration.toFixed(1)}s (< ${config.MAX_VIDEO_DURATION}s), can be extended further`
+              );
+            }
+          }
           await this._runPostProcessing(index);
+          this.autoDelete = savedAutoDelete;
         } else if (extResult.rateLimited) {
           this.logger.warn(`[Worker ${this.workerId}] Rate limit during max-extend chain ${index + 1}`);
           await this.manifest.updateItemAtomic(
