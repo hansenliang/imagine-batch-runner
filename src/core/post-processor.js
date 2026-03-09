@@ -10,16 +10,36 @@ function sleep(ms) {
 }
 
 /**
- * Format timestamp for filenames (YYYYMMDD-HHmmss)
+ * Format timestamp for filenames (YYMMDD-HHmmss)
  */
 function formatTimestamp(date = new Date()) {
-  const year = date.getFullYear();
+  const year = String(date.getFullYear()).slice(-2);
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   const hours = String(date.getHours()).padStart(2, '0');
   const minutes = String(date.getMinutes()).padStart(2, '0');
   const seconds = String(date.getSeconds()).padStart(2, '0');
   return `${year}${month}${day}-${hours}${minutes}${seconds}`;
+}
+
+/**
+ * Get video duration in whole seconds from the page's video element.
+ * @param {import('playwright').Page} page
+ * @returns {Promise<number>} Duration in seconds (rounded), or 0 if unavailable
+ */
+async function getVideoDurationSeconds(page) {
+  try {
+    const dur = await page.evaluate((sel) => {
+      const videos = document.querySelectorAll(sel);
+      for (const v of videos) {
+        if ((v.currentSrc || v.src) && v.duration > 0) return v.duration;
+      }
+      return 0;
+    }, selectors.VIDEO_CONTAINER);
+    return Math.round(dur);
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -245,9 +265,13 @@ export class PostProcessor {
     // Check for duplicates
     const duplicateCheck = await this._checkForDuplicate(uuid8);
 
-    // Generate filename with timestamp and UUID
+    // Get video duration for filename
+    const durationSec = await getVideoDurationSeconds(this.page);
+    const durTag = durationSec > 0 ? `${durationSec}s` : 'unknown';
+
+    // Generate filename: YYMMDD-HHmmss_UUID8_DURs.mp4
     const timestamp = formatTimestamp();
-    const baseFilename = `video_${timestamp}_${uuid8}.mp4`;
+    const baseFilename = `${timestamp}_${uuid8}_${durTag}.mp4`;
     const filename = duplicateCheck.isDuplicate ? `DUPLICATE_${baseFilename}` : baseFilename;
     const filePath = path.join(this.downloadDir, filename);
 
@@ -889,12 +913,12 @@ export class PostProcessor {
     let uuid8ForTracking = null; // Track UUID for standalone HD downloads
     
     if (originalPath) {
-      // Derive from original: video_TIMESTAMP_UUID.mp4 -> video_TIMESTAMP_UUID_hd.mp4
+      // Derive from original: YYMMDD-HHmmss_UUID8_DURs.mp4 -> YYMMDD-HHmmss_UUID8_DURs_hd.mp4
       const originalFilename = path.basename(originalPath, '.mp4');
       // Remove DUPLICATE_ prefix if present for HD version naming
       const cleanFilename = originalFilename.replace(/^DUPLICATE_/, '');
       hdFilename = `${cleanFilename}_hd.mp4`;
-      
+
       // Check if original was a duplicate - if so, HD should also be marked
       if (originalFilename.startsWith('DUPLICATE_')) {
         hdFilename = `DUPLICATE_${cleanFilename}_hd.mp4`;
@@ -905,10 +929,12 @@ export class PostProcessor {
       const uuid8 = uuid ? uuid.substring(0, 8) : 'unknown';
       uuid8ForTracking = uuid8 !== 'unknown' ? uuid8 : null;
       const timestamp = formatTimestamp();
-      
+      const durationSec = await getVideoDurationSeconds(this.page);
+      const durTag = durationSec > 0 ? `${durationSec}s` : 'unknown';
+
       // Check for duplicates (for HD-only downloads during cleanup)
       const duplicateCheck = await this._checkForDuplicate(uuid8);
-      const baseFilename = `video_${timestamp}_${uuid8}_hd.mp4`;
+      const baseFilename = `${timestamp}_${uuid8}_${durTag}_hd.mp4`;
       hdFilename = duplicateCheck.isDuplicate ? `DUPLICATE_${baseFilename}` : baseFilename;
       
       if (duplicateCheck.isDuplicate) {

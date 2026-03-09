@@ -548,7 +548,8 @@ export class ParallelWorker {
 
           if (extResult.rateLimited) {
             // In max-extend mode, rate limit on extend is fatal (nothing else to do)
-            if (this.maxExtendMode && extResult.successfulExtends === 0) {
+            // — unless the video is already at max duration
+            if (this.maxExtendMode && extResult.successfulExtends === 0 && !extResult.alreadyAtTarget) {
               this.logger.warn(`[Worker ${this.workerId}] Rate limit during extend chain ${index + 1}`);
               await this.manifest.updateItemAtomic(
                 index,
@@ -560,8 +561,9 @@ export class ParallelWorker {
           }
 
           // In max-extend mode with zero successful extends, skip post-processing
-          // to protect the original video
-          if (this.maxExtendMode && extResult.successfulExtends === 0) {
+          // to protect the original video — UNLESS the video is already at max duration
+          // (e.g., source was already 30s), in which case it's ready for post-processing.
+          if (this.maxExtendMode && extResult.successfulExtends === 0 && !extResult.alreadyAtTarget) {
             this.logger.warn(
               `[Worker ${this.workerId}] Chain ${index + 1}: No extensions succeeded, original video untouched`
             );
@@ -577,42 +579,7 @@ export class ParallelWorker {
           // After rate limit or failed extends, the page may be on the rate-limit screen
           // or a failed extension URL — not the actual video.
           if (generationOk && extResult.checkpointUrl) {
-            const currentUrl = this.page.url();
-            if (currentUrl !== extResult.checkpointUrl) {
-              this.logger.info(`[Worker ${this.workerId}] Navigating to checkpoint for post-processing`);
-              this.logger.debug(
-                `[Worker ${this.workerId}] Post-processing nav: from=${currentUrl} to=${extResult.checkpointUrl}`
-              );
-              await this.page.goto(extResult.checkpointUrl, {
-                waitUntil: 'domcontentloaded',
-                timeout: config.PAGE_LOAD_TIMEOUT,
-              });
-              await sleep(3000);
-              await this._waitForReadyUI();
-              await this._waitForVideoLoaded();
-
-              // Diagnostic: check if Grok redirected us and what duration we landed on
-              const landedUrl = this.page.url();
-              const landedDuration = await this._getVideoDuration();
-              if (landedUrl !== extResult.checkpointUrl) {
-                this.logger.warn(
-                  `[Worker ${this.workerId}] Post-processing checkpoint redirected: expected=${extResult.checkpointUrl} landed=${landedUrl}`
-                );
-              }
-              if (extResult.lastKnownDuration > 0 && Math.abs(landedDuration - extResult.lastKnownDuration) > 1) {
-                this.logger.warn(
-                  `[Worker ${this.workerId}] Post-processing duration mismatch: expected=${extResult.lastKnownDuration.toFixed(1)}s actual=${landedDuration.toFixed(1)}s at ${landedUrl}`
-                );
-              } else {
-                this.logger.debug(
-                  `[Worker ${this.workerId}] Post-processing checkpoint OK: duration=${landedDuration.toFixed(1)}s at ${landedUrl}`
-                );
-              }
-            } else {
-              this.logger.debug(
-                `[Worker ${this.workerId}] Already on checkpoint URL, no navigation needed: ${currentUrl}`
-              );
-            }
+            await this._navigateToCheckpoint(extResult.checkpointUrl, extResult.lastKnownDuration);
           }
         }
 
@@ -707,6 +674,7 @@ export class ParallelWorker {
     let rateLimitedOnExtend = false;
     const targetDuration = config.MAX_VIDEO_DURATION;
     let lastKnownDuration = 0; // Track duration across extends for diagnostics
+    let alreadyAtTarget = false; // True if video was already at max duration (no extend needed)
 
     this.logger.debug(`[Worker ${this.workerId}] Extend loop starting — checkpoint: ${checkpointUrl}`);
 
@@ -741,6 +709,18 @@ export class ParallelWorker {
       // Step 1: Trigger extend mode via Settings menu → "Extend video"
       const triggered = await this.generator.triggerExtendMode(index);
       if (!triggered) {
+        // Check if the video is already at max duration — "Extend video" won't
+        // appear for videos that have reached Grok's maximum length.
+        const currentDur = await this._getVideoDuration();
+        if (currentDur >= targetDuration) {
+          this.logger.info(
+            `[Worker ${this.workerId}] Extend mode not available — video already at ${currentDur.toFixed(1)}s (max ${targetDuration}s)`
+          );
+          lastKnownDuration = currentDur;
+          checkpointUrl = this.page.url();
+          alreadyAtTarget = true;
+          break;
+        }
         this.logger.warn(`[Worker ${this.workerId}] Could not trigger extend mode, stopping extends`);
         break;
       }
@@ -851,7 +831,7 @@ export class ParallelWorker {
       `[Worker ${this.workerId}] Extend loop exiting — checkpoint: ${checkpointUrl}, lastDuration: ${lastKnownDuration.toFixed(1)}s, currentPageUrl: ${this.page.url()}`
     );
 
-    return { successfulExtends, rateLimited: rateLimitedOnExtend, checkpointUrl, lastKnownDuration };
+    return { successfulExtends, rateLimited: rateLimitedOnExtend, checkpointUrl, lastKnownDuration, alreadyAtTarget };
   }
 
   /**
@@ -1138,6 +1118,88 @@ export class ParallelWorker {
     this.logger.debug(
       `[Worker ${this.workerId}] Using fallback video: url=${this.page.url()} duration=${fallbackDur.toFixed(1)}s`
     );
+  }
+
+  /**
+   * Navigate to a checkpoint URL for post-processing, handling Grok's redirect behavior.
+   *
+   * Grok redirects /imagine/post/UUID permalinks to the "latest" video for that post,
+   * which may not be the video we want. If a redirect is detected, we find the correct
+   * video via its thumbnail (matching the checkpoint UUID in the thumbnail img src)
+   * and click it — the same strategy used in _navigateToSourceVideo.
+   *
+   * @param {string} checkpointUrl - The /imagine/post/UUID URL of the target video
+   * @param {number} expectedDuration - Duration (seconds) the video should be, for diagnostics
+   * @private
+   */
+  async _navigateToCheckpoint(checkpointUrl, expectedDuration = 0) {
+    const currentUrl = this.page.url();
+    if (currentUrl === checkpointUrl) {
+      this.logger.debug(
+        `[Worker ${this.workerId}] Already on checkpoint URL, no navigation needed: ${currentUrl}`
+      );
+      return;
+    }
+
+    this.logger.info(`[Worker ${this.workerId}] Navigating to checkpoint for post-processing`);
+    this.logger.debug(
+      `[Worker ${this.workerId}] Post-processing nav: from=${currentUrl} to=${checkpointUrl}`
+    );
+    await this.page.goto(checkpointUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: config.PAGE_LOAD_TIMEOUT,
+    });
+    await sleep(3000);
+    await this._waitForReadyUI();
+    await this._waitForVideoLoaded();
+
+    const landedUrl = this.page.url();
+    const landedDuration = await this._getVideoDuration();
+
+    // If Grok redirected us to a different video, try to find the correct one via thumbnails
+    if (landedUrl !== checkpointUrl) {
+      this.logger.warn(
+        `[Worker ${this.workerId}] Post-processing checkpoint redirected: expected=${checkpointUrl} landed=${landedUrl}`
+      );
+
+      // Extract the UUID from the checkpoint URL and look for it in thumbnails
+      const checkpointUuid = checkpointUrl.match(/\/imagine\/post\/([a-f0-9-]+)/i)?.[1];
+      if (checkpointUuid) {
+        const thumbnails = await this._getVisibleThumbnails();
+        for (const thumb of thumbnails) {
+          const img = await thumb.$('img');
+          if (!img) continue;
+          const src = await img.getAttribute('src').catch(() => '');
+          if (src && src.includes(checkpointUuid)) {
+            this.logger.info(
+              `[Worker ${this.workerId}] Found checkpoint video in thumbnails, clicking (UUID: ${checkpointUuid.substring(0, 8)})`
+            );
+            await thumb.click();
+            await sleep(config.UI_ACTION_DELAY);
+            await this._waitForVideoLoaded();
+            const recoveredDuration = await this._getVideoDuration();
+            this.logger.debug(
+              `[Worker ${this.workerId}] Recovered checkpoint: url=${this.page.url()} duration=${recoveredDuration.toFixed(1)}s`
+            );
+            return;
+          }
+        }
+        this.logger.warn(
+          `[Worker ${this.workerId}] Could not find checkpoint thumbnail for UUID ${checkpointUuid.substring(0, 8)}, using redirected video`
+        );
+      }
+    }
+
+    // Log duration match/mismatch for diagnostics
+    if (expectedDuration > 0 && Math.abs(landedDuration - expectedDuration) > 1) {
+      this.logger.warn(
+        `[Worker ${this.workerId}] Post-processing duration mismatch: expected=${expectedDuration.toFixed(1)}s actual=${landedDuration.toFixed(1)}s at ${landedUrl}`
+      );
+    } else {
+      this.logger.debug(
+        `[Worker ${this.workerId}] Post-processing checkpoint OK: duration=${landedDuration.toFixed(1)}s at ${landedUrl}`
+      );
+    }
   }
 
   /**
