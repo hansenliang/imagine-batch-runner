@@ -537,8 +537,9 @@ export class ParallelWorker {
         }
 
         // ── Step 2: Extend to max duration (if enabled and we have a video) ──
+        let extResult = null;
         if (generationOk && this.autoExtend) {
-          const extResult = await this._runExtendLoop(this.page.url(), index);
+          extResult = await this._runExtendLoop(this.page.url(), index);
 
           if (extResult.rateLimited) {
             // In max-extend mode, rate limit on extend is fatal (nothing else to do)
@@ -566,6 +567,23 @@ export class ParallelWorker {
             );
             generationOk = false; // Skip post-processing
           }
+
+          // Navigate back to the last successfully extended video before post-processing.
+          // After rate limit or failed extends, the page may be on the rate-limit screen
+          // or a failed extension URL — not the actual video.
+          if (generationOk && extResult.checkpointUrl) {
+            const currentUrl = this.page.url();
+            if (currentUrl !== extResult.checkpointUrl) {
+              this.logger.info(`[Worker ${this.workerId}] Navigating to checkpoint for post-processing`);
+              await this.page.goto(extResult.checkpointUrl, {
+                waitUntil: 'domcontentloaded',
+                timeout: config.PAGE_LOAD_TIMEOUT,
+              });
+              await sleep(3000);
+              await this._waitForReadyUI();
+              await this._waitForVideoLoaded();
+            }
+          }
         }
 
         // ── Step 3: Post-processing (download / upscale / delete) ──────
@@ -584,6 +602,13 @@ export class ParallelWorker {
           }
           await this._runPostProcessing(index);
           this.autoDelete = savedAutoDelete;
+        }
+
+        // Propagate rate limit after post-processing partial extensions.
+        // We post-process first (download the partial video) then stop.
+        if (extResult?.rateLimited) {
+          this.logger.warn(`[Worker ${this.workerId}] Rate limit during extend chain ${index + 1}`);
+          throw new Error('RATE_LIMIT_STOP');
         }
 
         // Check if we should stop AFTER completing work
