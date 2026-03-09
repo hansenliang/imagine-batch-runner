@@ -97,7 +97,7 @@ run
   .option('--auto-download', 'Automatically download generated videos', true)
   .option('--auto-upscale', 'Automatically upscale videos to HD (requires --auto-download)', true)
   .option('--auto-delete', 'Automatically delete videos after download (requires --auto-download)', false)
-  .option('--auto-extend <count>', 'Number of times to extend each video (0 = disabled, max 10)', '0')
+  .option('--auto-extend', 'Extend each video to max duration (30s) after generation', false)
   .option('--download-and-delete-remaining', 'Download and delete any remaining videos at end of run (forces --auto-download and --auto-delete)', false)
   .action(async (options) => {
     try {
@@ -143,8 +143,8 @@ run
         }
 
         // If auto-extend wasn't explicitly set on CLI, use config value
-        if (options.autoExtend === '0' && configData.autoExtend !== undefined) {
-          options.autoExtend = String(configData.autoExtend);
+        if (options.autoExtend === false && configData.autoExtend !== undefined) {
+          options.autoExtend = configData.autoExtend;
         }
 
         // Handle downloadAndDeleteRemainingVideos from config
@@ -185,11 +185,6 @@ run
         throw new Error('Parallel must be between 1 and 100');
       }
 
-      const autoExtendCount = parseInt(options.autoExtend, 10);
-      if (isNaN(autoExtendCount) || autoExtendCount < 0 || autoExtendCount > 10) {
-        throw new Error('Auto-extend must be between 0 and 10');
-      }
-
       if (!options.permalink.includes('grok.com/imagine')) {
         throw new Error('Permalink must be a Grok Imagine URL');
       }
@@ -207,8 +202,8 @@ run
       console.log(chalk.gray(`Permalink: ${options.permalink}`));
       console.log(chalk.gray(`Batch size: ${batchSize}`));
       console.log(chalk.gray(`Parallelism: ${parallelism} workers`));
-      if (autoExtendCount > 0) {
-        console.log(chalk.gray(`Auto-extend: ${autoExtendCount}x per video`));
+      if (options.autoExtend) {
+        console.log(chalk.gray(`Auto-extend: enabled (target ${config.MAX_VIDEO_DURATION}s)`));
       }
       if (options.downloadAndDeleteRemaining) {
         console.log(chalk.gray(`Download and delete remaining: enabled (autoDownload and autoDelete forced to true)`));
@@ -236,7 +231,7 @@ run
         autoDownload: options.autoDownload || false,
         autoUpscale: options.autoUpscale || false,
         autoDelete: options.autoDelete || false,
-        autoExtend: autoExtendCount,
+        autoExtend: options.autoExtend || false,
         downloadAndDeleteRemainingVideos: options.downloadAndDeleteRemaining || false,
       });
 

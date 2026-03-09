@@ -8,6 +8,6 @@
   "autoDownload": true,
   "autoUpscale": true,
   "autoDelete": false,
-  "autoExtend": 0,
+  "autoExtend": false,
   "downloadAndDeleteRemainingVideos": false
 }

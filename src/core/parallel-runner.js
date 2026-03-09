@@ -23,7 +23,7 @@ export class ParallelRunner {
       autoDelete = false,
       selectMaxDuration = false,
       selectMaxResolution = false,
-      autoExtend = 0,
+      autoExtend = false,
       maxExtendMode = false,
       downloadAndDeleteRemainingVideos = false,
       logFilePath = null,  // Optional: caller can specify exact log file path
@@ -80,8 +80,8 @@ export class ParallelRunner {
     await this.logger.info(`Permalink: ${this.permalink}`);
     if (this.maxExtendMode) {
       await this.logger.info(`Mode: max-extend (target ${config.MAX_VIDEO_DURATION}s)`);
-    } else if (this.autoExtend > 0) {
-      await this.logger.info(`Auto-extend: ${this.autoExtend}x per video`);
+    } else if (this.autoExtend) {
+      await this.logger.info(`Auto-extend: enabled (target ${config.MAX_VIDEO_DURATION}s)`);
     }
     if (this.downloadAndDeleteRemainingVideos) {
       await this.logger.info('downloadAndDeleteRemainingVideos enabled - autoDownload and autoDelete forced to true');
@@ -158,9 +158,8 @@ export class ParallelRunner {
       // Start all workers in parallel
       const modeLabel = this.maxExtendMode ? 'max-extend' : 'video generation';
       await this.logger.info(`Starting parallel ${modeLabel}...`);
-      const runMethod = this.maxExtendMode ? 'runMaxExtend' : 'run';
       const workerPromises = successfulWorkers.map(worker =>
-        worker[runMethod]().catch(error => {
+        worker.run().catch(error => {
           // Catch errors but don't stop other workers
           if (error.message === 'RATE_LIMIT_STOP') {
             if (!this.rateLimitDetected) {

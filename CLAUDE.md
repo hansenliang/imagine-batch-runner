@@ -9,8 +9,11 @@ Automates Grok Imagine video generation via Playwright. Runs 1-100 parallel work
 - `node src/cli.js run max-extend --config max-extend-config.json` — Extend existing video to 30s
 - `npm test` — Validate imports
 
+## Auto-Extend
+When `autoExtend: true` is set (in config or via `--auto-extend` flag), each generated video is automatically extended to the maximum 30s duration. Videos that don't reach 30s (e.g., due to rate limits) are downloaded/upscaled but not deleted — they can be extended further in a future run.
+
 ## Max-Extend Mode
-Extends an existing short video (< 30s) to the maximum 30s duration. Multiple workers branch independently from the same source video, producing parallel extension chains for curation.
+Extends an existing short video (< 30s) to the maximum 30s duration. Multiple workers branch independently from the same source video, producing parallel extension chains for curation. Uses the same extend loop as auto-extend.
 
 Example:
 ```bash
@@ -27,7 +30,7 @@ node src/cli.js run max-extend \
 
 - `--count` = number of independent extension chains (each aims for 30s)
 - `--parallel` = number of workers running chains simultaneously
-- `--auto-delete` deletes only the extension results, never the original video
+- `--auto-delete` deletes only extensions that reached 30s, never the original video
 - Each chain: source video → extend → extend → ... → 30s → download/upscale/delete
 - Content moderation retries automatically (up to 100 times per chain)
 - Rate limit stops the affected worker; other workers continue
@@ -60,7 +63,8 @@ node src/cli.js run max-extend \
 - **Progress indicator**: Progress is shown as a floating overlay pill with `<span class="tabular-nums">15%</span>`. Detected via `span.tabular-nums` selector + `getBoundingClientRect` visibility check. The old `offsetParent` approach fails on overlay-positioned elements.
 - **Extend video**: The Settings button (`aria-label="Settings"`) shows "Extend video" as a menu item when a video is already generated. No need to use the "More options" (`...`) menu.
 - **Rate limits are separate**: Generation and extension have independent rate limits. Extension rate limit should `break` out of the extend loop (not stop the worker). Generation rate limit still throws `RATE_LIMIT_STOP`.
-- **Extend loop**: Only successful extends count toward `autoExtend` cap. Content moderation and errors retry up to 100 times without counting. Post-processing (download/delete/upscale) always runs after extends regardless of outcome.
+- **Extend loop**: Extends until video reaches 30s (duration-based). Content moderation and errors retry up to 100 times. Auto-delete only runs if video reached 30s; partial extensions are preserved for future continuation.
+- **Delete safety**: In max-extend mode, post-processing only runs if at least one extension succeeded, so the original video is never deleted. In both modes, auto-delete is suppressed for videos under 30s.
 
 ## When to Read More
 - Setup or install issues → `docs/quickstart.md`
