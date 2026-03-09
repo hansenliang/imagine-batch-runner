@@ -300,24 +300,37 @@ export class PostProcessor {
   }
 
   /**
-   * Extract video UUID from the current video's src URL
-   * URL pattern: /generated/{UUID}/...
+   * Extract video UUID from the current video's src URL or the page URL.
+   * Strategy 1: Video src pattern /generated/{UUID}/...
+   * Strategy 2: Page URL pattern /imagine/post/{UUID}
    * @private
    * @returns {Promise<string|null>} UUID or null if not found
    */
   async _extractVideoUUID() {
     try {
+      // Strategy 1: Extract from video element's src URL
       const video = await this.page.$(selectors.VIDEO_CONTAINER);
-      if (!video) return null;
+      if (video) {
+        // Use currentSrc (handles dual video elements and programmatic src).
+        // getAttribute('src') fails when src is set via <source> children or JS.
+        const src = await video.evaluate(v => v.currentSrc || v.src || '').catch(() => '');
+        if (src) {
+          const match = src.match(/\/generated\/([a-f0-9-]+)\//i);
+          if (match) return match[1];
+          this.logger.debug(`Video src does not match /generated/UUID/ pattern: ${src.substring(0, 120)}`);
+        }
+      }
 
-      // Use currentSrc (handles dual video elements and programmatic src).
-      // getAttribute('src') fails when src is set via <source> children or JS.
-      const src = await video.evaluate(v => v.currentSrc || v.src || '').catch(() => '');
-      if (!src) return null;
+      // Strategy 2: Extract from page URL (/imagine/post/{UUID})
+      const pageUrl = this.page.url();
+      const pageMatch = pageUrl.match(/\/imagine\/post\/([a-f0-9-]+)/i);
+      if (pageMatch) {
+        this.logger.debug(`UUID extracted from page URL: ${pageMatch[1]}`);
+        return pageMatch[1];
+      }
 
-      // Extract UUID from pattern /generated/{UUID}/
-      const match = src.match(/\/generated\/([a-f0-9-]+)\//i);
-      return match ? match[1] : null;
+      this.logger.debug(`UUID extraction: no video src match and page URL not a post permalink: ${pageUrl}`);
+      return null;
     } catch (error) {
       this.logger.debug(`UUID extraction failed: ${error.message}`);
       return null;

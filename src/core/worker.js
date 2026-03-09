@@ -580,6 +580,9 @@ export class ParallelWorker {
             const currentUrl = this.page.url();
             if (currentUrl !== extResult.checkpointUrl) {
               this.logger.info(`[Worker ${this.workerId}] Navigating to checkpoint for post-processing`);
+              this.logger.debug(
+                `[Worker ${this.workerId}] Post-processing nav: from=${currentUrl} to=${extResult.checkpointUrl}`
+              );
               await this.page.goto(extResult.checkpointUrl, {
                 waitUntil: 'domcontentloaded',
                 timeout: config.PAGE_LOAD_TIMEOUT,
@@ -587,6 +590,28 @@ export class ParallelWorker {
               await sleep(3000);
               await this._waitForReadyUI();
               await this._waitForVideoLoaded();
+
+              // Diagnostic: check if Grok redirected us and what duration we landed on
+              const landedUrl = this.page.url();
+              const landedDuration = await this._getVideoDuration();
+              if (landedUrl !== extResult.checkpointUrl) {
+                this.logger.warn(
+                  `[Worker ${this.workerId}] Post-processing checkpoint redirected: expected=${extResult.checkpointUrl} landed=${landedUrl}`
+                );
+              }
+              if (extResult.lastKnownDuration > 0 && Math.abs(landedDuration - extResult.lastKnownDuration) > 1) {
+                this.logger.warn(
+                  `[Worker ${this.workerId}] Post-processing duration mismatch: expected=${extResult.lastKnownDuration.toFixed(1)}s actual=${landedDuration.toFixed(1)}s at ${landedUrl}`
+                );
+              } else {
+                this.logger.debug(
+                  `[Worker ${this.workerId}] Post-processing checkpoint OK: duration=${landedDuration.toFixed(1)}s at ${landedUrl}`
+                );
+              }
+            } else {
+              this.logger.debug(
+                `[Worker ${this.workerId}] Already on checkpoint URL, no navigation needed: ${currentUrl}`
+              );
             }
           }
         }
@@ -681,6 +706,9 @@ export class ParallelWorker {
     let checkpointUrl = startCheckpointUrl;
     let rateLimitedOnExtend = false;
     const targetDuration = config.MAX_VIDEO_DURATION;
+    let lastKnownDuration = 0; // Track duration across extends for diagnostics
+
+    this.logger.debug(`[Worker ${this.workerId}] Extend loop starting — checkpoint: ${checkpointUrl}`);
 
     while (failedAttempts < maxFailedAttempts && !rateLimitedOnExtend) {
       this.logger.info(
@@ -730,10 +758,24 @@ export class ParallelWorker {
         if (extResult.success) {
           successfulExtends++;
           failedAttempts = 0; // Reset on success
+          const prevCheckpoint = checkpointUrl;
           checkpointUrl = this.page.url(); // Advance checkpoint
           await this.manifest.incrementCounterAtomic('extendedCount');
 
           const videoDur = await this._getVideoDuration();
+          lastKnownDuration = videoDur;
+
+          // Diagnostic: log checkpoint advancement and URL change
+          if (checkpointUrl === prevCheckpoint) {
+            this.logger.warn(
+              `[Worker ${this.workerId}] Checkpoint URL unchanged after extend ${successfulExtends}: ${checkpointUrl}`
+            );
+          } else {
+            this.logger.debug(
+              `[Worker ${this.workerId}] Checkpoint advanced: ${prevCheckpoint} → ${checkpointUrl}`
+            );
+          }
+
           this.logger.success(
             `[Worker ${this.workerId}] Extend ${successfulExtends} succeeded in ${extDuration}s — video now ${videoDur.toFixed(1)}s / ${targetDuration}s`
           );
@@ -747,6 +789,9 @@ export class ParallelWorker {
         } else if (extResult.rateLimited) {
           await this.manifest.incrementCounterAtomic('extendAttemptCount');
           this.logger.warn(`[Worker ${this.workerId}] Rate limit during extend, moving on`);
+          this.logger.debug(
+            `[Worker ${this.workerId}] Rate limit page URL: ${this.page.url()} (checkpoint: ${checkpointUrl})`
+          );
           rateLimitedOnExtend = true;
           break; // → outer loop exits via flag
         } else if (extResult.contentModerated) {
@@ -755,6 +800,13 @@ export class ParallelWorker {
           this.logger.warn(
             `[Worker ${this.workerId}] Extend content moderated (${failedAttempts}/${maxFailedAttempts}), retrying...`
           );
+
+          // Diagnostic: log page URL on 1st moderation and every 10th (to detect drift without flooding logs)
+          if (failedAttempts === 1 || failedAttempts % 10 === 0) {
+            this.logger.debug(
+              `[Worker ${this.workerId}] Page URL after moderation #${failedAttempts}: ${this.page.url()} (checkpoint: ${checkpointUrl})`
+            );
+          }
 
           // Cooldown before retry to let stale moderation messages clear
           await sleep(config.MODERATION_RETRY_COOLDOWN);
@@ -795,7 +847,11 @@ export class ParallelWorker {
       );
     }
 
-    return { successfulExtends, rateLimited: rateLimitedOnExtend, checkpointUrl };
+    this.logger.debug(
+      `[Worker ${this.workerId}] Extend loop exiting — checkpoint: ${checkpointUrl}, lastDuration: ${lastKnownDuration.toFixed(1)}s, currentPageUrl: ${this.page.url()}`
+    );
+
+    return { successfulExtends, rateLimited: rateLimitedOnExtend, checkpointUrl, lastKnownDuration };
   }
 
   /**
@@ -1069,11 +1125,19 @@ export class ParallelWorker {
         await thumb.click();
         await sleep(config.UI_ACTION_DELAY);
         await this._waitForVideoLoaded();
+        const navDur = await this._getVideoDuration();
+        this.logger.debug(
+          `[Worker ${this.workerId}] Source video after thumbnail click: url=${this.page.url()} duration=${navDur.toFixed(1)}s`
+        );
         return;
       }
     }
 
     this.logger.warn(`[Worker ${this.workerId}] Could not find source thumbnail for UUID ${uuid}, using current video`);
+    const fallbackDur = await this._getVideoDuration();
+    this.logger.debug(
+      `[Worker ${this.workerId}] Using fallback video: url=${this.page.url()} duration=${fallbackDur.toFixed(1)}s`
+    );
   }
 
   /**
