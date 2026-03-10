@@ -614,24 +614,27 @@ export class VideoGenerator {
     try {
       await this._dismissBanners();
 
-      // Step 1: Find the video element, seek to target time, and pause
-      const videoEl = await this.page.$(selectors.VIDEO_CONTAINER);
-      if (!videoEl) {
-        this.logger.debug(`${this._tag(index)} No video element found for extend-from-frame`);
-        return false;
-      }
-
+      // Step 1: Pause ALL videos first (Grok renders dual sd-video / hd-video),
+      // then seek all to the target time. This prevents the playhead from drifting
+      // while we set up the hover.
       const seeked = await this.page.evaluate(
         ({ sel, targetTime }) => {
           const videos = document.querySelectorAll(sel);
+          // First pass: pause everything immediately
           for (const v of videos) {
-            if ((v.currentSrc || v.src) && v.duration > 0) {
+            try { v.pause(); } catch (_) { /* ignore */ }
+          }
+          // Second pass: seek all videos that have a duration
+          let result = { seeked: false };
+          for (const v of videos) {
+            if (v.duration > 0) {
               v.currentTime = Math.min(targetTime, v.duration - 0.1);
-              v.pause();
-              return { seeked: true, duration: v.duration, currentTime: v.currentTime };
+              if (!result.seeked) {
+                result = { seeked: true, duration: v.duration, currentTime: v.currentTime };
+              }
             }
           }
-          return { seeked: false };
+          return result;
         },
         { sel: selectors.VIDEO_CONTAINER, targetTime: timeSeconds }
       );
@@ -646,7 +649,26 @@ export class VideoGenerator {
       );
       await sleep(500); // Let the seek settle
 
-      // Step 2: Hover over the video area to reveal player controls
+      // Step 2: Hover over the visible video element (the one with a src) to
+      // reveal player controls. Pick the right video — not just the first in DOM.
+      const visibleVideo = await this.page.evaluateHandle((sel) => {
+        const videos = document.querySelectorAll(sel);
+        for (const v of videos) {
+          if ((v.currentSrc || v.src) && v.offsetParent !== null) return v;
+        }
+        // Fallback: any video with a src
+        for (const v of videos) {
+          if (v.currentSrc || v.src) return v;
+        }
+        return videos[0] || null;
+      }, selectors.VIDEO_CONTAINER);
+
+      const videoEl = visibleVideo.asElement();
+      if (!videoEl) {
+        this.logger.debug(`${this._tag(index)} No video element found for extend-from-frame`);
+        return false;
+      }
+
       const videoVisible = await videoEl.isVisible().catch(() => false);
       if (videoVisible) {
         await videoEl.hover();
@@ -696,40 +718,59 @@ export class VideoGenerator {
    */
   async _hoverProgressBarAndFindButton(index) {
     try {
-      // Find candidate progress bar elements: div with cursor-pointer and rounded-full
-      // that contains a child div (the fill bar)
-      const progressBar = await this.page.evaluateHandle(() => {
+      // The progress bar is a tiny opacity-0 h-1 div inside a taller h-8 container.
+      // The CSS :hover trigger zone is the PARENT container, not the bar itself.
+      // DOM structure:
+      //   <div class="flex flex-col justify-center items-center w-full h-8 px-2 relative">  ← hover this
+      //     <div class="... cursor-pointer rounded-full opacity-0 h-1">                      ← progress bar
+      //       <div class="..." style="width: N%"></div>                                       ← fill
+      //     </div>
+      //   </div>
+      const hoverTarget = await this.page.evaluateHandle(() => {
         const candidates = document.querySelectorAll('div.cursor-pointer.rounded-full');
         for (const el of candidates) {
-          // Must have a child div (the progress fill) and be within the video player area
-          if (el.querySelector('div') && el.closest('video, [class*="video"], [class*="player"]')?.parentElement) {
-            return el;
+          if (!el.querySelector('div')) continue;
+          const style = window.getComputedStyle(el);
+          const isProgressBar = style.opacity === '0' || el.classList.contains('opacity-0');
+          if (isProgressBar && el.parentElement) {
+            // Return the parent container — the actual hover zone
+            return el.parentElement;
           }
         }
-        // Broader fallback: any cursor-pointer rounded-full with opacity-0
+        // Broader fallback: any cursor-pointer rounded-full with a child div
         for (const el of candidates) {
-          if (el.querySelector('div')) {
-            const style = window.getComputedStyle(el);
-            if (style.opacity === '0' || el.classList.contains('opacity-0')) {
-              return el;
-            }
+          if (el.querySelector('div') && el.parentElement) {
+            return el.parentElement;
           }
         }
         return null;
       });
 
-      const progressBarEl = progressBar.asElement();
-      if (!progressBarEl) {
-        this.logger.debug(`${this._tag(index)} Progress bar element not found`);
+      const hoverEl = hoverTarget.asElement();
+      if (!hoverEl) {
+        this.logger.debug(`${this._tag(index)} Progress bar container not found`);
         return null;
       }
 
-      // Hover to reveal the bar and its controls
-      await progressBarEl.hover();
+      // Hover the container to trigger CSS :hover and reveal controls
+      await hoverEl.hover();
       await sleep(800); // Give CSS transitions time (duration-300 = 300ms)
 
-      // Now look for the "extend from frame" button
-      const button = await this._findExtendFromFrameButton();
+      // Check for the button
+      let button = await this._findExtendFromFrameButton();
+      if (button) return button;
+
+      // Fallback: use raw mouse coordinates at the bottom of the visible video.
+      // Sometimes Playwright's element.hover() doesn't trigger CSS :hover reliably
+      // on overlay-positioned elements, but page.mouse.move() with real coords does.
+      this.logger.debug(`${this._tag(index)} Element hover didn't reveal button, trying mouse coordinates`);
+      const box = await hoverEl.boundingBox();
+      if (box) {
+        await this.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await sleep(1000);
+        button = await this._findExtendFromFrameButton();
+      }
+
       return button;
     } catch (error) {
       this.logger.debug(`${this._tag(index)} Progress bar hover failed: ${error.message}`);
@@ -746,16 +787,31 @@ export class VideoGenerator {
    */
   async _forceRevealExtendFromFrame(index) {
     try {
-      // Force all opacity-0 elements near the video to become visible
+      // Force-reveal: set opacity on the progress bar and its container,
+      // then dispatch mouse events on the container to trigger React hover state.
       await this.page.evaluate(() => {
-        // Reveal all opacity-0 elements that are children of the video player area
+        // Target the progress bar specifically and its parent container
+        const candidates = document.querySelectorAll('div.cursor-pointer.rounded-full');
+        for (const el of candidates) {
+          if (!el.querySelector('div')) continue;
+          // Reveal the bar itself
+          el.style.opacity = '1';
+          el.classList.remove('opacity-0');
+          // Dispatch hover events on the parent container (the hover zone)
+          const container = el.parentElement;
+          if (container) {
+            container.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+            container.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+          }
+        }
+        // Also reveal all opacity-0 elements near videos as a broad fallback
         const hiddenEls = document.querySelectorAll('.opacity-0');
         for (const el of hiddenEls) {
           el.style.opacity = '1';
           el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
           el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
         }
-        // Also dispatch hover on video elements to trigger any React hover state
+        // Dispatch hover on video elements to trigger React hover state
         const videos = document.querySelectorAll('video');
         for (const v of videos) {
           let parent = v.parentElement;
