@@ -614,43 +614,14 @@ export class VideoGenerator {
     try {
       await this._dismissBanners();
 
-      // Step 1: Pause ALL videos first (Grok renders dual sd-video / hd-video),
-      // then seek all to the target time. This prevents the playhead from drifting
-      // while we set up the hover.
-      const seeked = await this.page.evaluate(
-        ({ sel, targetTime }) => {
-          const videos = document.querySelectorAll(sel);
-          // First pass: pause everything immediately
-          for (const v of videos) {
-            try { v.pause(); } catch (_) { /* ignore */ }
-          }
-          // Second pass: seek all videos that have a duration
-          let result = { seeked: false };
-          for (const v of videos) {
-            if (v.duration > 0) {
-              v.currentTime = Math.min(targetTime, v.duration - 0.1);
-              if (!result.seeked) {
-                result = { seeked: true, duration: v.duration, currentTime: v.currentTime };
-              }
-            }
-          }
-          return result;
-        },
-        { sel: selectors.VIDEO_CONTAINER, targetTime: timeSeconds }
-      );
+      // Step 1: Pause ALL videos. Grok's React player ignores bare v.pause() calls
+      // (it re-triggers play via its own state), so we:
+      //   a) Click the visible video (simulates user pause — toggles Grok's internal state)
+      //   b) Monkey-patch video.play() on ALL video elements to prevent Grok from resuming
+      //   c) Call v.pause() as belt-and-suspenders
+      //   d) Seek all videos to the target time
 
-      if (!seeked.seeked) {
-        this.logger.info(`${this._tag(index)} Extend-from-frame: could not seek video (no video with duration found)`);
-        return false;
-      }
-
-      this.logger.info(
-        `${this._tag(index)} Extend-from-frame: paused & seeked all videos to ${seeked.currentTime.toFixed(1)}s / ${seeked.duration.toFixed(1)}s`
-      );
-      await sleep(500); // Let the seek settle
-
-      // Step 2: Hover over the visible video element (the one with a src) to
-      // reveal player controls. Pick the right video — not just the first in DOM.
+      // Find the visible video element first (for clicking)
       const visibleVideo = await this.page.evaluateHandle((sel) => {
         const videos = document.querySelectorAll(sel);
         for (const v of videos) {
@@ -669,7 +640,64 @@ export class VideoGenerator {
         return false;
       }
 
+      // Click the video to pause via Grok's own UI (like a user would)
       const videoVisible = await videoEl.isVisible().catch(() => false);
+      if (videoVisible) {
+        await videoEl.click();
+        this.logger.info(`${this._tag(index)} Extend-from-frame: clicked video to pause`);
+        await sleep(300);
+      }
+
+      // Now monkey-patch play(), pause all videos, and seek
+      const seeked = await this.page.evaluate(
+        ({ sel, targetTime }) => {
+          const videos = document.querySelectorAll(sel);
+          // Monkey-patch play() on all videos to block Grok from resuming playback.
+          // Store original so we can restore later if needed.
+          for (const v of videos) {
+            if (!v._origPlay) {
+              v._origPlay = v.play.bind(v);
+              v.play = () => Promise.resolve(); // no-op
+            }
+            try { v.pause(); } catch (_) { /* ignore */ }
+          }
+          // Seek all videos that have a duration
+          let result = { seeked: false, paused: false };
+          for (const v of videos) {
+            if (v.duration > 0) {
+              v.currentTime = Math.min(targetTime, v.duration - 0.1);
+              if (!result.seeked) {
+                result = { seeked: true, paused: v.paused, duration: v.duration, currentTime: v.currentTime };
+              }
+            }
+          }
+          return result;
+        },
+        { sel: selectors.VIDEO_CONTAINER, targetTime: timeSeconds }
+      );
+
+      if (!seeked.seeked) {
+        this.logger.info(`${this._tag(index)} Extend-from-frame: could not seek video (no video with duration found)`);
+        await this._restoreVideoPlay();
+        return false;
+      }
+
+      this.logger.info(
+        `${this._tag(index)} Extend-from-frame: seeked to ${seeked.currentTime.toFixed(1)}s / ${seeked.duration.toFixed(1)}s (paused=${seeked.paused})`
+      );
+      await sleep(500); // Let the seek settle
+
+      // Verify pause actually stuck
+      const pauseCheck = await this.page.evaluate((sel) => {
+        const videos = document.querySelectorAll(sel);
+        return [...videos].map(v => ({ src: !!(v.currentSrc || v.src), paused: v.paused, time: v.currentTime }));
+      }, selectors.VIDEO_CONTAINER);
+      this.logger.info(
+        `${this._tag(index)} Extend-from-frame: pause check — ${JSON.stringify(pauseCheck)}`
+      );
+
+      // Step 2: Hover over the video to reveal player controls.
+      // We already have videoEl from step 1.
       if (videoVisible) {
         await videoEl.hover();
         await sleep(500);
@@ -692,12 +720,14 @@ export class VideoGenerator {
 
       if (!extendButton) {
         this.logger.info(`${this._tag(index)} Extend-from-frame: "Extend from frame" button not found after all strategies`);
+        await this._restoreVideoPlay();
         return false;
       }
 
-      // Step 4: Click the button
+      // Step 4: Click the button, then restore play() so generation can proceed
       await extendButton.click();
       await sleep(config.UI_ACTION_DELAY);
+      await this._restoreVideoPlay();
 
       this.logger.info(
         `${this._tag(index)} Extend-from-frame: button clicked at ${timeSeconds}s`
@@ -705,8 +735,25 @@ export class VideoGenerator {
       return true;
     } catch (error) {
       this.logger.info(`${this._tag(index)} Extend-from-frame: exception — ${error.message}`);
+      await this._restoreVideoPlay().catch(() => {});
       return false;
     }
+  }
+
+  /**
+   * Restore the original video.play() method after monkey-patching it during
+   * extend-from-frame. Safe to call even if play() was never patched.
+   * @private
+   */
+  async _restoreVideoPlay() {
+    await this.page.evaluate((sel) => {
+      for (const v of document.querySelectorAll(sel)) {
+        if (v._origPlay) {
+          v.play = v._origPlay;
+          delete v._origPlay;
+        }
+      }
+    }, selectors.VIDEO_CONTAINER);
   }
 
   /**
