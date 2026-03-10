@@ -697,11 +697,16 @@ export class VideoGenerator {
         return videos[0] || null;
       }, selectors.VIDEO_CONTAINER);
 
+      // Hover using mouse coordinates — Grok stacks hd-video on top of sd-video
+      // in a CSS grid (col-start-1 row-start-1), so element.hover() on sd-video
+      // fails with "hd-video intercepts pointer events". page.mouse.move() bypasses
+      // Playwright's pointer interception check entirely.
       const videoEl = visibleVideo.asElement();
       if (videoEl) {
-        const videoVisible = await videoEl.isVisible().catch(() => false);
-        if (videoVisible) {
-          await videoEl.hover();
+        const box = await videoEl.boundingBox().catch(() => null);
+        if (box) {
+          await this.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+          this.logger.info(`${this._tag(index)} Extend-from-frame: hovered video area via mouse.move`);
           await sleep(500);
         }
       }
