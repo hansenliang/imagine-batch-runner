@@ -74,6 +74,10 @@ export const config = {
   DEFAULT_AUTORUN_CONFIG_DIR: './autorun-configs',
   AUTORUN_MIN_INTERVAL: 30 * 60 * 1000, // 30 minutes minimum
 
+  // Auto-extend settings
+  DEFAULT_AUTOEXTEND: 0, // 0 = disabled, 1-N = extend N times per video
+  MAX_VIDEO_DURATION: 30, // seconds — Grok's maximum video length
+
   // Download/delete/upscale settings
   DEFAULT_DOWNLOAD_ENABLED: true,
   DEFAULT_UPSCALE_ENABLED: true,
@@ -104,12 +108,12 @@ export const config = {
 
 // UI Selectors (centralized for easy updates)
 export const selectors = {
-  // Video generation buttons
-  MAKE_VIDEO_BUTTON: 'button:has-text("Make video"), button:has-text("make video"), button[aria-label*="make video" i], button[aria-label*="generate video" i], button[title*="make video" i], button[title*="generate video" i]',
+  // Video generation buttons (new UI: button[aria-label="Make video"] wrapping a filled arrow div)
+  MAKE_VIDEO_BUTTON: 'button[aria-label*="make video" i], button[aria-label*="generate video" i], button[aria-label*="create video" i], button:has-text("Make video"), button:has-text("make video"), button:has-text("Create video"), button:has-text("create video"), button[title*="make video" i], button[title*="generate video" i], button[title*="create video" i]',
   REDO_BUTTON: 'button:has-text("Redo"), button:has-text("redo"), button[aria-label*="redo" i], button[title*="redo" i]',
 
-  // Prompt input
-  PROMPT_INPUT: 'textarea[placeholder*="prompt"], input[placeholder*="prompt"], textarea, input[type="text"]',
+  // Prompt input (new UI uses TipTap/ProseMirror contenteditable div; old UI uses textarea/input)
+  PROMPT_INPUT: '[contenteditable="true"].tiptap, [contenteditable="true"].ProseMirror, textarea[placeholder*="prompt"], input[placeholder*="prompt"], [contenteditable="true"], textarea, input[type="text"]',
 
   // Video generation states
   VIDEO_CONTAINER: 'video, [role="video"]',
@@ -153,8 +157,14 @@ export const selectors = {
   UPSCALING_INDICATOR: 'text=/upscaling/i',
   HD_BADGE: 'text=/^HD$/i',
 
-  // Video options menu (duration and resolution selection)
-  VIDEO_OPTIONS_BUTTON: 'button[aria-label="Video Options"]',
+  // Settings button (gear icon next to prompt, opens mode selection menu)
+  SETTINGS_BUTTON: 'button[aria-label="Settings"], button[aria-label="settings"]',
+
+  // "Make Video" mode menu item (inside Settings menu, switches from image to video mode)
+  MAKE_VIDEO_MODE_ITEM: '[role="menuitem"]:has-text("Make Video"), [role="menuitem"]:has-text("Make video")',
+
+  // Extend video menu item (inside "..." more options menu)
+  EXTEND_MENU_ITEM: '[role="menuitem"]:has-text("Extend video"), [role="menuitem"]:has-text("Extend Video")',
 
   // Announcement banner dismiss button (X button inside z-[9999] banner)
   ANNOUNCEMENT_BANNER_DISMISS: 'div.absolute[class*="z-[9999]"] button:has(svg.lucide-x)',

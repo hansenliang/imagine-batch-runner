@@ -37,6 +37,11 @@ export class ParallelWorker {
     this.selectMaxDuration = options.selectMaxDuration || false;
     this.selectMaxResolution = options.selectMaxResolution || false;
 
+    // Extend settings
+    this.maxExtendMode = options.maxExtendMode || false;
+    // maxExtendMode implies autoExtend
+    this.autoExtend = this.maxExtendMode ? true : (options.autoExtend || false);
+
     // Browser resources
     this.context = null;
     this.page = null;
@@ -111,6 +116,9 @@ export class ParallelWorker {
         throw new Error('AUTH_REQUIRED: Not authenticated. Worker cannot proceed.');
       }
 
+      // Switch to video mode if on an image page (Settings → Make Video)
+      await this._selectVideoMode();
+
       // Select maximum video duration and resolution (once per worker session, if enabled)
       if (this.selectMaxDuration) {
         await this._selectMaxDuration();
@@ -175,23 +183,124 @@ export class ParallelWorker {
   }
 
   /**
-   * Select the maximum available video duration.
-   * Called once per worker session during initialization.
+   * Wait for a video element with a src to be loaded on the page.
+   * Used after navigating back to a checkpoint permalink during extend retries —
+   * the "Extend video" menu option only appears when a video is present.
    * @private
    */
-  async _selectMaxDuration() {
+  async _waitForVideoLoaded() {
     try {
-      // Click video options button to open duration menu
-      const optionsButton = await this.page.$(selectors.VIDEO_OPTIONS_BUTTON);
-      if (!optionsButton) {
-        this.logger.warn(`[Worker ${this.workerId}] Video options button not found, using default duration`);
+      const timeout = Math.max(10000, config.ELEMENT_WAIT_TIMEOUT);
+      await this.page.waitForFunction(
+        (sel) => {
+          const videos = document.querySelectorAll(sel);
+          return [...videos].some(v => !!(v.currentSrc || v.src));
+        },
+        selectors.VIDEO_CONTAINER,
+        { timeout }
+      );
+      this.logger.debug(`[Worker ${this.workerId}] Video loaded on checkpoint page`);
+    } catch (error) {
+      this.logger.warn(`[Worker ${this.workerId}] Video load wait timed out: ${error.message}`);
+    }
+  }
+
+  /**
+   * Switch from image mode to video mode if a Settings button is present.
+   * On Grok Imagine image pages, a "Settings" gear button opens a menu
+   * with a "Make Video" option to switch to video generation mode.
+   * If the Settings button is not found (already in video mode), this is a no-op.
+   * @private
+   */
+  async _selectVideoMode() {
+    try {
+      // If any video element already has a src (e.g. from a previous run), we're already
+      // in video mode. Skip the Settings interaction to avoid triggering SPA navigation.
+      // Handles dual sd-video/hd-video elements (see claude.md "Dual video elements").
+      const hasExistingVideo = await this.page.$$eval(selectors.VIDEO_CONTAINER,
+        videos => videos.some(v => !!(v.currentSrc || v.src))
+      ).catch(() => false);
+      if (hasExistingVideo) {
+        this.logger.debug(`[Worker ${this.workerId}] Video already present, skipping mode selection`);
         return;
       }
 
-      await optionsButton.click();
-      await sleep(config.UI_ACTION_DELAY); // Wait for menu to open
+      const settingsButton = await this.page.$(selectors.SETTINGS_BUTTON);
+      if (!settingsButton) {
+        this.logger.debug(`[Worker ${this.workerId}] No Settings button found, assuming video mode`);
+        return;
+      }
 
-      // Find all buttons in the menu and filter for duration patterns (e.g., "6s", "10s")
+      const isVisible = await settingsButton.isVisible().catch(() => false);
+      if (!isVisible) {
+        this.logger.debug(`[Worker ${this.workerId}] Settings button not visible, assuming video mode`);
+        return;
+      }
+
+      // Click Settings to open the mode menu
+      await settingsButton.click();
+      await sleep(config.UI_ACTION_DELAY);
+
+      // Look for "Make Video" menu item
+      let makeVideoItem = await this.page.$(selectors.MAKE_VIDEO_MODE_ITEM);
+
+      // Fallback: scan menu items for "Make Video" text
+      if (!makeVideoItem) {
+        const menuItems = await this.page.$$('[role="menuitem"]');
+        for (const item of menuItems) {
+          const itemVisible = await item.isVisible().catch(() => false);
+          if (!itemVisible) continue;
+          const text = await item.innerText().catch(() => '');
+          if (/make\s+video/i.test(text)) {
+            makeVideoItem = item;
+            break;
+          }
+        }
+      }
+
+      if (!makeVideoItem) {
+        this.logger.debug(`[Worker ${this.workerId}] "Make Video" menu item not found, closing menu`);
+        await this.page.keyboard.press('Escape');
+        return;
+      }
+
+      const itemVisible = await makeVideoItem.isVisible().catch(() => false);
+      if (!itemVisible) {
+        this.logger.debug(`[Worker ${this.workerId}] "Make Video" menu item not visible, closing menu`);
+        await this.page.keyboard.press('Escape');
+        return;
+      }
+
+      await makeVideoItem.click();
+      await sleep(config.UI_ACTION_DELAY);
+
+      this.logger.info(`[Worker ${this.workerId}] Switched to video mode via Settings → Make Video`);
+    } catch (error) {
+      this.logger.warn(`[Worker ${this.workerId}] Video mode selection failed: ${error.message}`);
+      try { await this.page.keyboard.press('Escape'); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Select the maximum available video duration.
+   * New UI: duration pills appear inline below the prompt when it's focused.
+   * Accepts an optional regex pattern to match different duration formats:
+   *   - Regular mode: /^\d+s$/ matches "6s", "10s"
+   *   - Extend mode: /^\+?\d+s$/ matches "+6s", "+10s", "6s", "10s"
+   * @param {RegExp} [pattern] - Optional regex for duration label matching
+   * @private
+   */
+  async _selectMaxDuration(pattern = null) {
+    const durationPattern = pattern || /^\d+s$/;
+    try {
+      // Focus prompt input to reveal inline duration/resolution pills (new UI)
+      const promptInput = await this.page.$(selectors.PROMPT_INPUT);
+      if (promptInput) {
+        await promptInput.click();
+        await sleep(config.UI_ACTION_DELAY);
+      }
+
+      // Find all visible buttons matching the duration pattern
       const buttons = await this.page.$$('button');
       const durationButtons = [];
 
@@ -201,23 +310,21 @@ export class ParallelWorker {
 
         const ariaLabel = await button.getAttribute('aria-label').catch(() => '');
         const text = await button.innerText().catch(() => '');
-        const label = ariaLabel || text;
+        const label = (ariaLabel || text).trim();
 
-        // Match duration pattern: digits followed by 's' (e.g., "6s", "10s")
-        const match = label.match(/^(\d+)s$/);
-        if (match) {
+        if (durationPattern.test(label)) {
+          // Extract numeric part (e.g., "10" from "10s" or "+10s")
+          const numericPart = parseInt(label.replace(/[^\d]/g, ''), 10);
           durationButtons.push({
             button,
-            duration: parseInt(match[1], 10),
+            duration: numericPart,
             label,
           });
         }
       }
 
       if (durationButtons.length === 0) {
-        this.logger.warn(`[Worker ${this.workerId}] No duration buttons found, using default duration`);
-        // Close menu by pressing Escape
-        await this.page.keyboard.press('Escape');
+        this.logger.warn(`[Worker ${this.workerId}] No duration buttons found (pattern: ${durationPattern}), using default`);
         return;
       }
 
@@ -227,9 +334,9 @@ export class ParallelWorker {
       );
 
       await maxDuration.button.click();
-      await sleep(config.UI_ACTION_DELAY); // Wait for menu to close
+      await sleep(config.UI_ACTION_DELAY);
 
-      this.selectedDuration = `${maxDuration.duration}s`;
+      this.selectedDuration = maxDuration.label;
       this.logger.info(`[Worker ${this.workerId}] Selected video duration: ${this.selectedDuration}`);
     } catch (error) {
       this.logger.warn(`[Worker ${this.workerId}] Duration selection failed: ${error.message}, using default`);
@@ -239,22 +346,19 @@ export class ParallelWorker {
 
   /**
    * Select the maximum available video resolution.
-   * Called once per worker session during initialization.
+   * New UI: resolution pills appear inline below the prompt when it's focused.
    * @private
    */
   async _selectMaxResolution() {
     try {
-      // Click video options button to open menu
-      const optionsButton = await this.page.$(selectors.VIDEO_OPTIONS_BUTTON);
-      if (!optionsButton) {
-        this.logger.warn(`[Worker ${this.workerId}] Video options button not found, using default resolution`);
-        return;
+      // Focus prompt input to reveal inline duration/resolution pills (new UI)
+      const promptInput = await this.page.$(selectors.PROMPT_INPUT);
+      if (promptInput) {
+        await promptInput.click();
+        await sleep(config.UI_ACTION_DELAY);
       }
 
-      await optionsButton.click();
-      await sleep(config.UI_ACTION_DELAY); // Wait for menu to open
-
-      // Find all buttons in the menu and filter for resolution patterns (e.g., "480p", "720p")
+      // Find all visible buttons matching resolution pattern (e.g., "480p", "720p")
       const buttons = await this.page.$$('button');
       const resolutionButtons = [];
 
@@ -264,9 +368,8 @@ export class ParallelWorker {
 
         const ariaLabel = await button.getAttribute('aria-label').catch(() => '');
         const text = await button.innerText().catch(() => '');
-        const label = ariaLabel || text;
+        const label = (ariaLabel || text).trim();
 
-        // Match resolution pattern: digits followed by 'p' (e.g., "480p", "720p", "1080p")
         const match = label.match(/^(\d+)p$/);
         if (match) {
           resolutionButtons.push({
@@ -279,8 +382,6 @@ export class ParallelWorker {
 
       if (resolutionButtons.length === 0) {
         this.logger.warn(`[Worker ${this.workerId}] No resolution buttons found, using default resolution`);
-        // Close menu by pressing Escape
-        await this.page.keyboard.press('Escape');
         return;
       }
 
@@ -290,7 +391,7 @@ export class ParallelWorker {
       );
 
       await maxResolution.button.click();
-      await sleep(config.UI_ACTION_DELAY); // Wait for menu to close
+      await sleep(config.UI_ACTION_DELAY);
 
       this.selectedResolution = `${maxResolution.resolution}p`;
       this.logger.info(`[Worker ${this.workerId}] Selected video resolution: ${this.selectedResolution}`);
@@ -301,7 +402,15 @@ export class ParallelWorker {
   }
 
   /**
-   * Run worker loop: claim work, generate videos, repeat until no work
+   * Run worker loop: claim work, generate/extend videos, repeat until no work.
+   *
+   * Two modes controlled by this.maxExtendMode:
+   *   - false (default): Generate a new video, then optionally extend to 30s
+   *   - true: Navigate to existing permalink, extend to 30s (no generation)
+   *
+   * When autoExtend is enabled, videos are extended to max duration (30s).
+   * Auto-delete only runs if the video reached 30s; partial extensions are
+   * preserved on the server for future continuation.
    */
   async run() {
     this.isRunning = true;
@@ -322,7 +431,6 @@ export class ParallelWorker {
         // Check if we should stop BEFORE starting new work
         if (this.shouldStop) {
           this.logger.info(`[Worker ${this.workerId}] Stop signal received, releasing unclaimed item ${index + 1}`);
-          // Release the item back to PENDING
           await this.manifest.updateItemAtomic(
             index,
             { status: 'PENDING' },
@@ -332,146 +440,185 @@ export class ParallelWorker {
           break;
         }
 
-        this.logger.info(`[Worker ${this.workerId}] Attempting generation ${index + 1}`);
+        // ── Step 1: Get a video to work with ──────────────────────────
+        let generationOk = false;
 
-        // Generate video (returns result with success, rateLimited, attempted)
-        const result = await this.generator.generate(index, this.prompt);
-        const duration = Math.round((result.durationMs || 0) / 1000);
+        if (this.maxExtendMode) {
+          // Max-extend: navigate to existing permalink, verify video
+          this.logger.info(`[Worker ${this.workerId}] Chain ${index + 1}: navigating to source video`);
+          await this._navigateToSourceVideo();
 
-        // Handle rate limit
-        if (result.rateLimited) {
-          this.logger.warn(`[Worker ${this.workerId}] Rate limit detected during attempt ${index + 1}`);
-          await this.manifest.updateItemAtomic(
-            index,
-            {
-              status: 'RATE_LIMITED',
-              error: result.error,
-              attempts: 0
-            },
-            this.workerId
+          const initialDuration = await this._getVideoDuration();
+          if (initialDuration <= 0) {
+            this.logger.error(`[Worker ${this.workerId}] Chain ${index + 1}: No video found at permalink`);
+            await this.manifest.updateItemAtomic(
+              index,
+              { status: 'FAILED', error: 'No video found at permalink', attempts: 0 },
+              this.workerId
+            );
+            await sleep(2000);
+            continue;
+          }
+
+          if (initialDuration >= config.MAX_VIDEO_DURATION) {
+            this.logger.warn(
+              `[Worker ${this.workerId}] Chain ${index + 1}: Video already at max duration (${initialDuration.toFixed(1)}s), skipping`
+            );
+            await this.manifest.updateItemAtomic(
+              index,
+              { status: 'COMPLETED', error: 'Already at max duration', attempts: 0 },
+              this.workerId
+            );
+            await sleep(2000);
+            continue;
+          }
+
+          this.logger.info(
+            `[Worker ${this.workerId}] Chain ${index + 1}: Source video is ${initialDuration.toFixed(1)}s, extending to ${config.MAX_VIDEO_DURATION}s`
           );
-          throw new Error('RATE_LIMIT_STOP'); // Signal to coordinator
+          generationOk = true;
+
+        } else {
+          // Normal mode: generate a new video
+          this.logger.info(`[Worker ${this.workerId}] Attempting generation ${index + 1}`);
+          await this._ensureOnPermalink();
+
+          const result = await this.generator.generate(index, this.prompt);
+          const duration = Math.round((result.durationMs || 0) / 1000);
+
+          if (result.rateLimited) {
+            this.logger.warn(`[Worker ${this.workerId}] Rate limit detected during attempt ${index + 1}`);
+            await this.manifest.updateItemAtomic(
+              index,
+              { status: 'RATE_LIMITED', error: result.error, attempts: 0 },
+              this.workerId
+            );
+            throw new Error('RATE_LIMIT_STOP');
+          }
+
+          if (result.success) {
+            await this.manifest.updateItemAtomic(
+              index,
+              { status: 'COMPLETED', attempts: result.attempted ? 1 : 0 },
+              this.workerId
+            );
+            if (result.abTestDetected) {
+              await this.manifest.incrementCounterAtomic('abTestCount');
+            }
+            const effectiveResolution = result.actualResolution || this.selectedResolution;
+            const settingsInfo = [this.selectedDuration, effectiveResolution].filter(Boolean).join(', ');
+            const settingsSuffix = settingsInfo ? ` (${settingsInfo})` : '';
+            this.logger.success(
+              `[Worker ${this.workerId}] Attempt ${index + 1}: Success in ${duration}s${settingsSuffix} - ${this.page.url()}`
+            );
+            generationOk = true;
+          } else if (result.contentModerated) {
+            await this.manifest.updateItemAtomic(
+              index,
+              { status: 'CONTENT_MODERATED', error: result.error, attempts: 1 },
+              this.workerId
+            );
+          } else {
+            await this.manifest.updateItemAtomic(
+              index,
+              { status: 'FAILED', error: result.error, attempts: result.attempted ? 1 : 0 },
+              this.workerId
+            );
+            this.logger.error(
+              `[Worker ${this.workerId}] Attempt ${index + 1}: Failed - ${result.error || 'Unknown error'}`
+            );
+
+            // Page may be in a broken state (e.g. prompt input not found).
+            // Reload to give the next attempt a clean slate.
+            this.logger.info(`[Worker ${this.workerId}] Reloading page after failure`);
+            try {
+              await this.page.reload({ waitUntil: 'domcontentloaded', timeout: config.PAGE_LOAD_TIMEOUT });
+              await sleep(3000);
+              await this._waitForReadyUI();
+            } catch (reloadError) {
+              this.logger.warn(`[Worker ${this.workerId}] Page reload failed: ${reloadError.message}`);
+            }
+          }
         }
 
-        // Handle success
-        if (result.success) {
-          await this.manifest.updateItemAtomic(
-            index,
-            {
-              status: 'COMPLETED',
-              attempts: result.attempted ? 1 : 0
-            },
-            this.workerId
-          );
+        // ── Step 2: Extend to max duration (if enabled and we have a video) ──
+        let extResult = null;
+        if (generationOk && this.autoExtend) {
+          extResult = await this._runExtendLoop(this.page.url(), index);
 
-          // Track A/B test occurrences
-          if (result.abTestDetected) {
-            await this.manifest.incrementCounterAtomic('abTestCount');
-          }
-
-          const effectiveResolution = result.actualResolution || this.selectedResolution;
-          const settingsInfo = [this.selectedDuration, effectiveResolution].filter(Boolean).join(', ');
-          const settingsSuffix = settingsInfo ? ` (${settingsInfo})` : '';
-          this.logger.success(
-            `[Worker ${this.workerId}] Attempt ${index + 1}: Success in ${duration}s${settingsSuffix} - ${this.page.url()}`
-          );
-
-          // Post-processing: download and/or delete
-          if (this.postProcessor) {
-            const postResult = await this.postProcessor.process(index);
-
-            // Update manifest with download results
-            if (postResult.downloaded) {
-              await this.manifest.incrementCounterAtomic('downloadedCount');
-              await this.manifest.updateItemAtomic(index, {
-                downloaded: true,
-                downloadPath: postResult.downloadPath,
-              }, this.workerId);
-              this.logger.success(
-                `[Worker ${this.workerId}] Attempt ${index + 1}: Downloaded to ${postResult.downloadPath} (${postResult.fileSize})`
+          if (extResult.rateLimited) {
+            // In max-extend mode, rate limit on extend is fatal (nothing else to do)
+            // — unless the video is already at max duration
+            if (this.maxExtendMode && extResult.successfulExtends === 0 && !extResult.alreadyAtTarget) {
+              this.logger.warn(`[Worker ${this.workerId}] Rate limit during extend chain ${index + 1}`);
+              await this.manifest.updateItemAtomic(
+                index,
+                { status: 'RATE_LIMITED', error: 'Rate limited during extension', attempts: 0 },
+                this.workerId
               );
-            } else if (this.autoDownload) {
-              await this.manifest.incrementCounterAtomic('downloadFailedCount');
-              this.logger.warn(
-                `[Worker ${this.workerId}] Attempt ${index + 1}: Download failed - ${postResult.downloadError}`
-              );
-            }
-
-            // Update manifest with upscale results
-            if (postResult.upscaled) {
-              await this.manifest.incrementCounterAtomic('upscaledCount');
-              await this.manifest.updateItemAtomic(index, {
-                upscaled: true,
-                upscaleDownloadPath: postResult.upscaleDownloadPath,
-              }, this.workerId);
-              this.logger.success(
-                `[Worker ${this.workerId}] Attempt ${index + 1}: Upscaled and downloaded HD to ${postResult.upscaleDownloadPath} (${postResult.upscaleFileSize})`
-              );
-            } else if (this.autoUpscale && postResult.downloaded) {
-              await this.manifest.incrementCounterAtomic('upscaleFailedCount');
-              this.logger.warn(
-                `[Worker ${this.workerId}] Attempt ${index + 1}: Upscale failed - ${postResult.upscaleError}`
-              );
-            }
-
-            // Update manifest with delete results
-            if (postResult.deleted) {
-              await this.manifest.incrementCounterAtomic('deletedCount');
-              await this.manifest.updateItemAtomic(index, { deleted: true }, this.workerId);
-              this.logger.success(
-                `[Worker ${this.workerId}] Attempt ${index + 1}: Deleted from server`
-              );
-            } else if (this.autoDelete && postResult.downloaded) {
-              // Only log delete failure if it wasn't skipped due to upscale failure
-              if (!this.autoUpscale || postResult.upscaled) {
-                await this.manifest.incrementCounterAtomic('deleteFailedCount');
-                this.logger.warn(
-                  `[Worker ${this.workerId}] Attempt ${index + 1}: Delete failed - ${postResult.deleteError}`
-                );
-              } else {
-                this.logger.info(
-                  `[Worker ${this.workerId}] Attempt ${index + 1}: Delete skipped - upscale failed`
-                );
-              }
+              throw new Error('RATE_LIMIT_STOP');
             }
           }
-        } else if (result.contentModerated) {
-          // Content moderation - expected failure, already logged as WARN in generator
-          await this.manifest.updateItemAtomic(
-            index,
-            {
-              status: 'CONTENT_MODERATED',
-              error: result.error,
-              attempts: 1
-            },
-            this.workerId
-          );
-          // No additional logging - generator already logged WARN
-        } else {
-          // Technical failure - unexpected
-          await this.manifest.updateItemAtomic(
-            index,
-            {
-              status: 'FAILED',
-              error: result.error,
-              attempts: result.attempted ? 1 : 0
-            },
-            this.workerId
-          );
 
-          this.logger.error(
-            `[Worker ${this.workerId}] Attempt ${index + 1}: Failed - ${result.error || 'Unknown error'}`
-          );
+          // In max-extend mode with zero successful extends, skip post-processing
+          // to protect the original video — UNLESS the video is already at max duration
+          // (e.g., source was already 30s), in which case it's ready for post-processing.
+          if (this.maxExtendMode && extResult.successfulExtends === 0 && !extResult.alreadyAtTarget) {
+            this.logger.warn(
+              `[Worker ${this.workerId}] Chain ${index + 1}: No extensions succeeded, original video untouched`
+            );
+            await this.manifest.updateItemAtomic(
+              index,
+              { status: 'FAILED', error: 'All extension attempts failed', attempts: 0 },
+              this.workerId
+            );
+            generationOk = false; // Skip post-processing
+          }
+
+          // Navigate back to the last successfully extended video before post-processing.
+          // After rate limit or failed extends, the page may be on the rate-limit screen
+          // or a failed extension URL — not the actual video.
+          if (generationOk && extResult.checkpointUrl) {
+            await this._navigateToCheckpoint(extResult.checkpointUrl, extResult.lastKnownDuration);
+          }
+        }
+
+        // ── Step 3: Post-processing (download / upscale / delete) ──────
+        if (generationOk) {
+          // Only auto-delete if video reached max duration; partial extensions
+          // are preserved on server for future continuation
+          const savedAutoDelete = this.autoDelete;
+          if (this.autoExtend && this.autoDelete) {
+            const finalDuration = await this._getVideoDuration();
+            if (finalDuration < config.MAX_VIDEO_DURATION) {
+              this.autoDelete = false;
+              // Sync to post-processor — it has its own autoDelete property
+              if (this.postProcessor) this.postProcessor.autoDelete = false;
+              this.logger.info(
+                `[Worker ${this.workerId}] Skipping delete — video is ${finalDuration.toFixed(1)}s (< ${config.MAX_VIDEO_DURATION}s), can be extended further`
+              );
+            }
+          }
+          await this._runPostProcessing(index);
+          this.autoDelete = savedAutoDelete;
+          if (this.postProcessor) this.postProcessor.autoDelete = savedAutoDelete;
+        }
+
+        // Propagate rate limit after post-processing partial extensions.
+        // We post-process first (download the partial video) then stop.
+        if (extResult?.rateLimited) {
+          this.logger.warn(`[Worker ${this.workerId}] Rate limit during extend chain ${index + 1}`);
+          throw new Error('RATE_LIMIT_STOP');
         }
 
         // Check if we should stop AFTER completing work
         if (this.shouldStop) {
-          this.logger.info(`[Worker ${this.workerId}] Stop signal received, exiting after completing attempt ${index + 1}`);
+          this.logger.info(`[Worker ${this.workerId}] Stop signal received, exiting after attempt ${index + 1}`);
           stoppedEarly = true;
           break;
         }
 
-        // Small delay between generations
+        // Small delay between items
         await sleep(2000);
       }
 
@@ -486,6 +633,296 @@ export class ParallelWorker {
       throw error;
     } finally {
       this.isRunning = false;
+    }
+  }
+
+  /**
+   * Get the duration (in seconds) of the currently visible video on the page.
+   * Checks both SD and HD video elements, returning the first with a valid duration.
+   * @private
+   * @returns {Promise<number>} Duration in seconds, or 0 if not available
+   */
+  async _getVideoDuration() {
+    try {
+      return await this.page.evaluate((sel) => {
+        const videos = document.querySelectorAll(sel);
+        for (const v of videos) {
+          if ((v.currentSrc || v.src) && v.duration > 0) return v.duration;
+        }
+        return 0;
+      }, selectors.VIDEO_CONTAINER);
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Extend loop: extends the video at checkpointUrl until it reaches max duration (30s).
+   * Retries on content moderation/failures (up to 100 consecutive).
+   * Used by both normal generation (autoExtend) and max-extend mode.
+   *
+   * @param {string} startCheckpointUrl - URL of the video to start extending from
+   * @param {number} index - Manifest item index for logging/counters
+   * @returns {Promise<{successfulExtends: number, rateLimited: boolean, checkpointUrl: string}>}
+   * @private
+   */
+  async _runExtendLoop(startCheckpointUrl, index) {
+    let successfulExtends = 0;
+    let failedAttempts = 0;
+    const maxFailedAttempts = 100;
+    let checkpointUrl = startCheckpointUrl;
+    let rateLimitedOnExtend = false;
+    const targetDuration = config.MAX_VIDEO_DURATION;
+    let lastKnownDuration = 0; // Track duration across extends for diagnostics
+    let alreadyAtTarget = false; // True if video was already at max duration (no extend needed)
+
+    this.logger.debug(`[Worker ${this.workerId}] Extend loop starting — checkpoint: ${checkpointUrl}`);
+
+    while (failedAttempts < maxFailedAttempts && !rateLimitedOnExtend) {
+      this.logger.info(
+        `[Worker ${this.workerId}] Extend ${successfulExtends + 1} (failures: ${failedAttempts})`
+      );
+
+      // Navigate back to checkpoint if we're not on the checkpoint page.
+      // After a failed extension we may be on the extension's /post/ URL (no video)
+      // or redirected to /imagine. Either way, go back to the checkpoint which has
+      // the completed video needed for "Extend video" to appear in the Settings menu.
+      const currentUrl = this.page.url();
+      if (currentUrl !== checkpointUrl) {
+        this.logger.info(`[Worker ${this.workerId}] Navigating to checkpoint ${checkpointUrl}`);
+        await this.page.goto(checkpointUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout: config.PAGE_LOAD_TIMEOUT,
+        });
+        await sleep(3000);
+        await this._waitForReadyUI();
+        await this._waitForVideoLoaded();
+        // Grok may redirect stale/image permalinks to the latest video's permalink.
+        // Accept whatever /post/ URL we land on as the new checkpoint.
+        const landedUrl = this.page.url();
+        if (landedUrl.includes('/imagine/post/') && landedUrl !== checkpointUrl) {
+          this.logger.info(`[Worker ${this.workerId}] Checkpoint redirected to ${landedUrl}`);
+          checkpointUrl = landedUrl;
+        }
+      }
+
+      // Step 1: Trigger extend mode via Settings menu → "Extend video"
+      const triggered = await this.generator.triggerExtendMode(index);
+      if (!triggered) {
+        // Check if the video is already at max duration — "Extend video" won't
+        // appear for videos that have reached Grok's maximum length.
+        const currentDur = await this._getVideoDuration();
+        if (currentDur >= targetDuration) {
+          this.logger.info(
+            `[Worker ${this.workerId}] Extend mode not available — video already at ${currentDur.toFixed(1)}s (max ${targetDuration}s)`
+          );
+          lastKnownDuration = currentDur;
+          checkpointUrl = this.page.url();
+          alreadyAtTarget = true;
+          break;
+        }
+        this.logger.warn(`[Worker ${this.workerId}] Could not trigger extend mode, stopping extends`);
+        break;
+      }
+
+      // Step 2: Select max extend duration (+10s pills)
+      await this._selectMaxDuration(/^\+?\d+s$/);
+
+      // Step 3: Inner retry loop — generate the extension, retrying on content
+      // moderation (just hit generate again, like normal moderation retries).
+      // Break back to outer loop on success, rate limit, or unrecoverable error.
+      while (failedAttempts < maxFailedAttempts) {
+        const extResult = await this.generator.generate(index, this.prompt, { logLabel: 'Extend' });
+        const extDuration = Math.round((extResult.durationMs || 0) / 1000);
+
+        if (extResult.success) {
+          successfulExtends++;
+          failedAttempts = 0; // Reset on success
+          const prevCheckpoint = checkpointUrl;
+          checkpointUrl = this.page.url(); // Advance checkpoint
+          await this.manifest.incrementCounterAtomic('extendedCount');
+
+          const videoDur = await this._getVideoDuration();
+          lastKnownDuration = videoDur;
+
+          // Diagnostic: log checkpoint advancement and URL change
+          if (checkpointUrl === prevCheckpoint) {
+            this.logger.warn(
+              `[Worker ${this.workerId}] Checkpoint URL unchanged after extend ${successfulExtends}: ${checkpointUrl}`
+            );
+          } else {
+            this.logger.debug(
+              `[Worker ${this.workerId}] Checkpoint advanced: ${prevCheckpoint} → ${checkpointUrl}`
+            );
+          }
+
+          this.logger.success(
+            `[Worker ${this.workerId}] Extend ${successfulExtends} succeeded in ${extDuration}s — video now ${videoDur.toFixed(1)}s / ${targetDuration}s`
+          );
+          if (videoDur >= targetDuration) {
+            this.logger.success(
+              `[Worker ${this.workerId}] Reached target duration ${videoDur.toFixed(1)}s`
+            );
+            break; // → exit outer loop
+          }
+          break; // → outer loop continues for next extension
+        } else if (extResult.rateLimited) {
+          await this.manifest.incrementCounterAtomic('extendAttemptCount');
+          this.logger.warn(`[Worker ${this.workerId}] Rate limit during extend, moving on`);
+          this.logger.debug(
+            `[Worker ${this.workerId}] Rate limit page URL: ${this.page.url()} (checkpoint: ${checkpointUrl})`
+          );
+          rateLimitedOnExtend = true;
+          break; // → outer loop exits via flag
+        } else if (extResult.contentModerated) {
+          failedAttempts++;
+          await this.manifest.incrementCounterAtomic('extendAttemptCount');
+          this.logger.warn(
+            `[Worker ${this.workerId}] Extend content moderated (${failedAttempts}/${maxFailedAttempts}), retrying...`
+          );
+
+          // Diagnostic: log page URL on 1st moderation and every 10th (to detect drift without flooding logs)
+          if (failedAttempts === 1 || failedAttempts % 10 === 0) {
+            this.logger.debug(
+              `[Worker ${this.workerId}] Page URL after moderation #${failedAttempts}: ${this.page.url()} (checkpoint: ${checkpointUrl})`
+            );
+          }
+
+          // Cooldown before retry to let stale moderation messages clear
+          await sleep(config.MODERATION_RETRY_COOLDOWN);
+
+          // If page drifted away from /post/, break to outer loop which will
+          // navigate back to checkpoint and re-trigger extend mode.
+          if (!this.page.url().includes('/imagine/post/')) {
+            this.logger.warn(
+              `[Worker ${this.workerId}] Page drifted to ${this.page.url()} after moderation, will re-navigate to checkpoint`
+            );
+            break; // → outer loop handles recovery
+          }
+          // Still on a /post/ page — retry generate directly (UI still in extend mode)
+          continue;
+        } else {
+          failedAttempts++;
+          await this.manifest.incrementCounterAtomic('extendAttemptCount');
+          this.logger.warn(
+            `[Worker ${this.workerId}] Extend failed (${failedAttempts}/${maxFailedAttempts}): ${extResult.error}, retrying...`
+          );
+          // Break to outer loop for recovery (navigate to checkpoint, re-trigger extend)
+          break;
+        }
+      }
+
+      // Re-check duration after inner loop (break from inner goes here)
+      const dur = await this._getVideoDuration();
+      if (dur >= targetDuration) break;
+    }
+
+    if (successfulExtends > 0) {
+      this.logger.info(
+        `[Worker ${this.workerId}] Extend complete: ${successfulExtends} successful extensions`
+      );
+    } else if (failedAttempts >= maxFailedAttempts) {
+      this.logger.warn(
+        `[Worker ${this.workerId}] Extend exhausted ${maxFailedAttempts} retries with no success`
+      );
+    }
+
+    this.logger.debug(
+      `[Worker ${this.workerId}] Extend loop exiting — checkpoint: ${checkpointUrl}, lastDuration: ${lastKnownDuration.toFixed(1)}s, currentPageUrl: ${this.page.url()}`
+    );
+
+    return { successfulExtends, rateLimited: rateLimitedOnExtend, checkpointUrl, lastKnownDuration, alreadyAtTarget };
+  }
+
+  /**
+   * Post-processing: download, upscale, and/or delete the current video.
+   * @param {number} index - Manifest item index
+   * @private
+   */
+  async _runPostProcessing(index) {
+    if (!this.postProcessor) return;
+
+    const postResult = await this.postProcessor.process(index);
+
+    // Update manifest with download results
+    if (postResult.downloaded) {
+      await this.manifest.incrementCounterAtomic('downloadedCount');
+      await this.manifest.updateItemAtomic(index, {
+        downloaded: true,
+        downloadPath: postResult.downloadPath,
+      }, this.workerId);
+      this.logger.success(
+        `[Worker ${this.workerId}] Attempt ${index + 1}: Downloaded to ${postResult.downloadPath} (${postResult.fileSize})`
+      );
+    } else if (this.autoDownload) {
+      await this.manifest.incrementCounterAtomic('downloadFailedCount');
+      this.logger.warn(
+        `[Worker ${this.workerId}] Attempt ${index + 1}: Download failed - ${postResult.downloadError}`
+      );
+    }
+
+    // Update manifest with upscale results
+    if (postResult.upscaled) {
+      await this.manifest.incrementCounterAtomic('upscaledCount');
+      await this.manifest.updateItemAtomic(index, {
+        upscaled: true,
+        upscaleDownloadPath: postResult.upscaleDownloadPath,
+      }, this.workerId);
+      this.logger.success(
+        `[Worker ${this.workerId}] Attempt ${index + 1}: Upscaled and downloaded HD to ${postResult.upscaleDownloadPath} (${postResult.upscaleFileSize})`
+      );
+    } else if (this.autoUpscale && postResult.downloaded) {
+      await this.manifest.incrementCounterAtomic('upscaleFailedCount');
+      this.logger.warn(
+        `[Worker ${this.workerId}] Attempt ${index + 1}: Upscale failed - ${postResult.upscaleError}`
+      );
+    }
+
+    // Update manifest with delete results
+    if (postResult.deleted) {
+      await this.manifest.incrementCounterAtomic('deletedCount');
+      await this.manifest.updateItemAtomic(index, { deleted: true }, this.workerId);
+      this.logger.success(
+        `[Worker ${this.workerId}] Attempt ${index + 1}: Deleted from server`
+      );
+    } else if (this.autoDelete && postResult.downloaded) {
+      // Only log delete failure if it wasn't skipped due to upscale failure
+      if (!this.autoUpscale || postResult.upscaled) {
+        await this.manifest.incrementCounterAtomic('deleteFailedCount');
+        this.logger.warn(
+          `[Worker ${this.workerId}] Attempt ${index + 1}: Delete failed - ${postResult.deleteError}`
+        );
+      } else {
+        this.logger.info(
+          `[Worker ${this.workerId}] Attempt ${index + 1}: Delete skipped - upscale failed`
+        );
+      }
+    }
+  }
+
+  /**
+   * Verify the page is still on the expected permalink, re-navigate if not.
+   * @private
+   */
+  async _ensureOnPermalink() {
+    try {
+      const currentUrl = this.page.url();
+      // The SPA routes to a new /imagine/post/<uuid> on every generation start.
+      // That's expected — stay on whatever post page we're on. Only re-navigate
+      // if we've left Imagine post pages entirely (e.g. "post not found" redirect
+      // to /imagine home).
+      if (currentUrl.includes('/imagine/post/')) {
+        return;
+      }
+      this.logger.warn(`[Worker ${this.workerId}] Page drifted to ${currentUrl}, re-navigating to permalink`);
+      await this.page.goto(this.permalink, {
+        waitUntil: 'domcontentloaded',
+        timeout: config.PAGE_LOAD_TIMEOUT,
+      });
+      await sleep(3000);
+      await this._waitForReadyUI();
+    } catch (error) {
+      this.logger.warn(`[Worker ${this.workerId}] _ensureOnPermalink failed: ${error.message}`);
     }
   }
 
@@ -631,6 +1068,137 @@ export class ParallelWorker {
     } catch (error) {
       this.logger.debug(`[Worker ${this.workerId}] Error detecting remaining videos: ${error.message}`);
       return { count: 0, hasThumbnails: false };
+    }
+  }
+
+  /**
+   * Navigate to the source video for max-extend mode.
+   * Grok auto-redirects permalink URLs to the latest video for that post.
+   * To reach the original, we navigate to the permalink (accepting the redirect),
+   * then find the thumbnail whose img src contains the permalink UUID and click it.
+   * @private
+   */
+  async _navigateToSourceVideo() {
+    await this.page.goto(this.permalink, {
+      waitUntil: 'domcontentloaded',
+      timeout: config.PAGE_LOAD_TIMEOUT,
+    });
+    await sleep(3000);
+    await this._waitForReadyUI();
+    await this._waitForVideoLoaded();
+
+    // If we weren't redirected, we're already on the right video
+    if (this.page.url() === this.permalink) return;
+
+    // Extract UUID from permalink (last path segment)
+    const uuid = this.permalink.split('/').pop();
+    if (!uuid) return;
+
+    // Find the thumbnail whose img src contains the permalink UUID
+    const thumbnails = await this._getVisibleThumbnails();
+    for (const thumb of thumbnails) {
+      const img = await thumb.$('img');
+      if (!img) continue;
+      const src = await img.getAttribute('src').catch(() => '');
+      if (src && src.includes(uuid)) {
+        this.logger.info(`[Worker ${this.workerId}] Clicking source video thumbnail (redirected to latest)`);
+        await thumb.click();
+        await sleep(config.UI_ACTION_DELAY);
+        await this._waitForVideoLoaded();
+        const navDur = await this._getVideoDuration();
+        this.logger.debug(
+          `[Worker ${this.workerId}] Source video after thumbnail click: url=${this.page.url()} duration=${navDur.toFixed(1)}s`
+        );
+        return;
+      }
+    }
+
+    this.logger.warn(`[Worker ${this.workerId}] Could not find source thumbnail for UUID ${uuid}, using current video`);
+    const fallbackDur = await this._getVideoDuration();
+    this.logger.debug(
+      `[Worker ${this.workerId}] Using fallback video: url=${this.page.url()} duration=${fallbackDur.toFixed(1)}s`
+    );
+  }
+
+  /**
+   * Navigate to a checkpoint URL for post-processing, handling Grok's redirect behavior.
+   *
+   * Grok redirects /imagine/post/UUID permalinks to the "latest" video for that post,
+   * which may not be the video we want. If a redirect is detected, we find the correct
+   * video via its thumbnail (matching the checkpoint UUID in the thumbnail img src)
+   * and click it — the same strategy used in _navigateToSourceVideo.
+   *
+   * @param {string} checkpointUrl - The /imagine/post/UUID URL of the target video
+   * @param {number} expectedDuration - Duration (seconds) the video should be, for diagnostics
+   * @private
+   */
+  async _navigateToCheckpoint(checkpointUrl, expectedDuration = 0) {
+    const currentUrl = this.page.url();
+    if (currentUrl === checkpointUrl) {
+      this.logger.debug(
+        `[Worker ${this.workerId}] Already on checkpoint URL, no navigation needed: ${currentUrl}`
+      );
+      return;
+    }
+
+    this.logger.info(`[Worker ${this.workerId}] Navigating to checkpoint for post-processing`);
+    this.logger.debug(
+      `[Worker ${this.workerId}] Post-processing nav: from=${currentUrl} to=${checkpointUrl}`
+    );
+    await this.page.goto(checkpointUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: config.PAGE_LOAD_TIMEOUT,
+    });
+    await sleep(3000);
+    await this._waitForReadyUI();
+    await this._waitForVideoLoaded();
+
+    const landedUrl = this.page.url();
+    const landedDuration = await this._getVideoDuration();
+
+    // If Grok redirected us to a different video, try to find the correct one via thumbnails
+    if (landedUrl !== checkpointUrl) {
+      this.logger.warn(
+        `[Worker ${this.workerId}] Post-processing checkpoint redirected: expected=${checkpointUrl} landed=${landedUrl}`
+      );
+
+      // Extract the UUID from the checkpoint URL and look for it in thumbnails
+      const checkpointUuid = checkpointUrl.match(/\/imagine\/post\/([a-f0-9-]+)/i)?.[1];
+      if (checkpointUuid) {
+        const thumbnails = await this._getVisibleThumbnails();
+        for (const thumb of thumbnails) {
+          const img = await thumb.$('img');
+          if (!img) continue;
+          const src = await img.getAttribute('src').catch(() => '');
+          if (src && src.includes(checkpointUuid)) {
+            this.logger.info(
+              `[Worker ${this.workerId}] Found checkpoint video in thumbnails, clicking (UUID: ${checkpointUuid.substring(0, 8)})`
+            );
+            await thumb.click();
+            await sleep(config.UI_ACTION_DELAY);
+            await this._waitForVideoLoaded();
+            const recoveredDuration = await this._getVideoDuration();
+            this.logger.debug(
+              `[Worker ${this.workerId}] Recovered checkpoint: url=${this.page.url()} duration=${recoveredDuration.toFixed(1)}s`
+            );
+            return;
+          }
+        }
+        this.logger.warn(
+          `[Worker ${this.workerId}] Could not find checkpoint thumbnail for UUID ${checkpointUuid.substring(0, 8)}, using redirected video`
+        );
+      }
+    }
+
+    // Log duration match/mismatch for diagnostics
+    if (expectedDuration > 0 && Math.abs(landedDuration - expectedDuration) > 1) {
+      this.logger.warn(
+        `[Worker ${this.workerId}] Post-processing duration mismatch: expected=${expectedDuration.toFixed(1)}s actual=${landedDuration.toFixed(1)}s at ${landedUrl}`
+      );
+    } else {
+      this.logger.debug(
+        `[Worker ${this.workerId}] Post-processing checkpoint OK: duration=${landedDuration.toFixed(1)}s at ${landedUrl}`
+      );
     }
   }
 

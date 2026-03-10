@@ -6,7 +6,34 @@ Automates Grok Imagine video generation via Playwright. Runs 1-100 parallel work
 - `npm start accounts add <alias>` — Add account (opens browser for login)
 - `npm start accounts list` — List accounts
 - `node src/cli.js run start --config batch-config.json` — Start batch run
+- `node src/cli.js run max-extend --config max-extend-config.json` — Extend existing video to 30s
 - `npm test` — Validate imports
+
+## Auto-Extend
+When `autoExtend: true` is set (in config or via `--auto-extend` flag), each generated video is automatically extended to the maximum 30s duration. Videos that don't reach 30s (e.g., due to rate limits) are downloaded/upscaled but not deleted — they can be extended further in a future run.
+
+## Max-Extend Mode
+Extends an existing short video (< 30s) to the maximum 30s duration. Multiple workers branch independently from the same source video, producing parallel extension chains for curation. Uses the same extend loop as auto-extend.
+
+Example:
+```bash
+node src/cli.js run max-extend \
+  --account my-account \
+  --permalink "https://grok.com/imagine/post/abc123" \
+  --prompt "pixel art style, looping aesthetic" \
+  --count 5 \
+  --parallel 3 \
+  --auto-download \
+  --auto-upscale \
+  --auto-delete
+```
+
+- `--count` = number of independent extension chains (each aims for 30s)
+- `--parallel` = number of workers running chains simultaneously
+- `--auto-delete` deletes only extensions that reached 30s, never the original video
+- Each chain: source video → extend → extend → ... → 30s → download/upscale/delete
+- Content moderation retries automatically (up to 100 times per chain)
+- Rate limit stops the affected worker (after downloading any partial extensions); other workers continue
 
 ## Key Files
 - `src/cli.js` — CLI entry point
@@ -30,6 +57,19 @@ Automates Grok Imagine video generation via Playwright. Runs 1-100 parallel work
 - **Content moderation is expected** — log as WARN, never ERROR
 - **Never print prompt text** to CLI or logs (privacy)
 - **UI selectors** are in `src/config.js` — update there, not inline
+
+## Grok UI Notes (updated March 2026)
+- **Dual video elements**: Grok now renders `<video id="sd-video">` (visible, has `src`) and `<video id="hd-video">` (hidden, no `src` until HD ready). Always use `currentSrc` or `v.currentSrc || v.src` — never `getAttribute('src')`.
+- **Progress indicator**: Progress is shown as a floating overlay pill with `<span class="tabular-nums">15%</span>`. Detected via `span.tabular-nums` selector + `getBoundingClientRect` visibility check. The old `offsetParent` approach fails on overlay-positioned elements.
+- **Extend video**: The Settings button (`aria-label="Settings"`) shows "Extend video" as a menu item when a video is already generated. No need to use the "More options" (`...`) menu.
+- **Permalink redirect**: Navigating to a post permalink auto-redirects to the latest video for that post. Both `_navigateToSourceVideo()` and `_navigateToCheckpoint()` handle this by matching the target UUID against thumbnail `img src` attributes and clicking the correct thumbnail (SPA navigation, no reload).
+- **Rate limits are separate**: Generation and extension have independent rate limits. Extension rate limit breaks the extend loop, navigates to the checkpoint URL for post-processing (download partial video), then throws `RATE_LIMIT_STOP`.
+- **Extend loop**: Extends until video reaches 30s (duration-based). Content moderation and errors retry up to 100 times. Auto-delete only runs if video reached 30s; partial extensions are preserved for future continuation. If the video is already at 30s (max duration), the extend loop detects this when "Extend video" is unavailable and treats it as a success (ready for post-processing).
+- **Checkpoint recovery**: After the extend loop exits (rate limit, exhausted retries, etc.), the page may not be on the video. `_navigateToCheckpoint()` navigates to the checkpoint URL, detects Grok's redirect, and recovers the correct video via thumbnail navigation if needed.
+- **Page recovery**: After a generation failure in normal mode (e.g., "Prompt input not found"), the page is reloaded to give the next attempt a clean slate. Content moderation doesn't trigger recovery (the page is fine). Max-extend mode navigates fresh each chain, so it self-recovers.
+- **Delete safety**: In max-extend mode, post-processing only runs if at least one extension succeeded (or the video is already at max duration), so the original video is never deleted. In both modes, auto-delete is suppressed for videos under 30s. The worker must sync `autoDelete` to *both* `this.autoDelete` and `this.postProcessor.autoDelete` since the PostProcessor has its own copy of the flag.
+- **Download filenames**: Format is `YYMMDD-HHmmss_UUID8_DURs.mp4` (e.g., `260309-152031_8e181808_30s.mp4`). HD upscales append `_hd` before the extension (e.g., `260309-152031_8e181808_30s_hd.mp4`). Duplicates are prefixed with `DUPLICATE_`. UUID is extracted from the page URL (`/imagine/post/UUID`), falling back to video src pattern.
+- **Log labels**: `generator.generate()` accepts `options.logLabel` (default `"Attempt"`) to distinguish generation vs extension in logs. The extend loop passes `{ logLabel: 'Extend' }` so log lines read `[Extend N]` instead of `[Attempt N]`.
 
 ## When to Read More
 - Setup or install issues → `docs/quickstart.md`

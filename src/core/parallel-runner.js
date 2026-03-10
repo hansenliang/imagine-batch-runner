@@ -23,6 +23,8 @@ export class ParallelRunner {
       autoDelete = false,
       selectMaxDuration = false,
       selectMaxResolution = false,
+      autoExtend = false,
+      maxExtendMode = false,
       downloadAndDeleteRemainingVideos = false,
       logFilePath = null,  // Optional: caller can specify exact log file path
     } = options;
@@ -41,6 +43,8 @@ export class ParallelRunner {
     this.autoDelete = downloadAndDeleteRemainingVideos ? true : autoDelete;
     this.selectMaxDuration = selectMaxDuration;
     this.selectMaxResolution = selectMaxResolution;
+    this.autoExtend = autoExtend;
+    this.maxExtendMode = maxExtendMode;
 
     // Runtime state
     // If logFilePath provided, use it; otherwise default to logs/runs/<jobName>.log
@@ -74,6 +78,11 @@ export class ParallelRunner {
     await this.logger.info(`Batch size: ${this.batchSize}`);
     await this.logger.info(`Parallelism: ${this.parallelism} workers`);
     await this.logger.info(`Permalink: ${this.permalink}`);
+    if (this.maxExtendMode) {
+      await this.logger.info(`Mode: max-extend (target ${config.MAX_VIDEO_DURATION}s)`);
+    } else if (this.autoExtend) {
+      await this.logger.info(`Auto-extend: enabled (target ${config.MAX_VIDEO_DURATION}s)`);
+    }
     if (this.downloadAndDeleteRemainingVideos) {
       await this.logger.info('downloadAndDeleteRemainingVideos enabled - autoDownload and autoDelete forced to true');
     }
@@ -116,6 +125,8 @@ export class ParallelRunner {
             autoDelete: this.autoDelete,
             selectMaxDuration: this.selectMaxDuration,
             selectMaxResolution: this.selectMaxResolution,
+            autoExtend: this.autoExtend,
+            maxExtendMode: this.maxExtendMode,
             downloadAndDeleteRemainingVideos: this.downloadAndDeleteRemainingVideos,
             downloadDir: this.downloadDir,
             jobName: this.jobName,
@@ -145,7 +156,8 @@ export class ParallelRunner {
       }
 
       // Start all workers in parallel
-      await this.logger.info('Starting parallel video generation...');
+      const modeLabel = this.maxExtendMode ? 'max-extend' : 'video generation';
+      await this.logger.info(`Starting parallel ${modeLabel}...`);
       const workerPromises = successfulWorkers.map(worker =>
         worker.run().catch(error => {
           // Catch errors but don't stop other workers
@@ -299,6 +311,12 @@ export class ParallelRunner {
         console.log(chalk.yellow(`    Delete failed: ${summary.deleteFailed}`));
       }
     }
+    if (summary.extended > 0) {
+      console.log(chalk.green(`    Extended: ${summary.extended}`));
+      if (summary.extendAttempts > summary.extended) {
+        console.log(chalk.yellow(`    Extend retries: ${summary.extendAttempts - summary.extended}`));
+      }
+    }
     if (summary.abTestCount > 0) {
       console.log(chalk.gray(`  A/B tests auto-dismissed: ${summary.abTestCount}`));
     }
@@ -342,6 +360,12 @@ export class ParallelRunner {
       await this.logger.logToFileOnly(`  Deleted: ${summary.deleted}`);
       if (summary.deleteFailed > 0) {
         await this.logger.logToFileOnly(`  Delete failed: ${summary.deleteFailed}`);
+      }
+    }
+    if (summary.extended > 0) {
+      await this.logger.logToFileOnly(`  Extended: ${summary.extended}`);
+      if (summary.extendAttempts > summary.extended) {
+        await this.logger.logToFileOnly(`  Extend retries: ${summary.extendAttempts - summary.extended}`);
       }
     }
     if (summary.abTestCount > 0) {

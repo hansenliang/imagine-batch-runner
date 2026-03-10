@@ -18,6 +18,16 @@ export class VideoGenerator {
   constructor(page, logger) {
     this.page = page;
     this.logger = logger;
+    this._logLabel = 'Attempt'; // Default label; overridden per generate() call
+  }
+
+  /**
+   * Format the log prefix for the current attempt (e.g. "[Attempt 4]" or "[Extend 4]")
+   * @param {number} index - Zero-based attempt index
+   * @returns {string}
+   */
+  _tag(index) {
+    return `[${this._logLabel} ${index + 1}]`;
   }
 
   /**
@@ -25,8 +35,14 @@ export class VideoGenerator {
    * Returns: { success, rateLimited, attempted, error }
    *
    * See claude.md "Generation Outcome Classification" for outcome definitions and logging levels.
+   * @param {number} index - Attempt index for logging
+   * @param {string} prompt - The prompt to use
+   * @param {Object} [options] - Optional settings
+   * @param {string} [options.logLabel] - Label prefix for log messages (e.g. "Extend" vs default "Attempt")
    */
-  async generate(index, prompt) {
+  async generate(index, prompt, options = {}) {
+    // Store label on instance so inner methods (_waitForCompletion etc.) can use it
+    this._logLabel = options.logLabel || 'Attempt';
     let lastError = null;
     const startTime = Date.now();
 
@@ -53,7 +69,7 @@ export class VideoGenerator {
     } catch (error) {
       // Rate limit detected before generation starts - doesn't count as attempt
       if (error.message?.includes('RATE_LIMIT')) {
-        this.logger.warn(`[Attempt ${index + 1}] Rate limit detected (not attempted)`);
+        this.logger.warn(`${this._tag(index)} Rate limit detected (not attempted)`);
         return {
           success: false,
           rateLimited: true,
@@ -80,7 +96,7 @@ export class VideoGenerator {
 
     // Non-rate-limit error = failed attempt
     const duration = Date.now() - startTime;
-    this.logger.error(`[Attempt ${index + 1}] Failed: ${lastError?.message}`);
+    this.logger.error(`${this._tag(index)} Failed: ${lastError?.message}`);
 
     return {
       success: false,
@@ -113,11 +129,13 @@ export class VideoGenerator {
   }
 
   /**
-   * Click the "Make video" or "Redo" button
+   * Click the generation submit button.
+   * New UI: button[aria-label="Make video"] wrapping an arrow SVG.
+   * Old UI: button with text "Make video" or "Redo".
    */
   async _clickGenerationButton(index) {
     await this._dismissBanners();
-    this.logger.debug(`[Attempt ${index + 1}] Looking for generation button`);
+    this.logger.debug(`${this._tag(index)} Looking for generation button`);
 
     const waitTimeout = Math.max(3000, config.ELEMENT_WAIT_TIMEOUT);
     await Promise.race([
@@ -133,9 +151,10 @@ export class VideoGenerator {
     let buttonLabel = null;
 
     if (!button) {
-      const promptButton = await this._findGenerationButtonNearPrompt(index);
-      if (promptButton) {
-        button = promptButton;
+      const promptResult = await this._findGenerationButtonNearPrompt(index);
+      if (promptResult.element) {
+        button = promptResult.element;
+        buttonLabel = promptResult.label;
       }
     }
 
@@ -183,7 +202,7 @@ export class VideoGenerator {
         }
 
         this.logger.debug(
-          `[Attempt ${index + 1}] Visible buttons: ${visibleLabels.join(' | ') || 'none'}`
+          `${this._tag(index)} Visible buttons: ${visibleLabels.join(' | ') || 'none'}`
         );
       }
     }
@@ -192,29 +211,31 @@ export class VideoGenerator {
       throw new Error('Generation button not found');
     }
 
-    const buttonText = buttonLabel || await button.textContent();
-    this.logger.debug(`[Attempt ${index + 1}] Found button: "${buttonText}"`);
+    const buttonText = buttonLabel || await button.textContent().catch(() => '(unknown)');
+    this.logger.debug(`${this._tag(index)} Found button: "${buttonText}"`);
 
     // Check if button is disabled (might indicate rate limit)
-    const isDisabled = await button.isDisabled();
+    const isDisabled = await button.isDisabled().catch(() => false);
     if (isDisabled) {
       throw new Error('RATE_LIMIT: Generation button is disabled');
     }
 
     await button.click();
-    this.logger.debug(`[Attempt ${index + 1}] Clicked generation button`);
+    this.logger.debug(`${this._tag(index)} Clicked generation button`);
 
     // Wait for UI to respond
     await sleep(config.UI_ACTION_DELAY);
   }
 
   /**
-   * Find the generation button near the prompt input field
+   * Find the generation button near the prompt input field.
+   * Returns: { element, label } or { element: null }
    */
   async _findGenerationButtonNearPrompt(index) {
+    const empty = { element: null, label: null };
     try {
       const promptInput = await this.page.$(selectors.PROMPT_INPUT);
-      if (!promptInput) return null;
+      if (!promptInput) return empty;
 
       const containerHandle = await promptInput.evaluateHandle((el) => {
         return (
@@ -228,10 +249,10 @@ export class VideoGenerator {
         );
       });
       const container = containerHandle.asElement();
-      if (!container) return null;
+      if (!container) return empty;
 
       const candidates = await container.$$('button, [role="button"]');
-      if (candidates.length === 0) return null;
+      if (candidates.length === 0) return empty;
 
       const matchers = [
         /make\s+video/i,
@@ -274,14 +295,14 @@ export class VideoGenerator {
 
       if (best) {
         this.logger.debug(
-          `[Attempt ${index + 1}] Found prompt-adjacent button: "${bestLabel || 'icon-only'}" (score=${bestScore})`
+          `${this._tag(index)} Found prompt-adjacent button: "${bestLabel || 'icon-only'}" (score=${bestScore})`
         );
       }
 
-      return best;
+      return { element: best, label: bestLabel };
     } catch (error) {
-      this.logger.debug(`[Attempt ${index + 1}] Prompt-adjacent button lookup failed: ${error.message}`);
-      return null;
+      this.logger.debug(`${this._tag(index)} Prompt-adjacent button lookup failed: ${error.message}`);
+      return empty;
     }
   }
 
@@ -292,38 +313,57 @@ export class VideoGenerator {
     // Wait for prompt input to be available
     const waitTimeout = Math.max(5000, config.ELEMENT_WAIT_TIMEOUT);
     let promptInput;
-    
+
     try {
       await this.page.waitForSelector(selectors.PROMPT_INPUT, { timeout: waitTimeout });
       promptInput = await this.page.$(selectors.PROMPT_INPUT);
     } catch (error) {
-      throw new Error(`Prompt input not found after ${waitTimeout}ms`);
+      const currentPath = this.page.url().replace(/https?:\/\/[^/]+/, '');
+      throw new Error(`Prompt input not found after ${waitTimeout}ms (page: ${currentPath})`);
     }
 
     if (!promptInput) {
       throw new Error('Prompt input element not found');
     }
 
-    // Read current value
-    const currentValue = await promptInput.inputValue().catch(() => '');
-    
+    // Detect if this is a contenteditable element (TipTap/ProseMirror) vs native input/textarea
+    const isContentEditable = await promptInput.evaluate(
+      (el) => el.getAttribute('contenteditable') === 'true'
+    ).catch(() => false);
+
+    // Read current value (different API for contenteditable vs native input)
+    const currentValue = isContentEditable
+      ? await promptInput.innerText().catch(() => '')
+      : await promptInput.inputValue().catch(() => '');
+
     // Only fill if value doesn't match
     if (currentValue.trim() === prompt.trim()) {
-      this.logger.debug(`[Attempt ${index + 1}] Prompt already set correctly`);
+      this.logger.debug(`${this._tag(index)} Prompt already set correctly`);
       return;
     }
 
-    // Clear and fill with correct prompt
-    await promptInput.click({ clickCount: 3 }); // Triple-click to select all
-    await promptInput.fill(prompt);
-    
+    // Playwright's fill() supports both native inputs and contenteditable elements.
+    // Click to focus first, then fill. Fall back to pressSequentially if fill() fails.
+    await promptInput.click();
+    try {
+      await promptInput.fill(prompt);
+    } catch (fillError) {
+      this.logger.debug(`${this._tag(index)} fill() failed (${fillError.message}), falling back to pressSequentially`);
+      await this.page.keyboard.press('Control+a');
+      await this.page.keyboard.press('Backspace');
+      await promptInput.pressSequentially(prompt, { delay: 10 });
+    }
+
     // Verify the value was set correctly
-    const verifyValue = await promptInput.inputValue().catch(() => '');
+    const verifyValue = isContentEditable
+      ? await promptInput.innerText().catch(() => '')
+      : await promptInput.inputValue().catch(() => '');
+
     if (verifyValue.trim() !== prompt.trim()) {
       throw new Error(`Prompt verification failed: expected "${prompt.slice(0, 50)}..." but got "${verifyValue.slice(0, 50)}..."`);
     }
-    
-    this.logger.debug(`[Attempt ${index + 1}] Prompt entered and verified`);
+
+    this.logger.debug(`${this._tag(index)} Prompt entered and verified`);
   }
 
   /**
@@ -426,7 +466,7 @@ export class VideoGenerator {
         const isVisible = await video.isVisible().catch(() => false);
         if (!isVisible) continue;
 
-        const src = await video.getAttribute('src').catch(() => null);
+        const src = await video.evaluate(v => v.currentSrc || v.src || '').catch(() => '');
         const duration = await video.evaluate(v => v.duration).catch(() => 0);
 
         if (src && duration > 0) {
@@ -473,7 +513,7 @@ export class VideoGenerator {
         if (button) {
           const isButtonVisible = await button.isVisible().catch(() => false);
           if (isButtonVisible) {
-            this.logger.info(`[Attempt ${index + 1}] A/B test detected, selecting first variation`);
+            this.logger.info(`${this._tag(index)} A/B test detected, selecting first variation`);
             await button.click();
             await sleep(2000); // Wait for UI transition
             return true;
@@ -481,36 +521,123 @@ export class VideoGenerator {
         }
       }
 
-      this.logger.warn(`[Attempt ${index + 1}] A/B test detected but could not find dismiss button`);
+      this.logger.warn(`${this._tag(index)} A/B test detected but could not find dismiss button`);
       return false;
     } catch (error) {
-      this.logger.warn(`[Attempt ${index + 1}] A/B test dismissal error: ${error.message}`);
+      this.logger.warn(`${this._tag(index)} A/B test dismissal error: ${error.message}`);
       return false;
     }
   }
 
   /**
-   * Detect progress percentage in button text (e.g., "45%", "100%")
-   * Grok shows generation progress as percentage text in the button area
+   * Trigger extend mode by clicking "..." menu → "Extend video".
+   * After this, the UI transitions to extend mode where generate() can be called
+   * with the same prompt to extend the video.
+   * @param {number} index - Current attempt index for logging
+   * @returns {Promise<boolean>} - Whether extend mode was triggered successfully
+   */
+  async triggerExtendMode(index) {
+    try {
+      await this._dismissBanners();
+
+      // Step 1: Click the Settings button (same button used for mode selection).
+      // When a video is already generated, its menu includes "Extend video".
+      const settingsButton = await this.page.$(selectors.SETTINGS_BUTTON);
+      if (!settingsButton) {
+        this.logger.debug(`${this._tag(index)} Settings button not found for extend`);
+        return false;
+      }
+
+      const isVisible = await settingsButton.isVisible().catch(() => false);
+      if (!isVisible) {
+        this.logger.debug(`${this._tag(index)} Settings button not visible for extend`);
+        return false;
+      }
+
+      await settingsButton.click();
+      await sleep(config.UI_ACTION_DELAY);
+
+      // Step 2: Click "Extend video" menu item
+      let extendItem = await this.page.$(selectors.EXTEND_MENU_ITEM);
+
+      // Fallback: scan menu items for extend text
+      if (!extendItem) {
+        const menuItems = await this.page.$$('[role="menuitem"]');
+        for (const item of menuItems) {
+          const itemVisible = await item.isVisible().catch(() => false);
+          if (!itemVisible) continue;
+          const text = await item.innerText().catch(() => '');
+          if (/extend\s+video/i.test(text)) {
+            extendItem = item;
+            break;
+          }
+        }
+      }
+
+      if (!extendItem) {
+        this.logger.debug(`${this._tag(index)} Extend video menu item not found in Settings menu`);
+        await this.page.keyboard.press('Escape');
+        return false;
+      }
+
+      const itemVisible = await extendItem.isVisible().catch(() => false);
+      if (!itemVisible) {
+        this.logger.debug(`${this._tag(index)} Extend video menu item not visible`);
+        await this.page.keyboard.press('Escape');
+        return false;
+      }
+
+      await extendItem.click();
+      await sleep(config.UI_ACTION_DELAY);
+
+      this.logger.debug(`${this._tag(index)} Extend mode triggered via Settings menu`);
+      return true;
+    } catch (error) {
+      this.logger.debug(`${this._tag(index)} Extend mode trigger failed: ${error.message}`);
+      try { await this.page.keyboard.press('Escape'); } catch { /* ignore */ }
+      return false;
+    }
+  }
+
+  /**
+   * Detect progress percentage anywhere on screen (e.g., "Generating 16%", "45%")
+   * New UI shows progress as overlay text on the video area, not inside a button.
+   * Uses DOM tree walker for efficient full-page scan.
    */
   async _detectProgressPercentage() {
     try {
-      const candidates = await this.page.$$('button, [role="button"]');
-
-      for (const candidate of candidates) {
-        const isVisible = await candidate.isVisible().catch(() => false);
-        if (!isVisible) continue;
-
-        const text = await candidate.innerText().catch(() => '');
-        // Match patterns like "45%", "100%", "0%"
-        const percentMatch = text.match(/(\d{1,3})%/);
-        if (percentMatch) {
-          return {
-            detected: true,
-            percentage: parseInt(percentMatch[1], 10),
-            text: text.trim(),
-          };
+      const result = await this.page.evaluate(() => {
+        // Strategy 1: Look for the tabular-nums span (new UI progress indicator)
+        const tabularSpans = document.querySelectorAll('span.tabular-nums');
+        for (const span of tabularSpans) {
+          const match = span.textContent.match(/(\d{1,3})%/);
+          if (match) {
+            const rect = span.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              return { percentage: parseInt(match[1], 10), text: span.textContent.trim() };
+            }
+          }
         }
+
+        // Strategy 2: TreeWalker fallback for any visible percentage text
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          const match = walker.currentNode.textContent.match(/(\d{1,3})%/);
+          if (match) {
+            const el = walker.currentNode.parentElement;
+            if (el) {
+              const rect = el.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) {
+                return { percentage: parseInt(match[1], 10), text: el.innerText.trim() };
+              }
+            }
+          }
+        }
+        return null;
+      });
+
+      if (result) {
+        return { detected: true, percentage: result.percentage, text: result.text };
       }
       return { detected: false, percentage: null, text: null };
     } catch (error) {
@@ -523,10 +650,11 @@ export class VideoGenerator {
    */
   async _verifyVideoPlayable(videoElement) {
     try {
-      // 1. Check if video has src attribute
-      const src = await videoElement.getAttribute('src');
+      // 1. Check if video has a source (currentSrc works regardless of whether
+      // src is on the <video> tag, via <source> children, or set programmatically)
+      const src = await videoElement.evaluate(v => v.currentSrc || v.src || '');
       if (!src) {
-        this.logger.debug('Video verification failed: no src attribute');
+        this.logger.debug('Video verification failed: no src/currentSrc');
         return false;
       }
 
@@ -578,13 +706,13 @@ export class VideoGenerator {
         const downgrade = await this._detectResolutionDowngrade();
         if (downgrade.detected) {
           actualResolution = downgrade.actualResolution;
-          this.logger.info(`[Attempt ${index + 1}] Resolution downgraded: ${downgrade.message}`);
+          this.logger.info(`${this._tag(index)} Resolution downgraded: ${downgrade.message}`);
         }
       }
 
       // Log once when generation starts
       if (generationInProgress && !loggedStart) {
-        this.logger.info(`[Attempt ${index + 1}] Generation started: ${percentageProgress.percentage}%`);
+        this.logger.info(`${this._tag(index)} Generation started: ${percentageProgress.percentage}%`);
         loggedStart = true;
       }
 
@@ -603,48 +731,61 @@ export class VideoGenerator {
               // Verify we're back to normal state (single video)
               const recheck = await this._detectABTest();
               if (recheck.detected) {
-                this.logger.warn(`[Attempt ${index + 1}] A/B test still present after dismiss attempt`);
+                this.logger.warn(`${this._tag(index)} A/B test still present after dismiss attempt`);
               }
             }
-            this.logger.success(`[Attempt ${index + 1}] Video ready and verified (A/B test dismissed)`);
+            this.logger.success(`${this._tag(index)} Video ready and verified (A/B test dismissed)`);
             return { success: true, actualResolution, abTestDetected: true };
           }
 
-          this.logger.success(`[Attempt ${index + 1}] Video ready and verified`);
+          this.logger.success(`${this._tag(index)} Video ready and verified`);
           return { success: true, actualResolution, abTestDetected: false };
         }
       }
 
       // 2. Always check for timeout
       if (elapsed > config.VIDEO_GENERATION_TIMEOUT / 1000) {
-        this.logger.error(`[Attempt ${index + 1}] Generation timeout after ${elapsed}s`);
+        this.logger.error(`${this._tag(index)} Generation timeout after ${elapsed}s`);
         throw new Error(`TIMEOUT: Video generation exceeded ${config.VIDEO_GENERATION_TIMEOUT / 1000}s`);
       }
 
-      // 3. Only check for errors when % is 0 or not visible
+      // 3. Check if page drifted away from Imagine post page (e.g. error → /imagine home)
+      if (!this.page.url().includes('/imagine/post/')) {
+        const driftUrl = this.page.url();
+        this.logger.warn(`${this._tag(index)} Page navigated away to ${driftUrl}`);
+        throw new Error(`PAGE_DRIFTED: Page navigated to ${driftUrl}`);
+      }
+
+      // 4. Only check for errors when % is 0 or not visible
       // This prevents false positives from stale toasts while generation is in progress
       if (!generationInProgress) {
-        const rateLimit = await this._detectRateLimit();
-        if (rateLimit.detected) {
-          this.logger.warn(`[Attempt ${index + 1}] Rate limit detected: ${rateLimit.message}`);
-          throw new Error(`RATE_LIMIT: ${rateLimit.message}`);
+        // Only check rate limit if generation was never observed in progress.
+        // Once progress was seen (loggedStart), the generation was accepted by the
+        // server — progress disappearing means "video loading", not "rate limited".
+        // Account-wide rate limit toasts from other workers would cause false positives here.
+        if (!loggedStart) {
+          const rateLimit = await this._detectRateLimit();
+          if (rateLimit.detected) {
+            this.logger.warn(`${this._tag(index)} Rate limit detected: ${rateLimit.message}`);
+            throw new Error(`RATE_LIMIT: ${rateLimit.message}`);
+          }
         }
 
         const moderation = await this._detectContentModeration();
         if (moderation.detected) {
-          this.logger.warn(`[Attempt ${index + 1}] Content moderation detected: ${moderation.message}`);
+          this.logger.warn(`${this._tag(index)} Content moderation detected: ${moderation.message}`);
           throw new Error(`CONTENT_MODERATED: ${moderation.message}`);
         }
 
         const networkError = await this._detectNetworkError();
         if (networkError.detected) {
-          this.logger.warn(`[Attempt ${index + 1}] Network error detected: ${networkError.message}`);
+          this.logger.warn(`${this._tag(index)} Network error detected: ${networkError.message}`);
           throw new Error(`NETWORK_ERROR: ${networkError.message}`);
         }
 
         const genError = await this._detectGenerationError();
         if (genError.detected) {
-          this.logger.warn(`[Attempt ${index + 1}] Generation error detected: ${genError.message}`);
+          this.logger.warn(`${this._tag(index)} Generation error detected: ${genError.message}`);
           throw new Error(`GENERATION_ERROR: ${genError.message}`);
         }
       }

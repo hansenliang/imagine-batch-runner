@@ -102,6 +102,8 @@ export class AutoRunner {
       totalDeleted: 0,
       totalDeleteFailed: 0,
       totalABTestCount: 0,
+      totalExtended: 0,
+      totalExtendAttempts: 0,
       totalCleanupDownloaded: 0,
       totalCleanupDeleted: 0,
       totalCleanupFailed: 0,
@@ -276,6 +278,8 @@ export class AutoRunner {
       deleted: 0,
       deleteFailed: 0,
       abTestCount: 0,
+      extended: 0,
+      extendAttempts: 0,
       cleanupDownloaded: 0,
       cleanupDeleted: 0,
       cleanupFailed: 0,
@@ -315,6 +319,8 @@ export class AutoRunner {
         cycleStats.deleted += result.deleted || 0;
         cycleStats.deleteFailed += result.deleteFailed || 0;
         cycleStats.abTestCount += result.abTestCount || 0;
+        cycleStats.extended += result.extended || 0;
+        cycleStats.extendAttempts += result.extendAttempts || 0;
         cycleStats.cleanupDownloaded += result.cleanupDownloaded || 0;
         cycleStats.cleanupDeleted += result.cleanupDeleted || 0;
         cycleStats.cleanupFailed += result.cleanupFailed || 0;
@@ -353,6 +359,8 @@ export class AutoRunner {
     this.sessionStats.totalDeleted += cycleStats.deleted;
     this.sessionStats.totalDeleteFailed += cycleStats.deleteFailed;
     this.sessionStats.totalABTestCount += cycleStats.abTestCount;
+    this.sessionStats.totalExtended += cycleStats.extended;
+    this.sessionStats.totalExtendAttempts += cycleStats.extendAttempts;
     this.sessionStats.totalCleanupDownloaded += cycleStats.cleanupDownloaded;
     this.sessionStats.totalCleanupDeleted += cycleStats.cleanupDeleted;
     this.sessionStats.totalCleanupFailed += cycleStats.cleanupFailed;
@@ -416,6 +424,7 @@ export class AutoRunner {
         autoDownload: configData.autoDownload !== false,  // default true
         autoUpscale: configData.autoUpscale !== false,    // default true
         autoDelete: configData.autoDelete || false,       // default false
+        autoExtend: configData.autoExtend || false,         // default false (disabled)
         downloadAndDeleteRemainingVideos: configData.downloadAndDeleteRemainingVideos || false, // default false
         selectMaxDuration: configData.selectMaxDuration || false,   // default false
         selectMaxResolution: configData.selectMaxResolution || false, // default false
@@ -446,6 +455,8 @@ export class AutoRunner {
         deleted: summary.deleted || 0,
         deleteFailed: summary.deleteFailed || 0,
         abTestCount: summary.abTestCount || 0,
+        extended: summary.extended || 0,
+        extendAttempts: summary.extendAttempts || 0,
         cleanupDownloaded: summary.cleanupDownloaded || 0,
         cleanupDeleted: summary.cleanupDeleted || 0,
         cleanupFailed: summary.cleanupFailed || 0,
@@ -702,6 +713,9 @@ export class AutoRunner {
     if (this.sessionStats.totalDeleted > 0) {
       lines.push(`    Deleted: ${this.sessionStats.totalDeleted}`);
     }
+    if (this.sessionStats.totalExtended > 0) {
+      lines.push(`    Extended: ${this.sessionStats.totalExtended}`);
+    }
     if (this.sessionStats.totalABTestCount > 0) {
       lines.push(`  A/B tests auto-dismissed: ${this.sessionStats.totalABTestCount}`);
     }
@@ -740,6 +754,9 @@ export class AutoRunner {
       }
       if (cycle.stats.deleted > 0) {
         lines.push(`    Deleted: ${cycle.stats.deleted}`);
+      }
+      if (cycle.stats.extended > 0) {
+        lines.push(`    Extended: ${cycle.stats.extended}`);
       }
       if (cycle.stats.abTestCount > 0) {
         lines.push(`  A/B tests auto-dismissed: ${cycle.stats.abTestCount}`);
@@ -798,6 +815,12 @@ export class AutoRunner {
         console.log(chalk.yellow(`  Delete failed: ${this.sessionStats.totalDeleteFailed}`));
       }
     }
+    if (this.sessionStats.totalExtended > 0) {
+      console.log(chalk.green(`  Extended: ${this.sessionStats.totalExtended}`));
+      if (this.sessionStats.totalExtendAttempts > this.sessionStats.totalExtended) {
+        console.log(chalk.yellow(`  Extend retries: ${this.sessionStats.totalExtendAttempts - this.sessionStats.totalExtended}`));
+      }
+    }
     if (this.sessionStats.totalABTestCount > 0) {
       console.log(chalk.gray(`  A/B tests auto-dismissed: ${this.sessionStats.totalABTestCount}`));
     }
@@ -825,6 +848,12 @@ export class AutoRunner {
     if (this.sessionStats.totalDeleted > 0 || this.sessionStats.totalDeleteFailed > 0) {
       await this.logger.info(`  Deleted: ${this.sessionStats.totalDeleted}`);
       await this.logger.info(`  Delete failed: ${this.sessionStats.totalDeleteFailed}`);
+    }
+    if (this.sessionStats.totalExtended > 0) {
+      await this.logger.info(`  Extended: ${this.sessionStats.totalExtended}`);
+      if (this.sessionStats.totalExtendAttempts > this.sessionStats.totalExtended) {
+        await this.logger.info(`  Extend retries: ${this.sessionStats.totalExtendAttempts - this.sessionStats.totalExtended}`);
+      }
     }
     if (this.sessionStats.totalABTestCount > 0) {
       await this.logger.info(`  A/B tests auto-dismissed: ${this.sessionStats.totalABTestCount}`);

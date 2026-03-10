@@ -10,16 +10,36 @@ function sleep(ms) {
 }
 
 /**
- * Format timestamp for filenames (YYYYMMDD-HHmmss)
+ * Format timestamp for filenames (YYMMDD-HHmmss)
  */
 function formatTimestamp(date = new Date()) {
-  const year = date.getFullYear();
+  const year = String(date.getFullYear()).slice(-2);
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   const hours = String(date.getHours()).padStart(2, '0');
   const minutes = String(date.getMinutes()).padStart(2, '0');
   const seconds = String(date.getSeconds()).padStart(2, '0');
   return `${year}${month}${day}-${hours}${minutes}${seconds}`;
+}
+
+/**
+ * Get video duration in whole seconds from the page's video element.
+ * @param {import('playwright').Page} page
+ * @returns {Promise<number>} Duration in seconds (rounded), or 0 if unavailable
+ */
+async function getVideoDurationSeconds(page) {
+  try {
+    const dur = await page.evaluate((sel) => {
+      const videos = document.querySelectorAll(sel);
+      for (const v of videos) {
+        if ((v.currentSrc || v.src) && v.duration > 0) return v.duration;
+      }
+      return 0;
+    }, selectors.VIDEO_CONTAINER);
+    return Math.round(dur);
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -245,9 +265,13 @@ export class PostProcessor {
     // Check for duplicates
     const duplicateCheck = await this._checkForDuplicate(uuid8);
 
-    // Generate filename with timestamp and UUID
+    // Get video duration for filename
+    const durationSec = await getVideoDurationSeconds(this.page);
+    const durTag = durationSec > 0 ? `${durationSec}s` : 'unknown';
+
+    // Generate filename: YYMMDD-HHmmss_UUID8_DURs.mp4
     const timestamp = formatTimestamp();
-    const baseFilename = `video_${timestamp}_${uuid8}.mp4`;
+    const baseFilename = `${timestamp}_${uuid8}_${durTag}.mp4`;
     const filename = duplicateCheck.isDuplicate ? `DUPLICATE_${baseFilename}` : baseFilename;
     const filePath = path.join(this.downloadDir, filename);
 
@@ -256,11 +280,8 @@ export class PostProcessor {
     }
 
     try {
-      // Set up download handler and click button
-      const [download] = await Promise.all([
-        this.page.waitForEvent('download', { timeout: config.DOWNLOAD_TIMEOUT }),
-        downloadButton.click(),
-      ]);
+      // Click button and wait for download (handles both same-page and new-tab downloads)
+      const download = await this._clickAndWaitForDownload(downloadButton);
 
       // Save the download to our target path
       await download.saveAs(filePath);
@@ -303,22 +324,37 @@ export class PostProcessor {
   }
 
   /**
-   * Extract video UUID from the current video's src URL
-   * URL pattern: /generated/{UUID}/...
+   * Extract video UUID from the current video's src URL or the page URL.
+   * Strategy 1: Video src pattern /generated/{UUID}/...
+   * Strategy 2: Page URL pattern /imagine/post/{UUID}
    * @private
    * @returns {Promise<string|null>} UUID or null if not found
    */
   async _extractVideoUUID() {
     try {
+      // Strategy 1: Extract from video element's src URL
       const video = await this.page.$(selectors.VIDEO_CONTAINER);
-      if (!video) return null;
+      if (video) {
+        // Use currentSrc (handles dual video elements and programmatic src).
+        // getAttribute('src') fails when src is set via <source> children or JS.
+        const src = await video.evaluate(v => v.currentSrc || v.src || '').catch(() => '');
+        if (src) {
+          const match = src.match(/\/generated\/([a-f0-9-]+)\//i);
+          if (match) return match[1];
+          this.logger.debug(`Video src does not match /generated/UUID/ pattern: ${src.substring(0, 120)}`);
+        }
+      }
 
-      const src = await video.getAttribute('src').catch(() => null);
-      if (!src) return null;
+      // Strategy 2: Extract from page URL (/imagine/post/{UUID})
+      const pageUrl = this.page.url();
+      const pageMatch = pageUrl.match(/\/imagine\/post\/([a-f0-9-]+)/i);
+      if (pageMatch) {
+        this.logger.debug(`UUID extracted from page URL: ${pageMatch[1]}`);
+        return pageMatch[1];
+      }
 
-      // Extract UUID from pattern /generated/{UUID}/
-      const match = src.match(/\/generated\/([a-f0-9-]+)\//i);
-      return match ? match[1] : null;
+      this.logger.debug(`UUID extraction: no video src match and page URL not a post permalink: ${pageUrl}`);
+      return null;
     } catch (error) {
       this.logger.debug(`UUID extraction failed: ${error.message}`);
       return null;
@@ -412,6 +448,48 @@ export class PostProcessor {
     } catch (error) {
       this.logger.debug(`Download button search failed: ${error.message}`);
       return null;
+    }
+  }
+
+  /**
+   * Click a download button and wait for the download, handling both same-page
+   * downloads and new-tab downloads (Grok may use either).
+   * @private
+   * @param {import('playwright').ElementHandle} button - The download button to click
+   * @returns {Promise<import('playwright').Download>} The Playwright Download object
+   */
+  async _clickAndWaitForDownload(button) {
+    const context = this.page.context();
+    let newPage = null;
+
+    // Set up both listeners BEFORE clicking so we don't miss events
+    const samePagePromise = this.page.waitForEvent('download', { timeout: config.DOWNLOAD_TIMEOUT })
+      .then(download => ({ download, source: 'same-page' }));
+
+    const newTabPromise = context.waitForEvent('page', { timeout: config.DOWNLOAD_TIMEOUT })
+      .then(async (page) => {
+        newPage = page;
+        const download = await page.waitForEvent('download', { timeout: config.DOWNLOAD_TIMEOUT });
+        return { download, source: 'new-tab' };
+      });
+
+    // Suppress unhandled rejections on the losing race promise
+    samePagePromise.catch(() => {});
+    newTabPromise.catch(() => {});
+
+    // Click the download button
+    await button.click();
+
+    try {
+      // Race: whichever download path fires first wins
+      const result = await Promise.race([samePagePromise, newTabPromise]);
+      this.logger.debug(`Download initiated via ${result.source}`);
+      return result.download;
+    } finally {
+      // Always close the extra tab if one was opened
+      if (newPage && !newPage.isClosed()) {
+        await newPage.close().catch(() => {});
+      }
     }
   }
 
@@ -835,12 +913,12 @@ export class PostProcessor {
     let uuid8ForTracking = null; // Track UUID for standalone HD downloads
     
     if (originalPath) {
-      // Derive from original: video_TIMESTAMP_UUID.mp4 -> video_TIMESTAMP_UUID_hd.mp4
+      // Derive from original: YYMMDD-HHmmss_UUID8_DURs.mp4 -> YYMMDD-HHmmss_UUID8_DURs_hd.mp4
       const originalFilename = path.basename(originalPath, '.mp4');
       // Remove DUPLICATE_ prefix if present for HD version naming
       const cleanFilename = originalFilename.replace(/^DUPLICATE_/, '');
       hdFilename = `${cleanFilename}_hd.mp4`;
-      
+
       // Check if original was a duplicate - if so, HD should also be marked
       if (originalFilename.startsWith('DUPLICATE_')) {
         hdFilename = `DUPLICATE_${cleanFilename}_hd.mp4`;
@@ -851,10 +929,12 @@ export class PostProcessor {
       const uuid8 = uuid ? uuid.substring(0, 8) : 'unknown';
       uuid8ForTracking = uuid8 !== 'unknown' ? uuid8 : null;
       const timestamp = formatTimestamp();
-      
+      const durationSec = await getVideoDurationSeconds(this.page);
+      const durTag = durationSec > 0 ? `${durationSec}s` : 'unknown';
+
       // Check for duplicates (for HD-only downloads during cleanup)
       const duplicateCheck = await this._checkForDuplicate(uuid8);
-      const baseFilename = `video_${timestamp}_${uuid8}_hd.mp4`;
+      const baseFilename = `${timestamp}_${uuid8}_${durTag}_hd.mp4`;
       hdFilename = duplicateCheck.isDuplicate ? `DUPLICATE_${baseFilename}` : baseFilename;
       
       if (duplicateCheck.isDuplicate) {
@@ -864,11 +944,8 @@ export class PostProcessor {
     const hdFilePath = path.join(this.downloadDir, hdFilename);
 
     try {
-      // Set up download handler and click button
-      const [download] = await Promise.all([
-        this.page.waitForEvent('download', { timeout: config.DOWNLOAD_TIMEOUT }),
-        downloadButton.click(),
-      ]);
+      // Click button and wait for download (handles both same-page and new-tab downloads)
+      const download = await this._clickAndWaitForDownload(downloadButton);
 
       // Save the download to our target path
       await download.saveAs(hdFilePath);

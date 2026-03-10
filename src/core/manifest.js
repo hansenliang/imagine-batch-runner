@@ -50,6 +50,8 @@ export class ManifestManager {
       deletedCount: 0,
       deleteFailedCount: 0,
       abTestCount: 0,
+      extendedCount: 0,        // successful video extensions
+      extendAttemptCount: 0,   // total extend attempts (including failures)
       cleanupDownloadedCount: 0,
       cleanupDeletedCount: 0,
       cleanupFailedCount: 0,
@@ -251,6 +253,8 @@ export class ManifestManager {
       deleted: this.manifest.deletedCount || 0,
       deleteFailed: this.manifest.deleteFailedCount || 0,
       abTestCount: this.manifest.abTestCount || 0,
+      extended: this.manifest.extendedCount || 0,
+      extendAttempts: this.manifest.extendAttemptCount || 0,
       cleanupDownloaded: this.manifest.cleanupDownloadedCount || 0,
       cleanupDeleted: this.manifest.cleanupDeletedCount || 0,
       cleanupFailed: this.manifest.cleanupFailedCount || 0,
