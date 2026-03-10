@@ -614,46 +614,36 @@ export class VideoGenerator {
     try {
       await this._dismissBanners();
 
-      // Step 1: Pause ALL videos. Grok's React player ignores bare v.pause() calls
-      // (it re-triggers play via its own state), so we:
-      //   a) Click the visible video (simulates user pause — toggles Grok's internal state)
-      //   b) Monkey-patch video.play() on ALL video elements to prevent Grok from resuming
-      //   c) Call v.pause() as belt-and-suspenders
-      //   d) Seek all videos to the target time
+      // Step 1: Wait for the video to load fully (Grok stacks two video elements
+      // and may not have the video ready immediately), then click the Pause button
+      // (aria-label="Pause") to pause via Grok's own UI. Clicking the video itself
+      // does NOT toggle play/pause — only the Pause button works.
+      this.logger.info(`${this._tag(index)} Extend-from-frame: waiting for Pause button`);
 
-      // Find the visible video element first (for clicking)
-      const visibleVideo = await this.page.evaluateHandle((sel) => {
-        const videos = document.querySelectorAll(sel);
-        for (const v of videos) {
-          if ((v.currentSrc || v.src) && v.offsetParent !== null) return v;
+      let pauseBtn = null;
+      for (let wait = 0; wait < 10; wait++) {
+        pauseBtn = await this.page.$('button[aria-label="Pause"]');
+        if (pauseBtn) {
+          const isVis = await pauseBtn.isVisible().catch(() => false);
+          if (isVis) break;
+          pauseBtn = null;
         }
-        // Fallback: any video with a src
-        for (const v of videos) {
-          if (v.currentSrc || v.src) return v;
-        }
-        return videos[0] || null;
-      }, selectors.VIDEO_CONTAINER);
-
-      const videoEl = visibleVideo.asElement();
-      if (!videoEl) {
-        this.logger.info(`${this._tag(index)} Extend-from-frame: no visible video element found`);
-        return false;
+        await sleep(500);
       }
 
-      // Click the video to pause via Grok's own UI (like a user would)
-      const videoVisible = await videoEl.isVisible().catch(() => false);
-      if (videoVisible) {
-        await videoEl.click();
-        this.logger.info(`${this._tag(index)} Extend-from-frame: clicked video to pause`);
-        await sleep(300);
+      if (pauseBtn) {
+        await pauseBtn.click();
+        this.logger.info(`${this._tag(index)} Extend-from-frame: clicked Pause button`);
+        await sleep(500);
+      } else {
+        this.logger.info(`${this._tag(index)} Extend-from-frame: Pause button not found, proceeding with JS pause`);
       }
 
-      // Now monkey-patch play(), pause all videos, and seek
+      // Monkey-patch play() on ALL video elements to prevent Grok from resuming,
+      // call v.pause() as belt-and-suspenders, then seek to target time.
       const seeked = await this.page.evaluate(
         ({ sel, targetTime }) => {
           const videos = document.querySelectorAll(sel);
-          // Monkey-patch play() on all videos to block Grok from resuming playback.
-          // Store original so we can restore later if needed.
           for (const v of videos) {
             if (!v._origPlay) {
               v._origPlay = v.play.bind(v);
@@ -661,7 +651,6 @@ export class VideoGenerator {
             }
             try { v.pause(); } catch (_) { /* ignore */ }
           }
-          // Seek all videos that have a duration
           let result = { seeked: false, paused: false };
           for (const v of videos) {
             if (v.duration > 0) {
@@ -685,22 +674,36 @@ export class VideoGenerator {
       this.logger.info(
         `${this._tag(index)} Extend-from-frame: seeked to ${seeked.currentTime.toFixed(1)}s / ${seeked.duration.toFixed(1)}s (paused=${seeked.paused})`
       );
-      await sleep(500); // Let the seek settle
+      await sleep(500);
 
-      // Verify pause actually stuck
+      // Verify pause stuck
       const pauseCheck = await this.page.evaluate((sel) => {
         const videos = document.querySelectorAll(sel);
-        return [...videos].map(v => ({ src: !!(v.currentSrc || v.src), paused: v.paused, time: v.currentTime }));
+        return [...videos].map(v => ({ id: v.id, src: !!(v.currentSrc || v.src), paused: v.paused, time: v.currentTime.toFixed(1) }));
       }, selectors.VIDEO_CONTAINER);
       this.logger.info(
         `${this._tag(index)} Extend-from-frame: pause check — ${JSON.stringify(pauseCheck)}`
       );
 
-      // Step 2: Hover over the video to reveal player controls.
-      // We already have videoEl from step 1.
-      if (videoVisible) {
-        await videoEl.hover();
-        await sleep(500);
+      // Step 2: Find the visible video element and hover to reveal player controls.
+      const visibleVideo = await this.page.evaluateHandle((sel) => {
+        const videos = document.querySelectorAll(sel);
+        for (const v of videos) {
+          if ((v.currentSrc || v.src) && v.offsetParent !== null) return v;
+        }
+        for (const v of videos) {
+          if (v.currentSrc || v.src) return v;
+        }
+        return videos[0] || null;
+      }, selectors.VIDEO_CONTAINER);
+
+      const videoEl = visibleVideo.asElement();
+      if (videoEl) {
+        const videoVisible = await videoEl.isVisible().catch(() => false);
+        if (videoVisible) {
+          await videoEl.hover();
+          await sleep(500);
+        }
       }
 
       // Step 3: Find the progress bar and hover over it.
