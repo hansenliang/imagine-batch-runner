@@ -676,63 +676,18 @@ export class VideoGenerator {
       );
       await sleep(500);
 
-      // Verify pause stuck
-      const pauseCheck = await this.page.evaluate((sel) => {
-        const videos = document.querySelectorAll(sel);
-        return [...videos].map(v => ({ id: v.id, src: !!(v.currentSrc || v.src), paused: v.paused, time: v.currentTime.toFixed(1) }));
-      }, selectors.VIDEO_CONTAINER);
-      this.logger.info(
-        `${this._tag(index)} Extend-from-frame: pause check — ${JSON.stringify(pauseCheck)}`
-      );
-
-      // Step 2: Find the visible video element and hover to reveal player controls.
-      const visibleVideo = await this.page.evaluateHandle((sel) => {
-        const videos = document.querySelectorAll(sel);
-        for (const v of videos) {
-          if ((v.currentSrc || v.src) && v.offsetParent !== null) return v;
-        }
-        for (const v of videos) {
-          if (v.currentSrc || v.src) return v;
-        }
-        return videos[0] || null;
-      }, selectors.VIDEO_CONTAINER);
-
-      // Hover using mouse coordinates — Grok stacks hd-video on top of sd-video
-      // in a CSS grid (col-start-1 row-start-1), so element.hover() on sd-video
-      // fails with "hd-video intercepts pointer events". page.mouse.move() bypasses
-      // Playwright's pointer interception check entirely.
-      const videoEl = visibleVideo.asElement();
-      if (videoEl) {
-        const box = await videoEl.boundingBox().catch(() => null);
-        if (box) {
-          await this.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-          this.logger.info(`${this._tag(index)} Extend-from-frame: hovered video area via mouse.move`);
-          await sleep(500);
-        }
-      }
-
-      // Step 3: Find the progress bar and hover over it.
-      // The progress bar has a distinctive class pattern: opacity-0, cursor-pointer,
-      // rounded-full, with a child div that shows progress width.
-      // We try multiple strategies to locate and hover it.
-      let extendButton = null;
-
-      // Strategy A: Hover the video area and look for the progress bar by class pattern
-      extendButton = await this._hoverProgressBarAndFindButton(index);
-
-      // Strategy B: Force-reveal via JS if hover didn't work
-      if (!extendButton) {
-        this.logger.info(`${this._tag(index)} Extend-from-frame: hover strategy didn't reveal button, trying JS force-reveal`);
-        extendButton = await this._forceRevealExtendFromFrame(index);
-      }
+      // Step 2: Reveal the "extend from frame" button and click it.
+      // The button only appears when hovering the progress bar area at the bottom
+      // of the video player. We try hover, mouse.move, then JS force-reveal.
+      const extendButton = await this._revealAndFindExtendButton(index);
 
       if (!extendButton) {
-        this.logger.info(`${this._tag(index)} Extend-from-frame: "Extend from frame" button not found after all strategies`);
+        this.logger.info(`${this._tag(index)} Extend-from-frame: button not found after all strategies`);
         await this._restoreVideoPlay();
         return false;
       }
 
-      // Step 4: Click the button, then restore play() so generation can proceed
+      // Step 3: Click the button, then restore play() so generation can proceed
       await extendButton.click();
       await sleep(config.UI_ACTION_DELAY);
       await this._restoreVideoPlay();
@@ -765,129 +720,85 @@ export class VideoGenerator {
   }
 
   /**
-   * Hover over the video progress bar to reveal the "extend from frame" button.
-   * The progress bar is an opacity-0 div with cursor-pointer that becomes visible on hover.
+   * Reveal the "extend from frame" button by hovering the progress bar area.
+   * Tries three strategies in order:
+   *   1. element.hover() on the progress bar's parent container
+   *   2. page.mouse.move() to the container's coordinates (bypasses pointer interception)
+   *   3. JS force-reveal: set opacity, remove opacity-0, dispatch synthetic mouse events
+   *
+   * The progress bar DOM structure:
+   *   <div class="flex flex-col ... w-full h-8 ...">  ← parent container (hover zone)
+   *     <div class="... cursor-pointer rounded-full opacity-0 h-1">  ← progress bar
+   *       <div style="width: N%"></div>  ← fill
+   *
    * @param {number} index - Attempt index for logging
    * @returns {Promise<import('playwright').ElementHandle|null>}
    * @private
    */
-  async _hoverProgressBarAndFindButton(index) {
+  async _revealAndFindExtendButton(index) {
     try {
-      // The progress bar is a tiny opacity-0 h-1 div inside a taller h-8 container.
-      // The CSS :hover trigger zone is the PARENT container, not the bar itself.
-      // DOM structure:
-      //   <div class="flex flex-col justify-center items-center w-full h-8 px-2 relative">  ← hover this
-      //     <div class="... cursor-pointer rounded-full opacity-0 h-1">                      ← progress bar
-      //       <div class="..." style="width: N%"></div>                                       ← fill
-      //     </div>
-      //   </div>
+      // Locate the progress bar's parent container (the actual hover zone)
       const hoverTarget = await this.page.evaluateHandle(() => {
         const candidates = document.querySelectorAll('div.cursor-pointer.rounded-full');
         for (const el of candidates) {
           if (!el.querySelector('div')) continue;
           const style = window.getComputedStyle(el);
-          const isProgressBar = style.opacity === '0' || el.classList.contains('opacity-0');
-          if (isProgressBar && el.parentElement) {
-            // Return the parent container — the actual hover zone
+          if ((style.opacity === '0' || el.classList.contains('opacity-0')) && el.parentElement) {
             return el.parentElement;
           }
         }
-        // Broader fallback: any cursor-pointer rounded-full with a child div
+        // Fallback: any cursor-pointer rounded-full with a child div
         for (const el of candidates) {
-          if (el.querySelector('div') && el.parentElement) {
-            return el.parentElement;
-          }
+          if (el.querySelector('div') && el.parentElement) return el.parentElement;
         }
         return null;
       });
 
       const hoverEl = hoverTarget.asElement();
-      if (!hoverEl) {
-        this.logger.info(`${this._tag(index)} Extend-from-frame: progress bar container not found on page`);
-        return null;
+
+      // Strategy 1: element.hover() on the progress bar container
+      if (hoverEl) {
+        this.logger.info(`${this._tag(index)} Extend-from-frame: hovering progress bar container`);
+        await hoverEl.hover();
+        await sleep(800);
+
+        let button = await this._findExtendFromFrameButton();
+        if (button) return button;
+
+        // Strategy 2: mouse.move to coordinates (bypasses Playwright pointer interception)
+        this.logger.info(`${this._tag(index)} Extend-from-frame: trying mouse.move coordinates`);
+        const box = await hoverEl.boundingBox();
+        if (box) {
+          await this.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+          await sleep(1000);
+          button = await this._findExtendFromFrameButton();
+          if (button) return button;
+        }
+      } else {
+        this.logger.info(`${this._tag(index)} Extend-from-frame: progress bar container not found`);
       }
 
-      // Hover the container to trigger CSS :hover and reveal controls
-      this.logger.info(`${this._tag(index)} Extend-from-frame: hovering progress bar container (element.hover)`);
-      await hoverEl.hover();
-      await sleep(800); // Give CSS transitions time (duration-300 = 300ms)
-
-      // Check for the button
-      let button = await this._findExtendFromFrameButton();
-      if (button) {
-        this.logger.info(`${this._tag(index)} Extend-from-frame: button found after element.hover`);
-        return button;
-      }
-
-      // Fallback: use raw mouse coordinates at the bottom of the visible video.
-      // Sometimes Playwright's element.hover() doesn't trigger CSS :hover reliably
-      // on overlay-positioned elements, but page.mouse.move() with real coords does.
-      this.logger.info(`${this._tag(index)} Extend-from-frame: element.hover didn't reveal button, trying mouse.move coordinates`);
-      const box = await hoverEl.boundingBox();
-      if (box) {
-        await this.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-        await sleep(1000);
-        button = await this._findExtendFromFrameButton();
-      }
-
-      return button;
-    } catch (error) {
-      this.logger.debug(`${this._tag(index)} Progress bar hover failed: ${error.message}`);
-      return null;
-    }
-  }
-
-  /**
-   * Force-reveal the "extend from frame" button via JavaScript.
-   * Sets opacity on hidden overlay elements and dispatches mouseover events.
-   * @param {number} index - Attempt index for logging
-   * @returns {Promise<import('playwright').ElementHandle|null>}
-   * @private
-   */
-  async _forceRevealExtendFromFrame(index) {
-    try {
-      // Force-reveal: set opacity on the progress bar and its container,
-      // then dispatch mouse events on the container to trigger React hover state.
+      // Strategy 3: JS force-reveal — set opacity, dispatch synthetic mouse events
+      this.logger.info(`${this._tag(index)} Extend-from-frame: trying JS force-reveal`);
       await this.page.evaluate(() => {
-        // Target the progress bar specifically and its parent container
-        const candidates = document.querySelectorAll('div.cursor-pointer.rounded-full');
-        for (const el of candidates) {
+        for (const el of document.querySelectorAll('div.cursor-pointer.rounded-full')) {
           if (!el.querySelector('div')) continue;
-          // Reveal the bar itself
           el.style.opacity = '1';
           el.classList.remove('opacity-0');
-          // Dispatch hover events on the parent container (the hover zone)
-          const container = el.parentElement;
-          if (container) {
-            container.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-            container.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+          if (el.parentElement) {
+            el.parentElement.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+            el.parentElement.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
           }
         }
-        // Also reveal all opacity-0 elements near videos as a broad fallback
-        const hiddenEls = document.querySelectorAll('.opacity-0');
-        for (const el of hiddenEls) {
+        for (const el of document.querySelectorAll('.opacity-0')) {
           el.style.opacity = '1';
-          el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-          el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-        }
-        // Dispatch hover on video elements to trigger React hover state
-        const videos = document.querySelectorAll('video');
-        for (const v of videos) {
-          let parent = v.parentElement;
-          for (let i = 0; i < 5 && parent; i++) {
-            parent.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-            parent.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-            parent = parent.parentElement;
-          }
         }
       });
-
       await sleep(800);
 
-      const button = await this._findExtendFromFrameButton();
-      return button;
+      return await this._findExtendFromFrameButton();
     } catch (error) {
-      this.logger.debug(`${this._tag(index)} Force-reveal failed: ${error.message}`);
+      this.logger.debug(`${this._tag(index)} Reveal extend button failed: ${error.message}`);
       return null;
     }
   }
