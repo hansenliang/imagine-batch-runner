@@ -106,6 +106,7 @@ export class AutoRunner {
       totalExtendAttempts: 0,
       totalCleanupDownloaded: 0,
       totalCleanupDeleted: 0,
+      totalCleanupSkipped: 0,
       totalCleanupFailed: 0,
       parallelism: 0,
     };
@@ -282,6 +283,7 @@ export class AutoRunner {
       extendAttempts: 0,
       cleanupDownloaded: 0,
       cleanupDeleted: 0,
+      cleanupSkipped: 0,
       cleanupFailed: 0,
       parallelism: 0,
       status: 'COMPLETED',
@@ -323,6 +325,7 @@ export class AutoRunner {
         cycleStats.extendAttempts += result.extendAttempts || 0;
         cycleStats.cleanupDownloaded += result.cleanupDownloaded || 0;
         cycleStats.cleanupDeleted += result.cleanupDeleted || 0;
+        cycleStats.cleanupSkipped += result.cleanupSkipped || 0;
         cycleStats.cleanupFailed += result.cleanupFailed || 0;
         cycleStats.parallelism = Math.max(cycleStats.parallelism, parallelism);
 
@@ -363,6 +366,7 @@ export class AutoRunner {
     this.sessionStats.totalExtendAttempts += cycleStats.extendAttempts;
     this.sessionStats.totalCleanupDownloaded += cycleStats.cleanupDownloaded;
     this.sessionStats.totalCleanupDeleted += cycleStats.cleanupDeleted;
+    this.sessionStats.totalCleanupSkipped += cycleStats.cleanupSkipped;
     this.sessionStats.totalCleanupFailed += cycleStats.cleanupFailed;
     this.sessionStats.parallelism = Math.max(this.sessionStats.parallelism, cycleStats.parallelism);
 
@@ -460,6 +464,7 @@ export class AutoRunner {
         extendAttempts: summary.extendAttempts || 0,
         cleanupDownloaded: summary.cleanupDownloaded || 0,
         cleanupDeleted: summary.cleanupDeleted || 0,
+        cleanupSkipped: summary.cleanupSkipped || 0,
         cleanupFailed: summary.cleanupFailed || 0,
         stopReason: summary.stopReason,
       };
@@ -720,8 +725,11 @@ export class AutoRunner {
     if (this.sessionStats.totalABTestCount > 0) {
       lines.push(`  A/B tests auto-dismissed: ${this.sessionStats.totalABTestCount}`);
     }
-    if (this.sessionStats.totalCleanupDownloaded > 0 || this.sessionStats.totalCleanupDeleted > 0 || this.sessionStats.totalCleanupFailed > 0) {
-      lines.push(`  Cleanup: ${this.sessionStats.totalCleanupDownloaded} downloaded, ${this.sessionStats.totalCleanupDeleted} deleted, ${this.sessionStats.totalCleanupFailed} failed`);
+    if (this.sessionStats.totalCleanupDownloaded > 0 || this.sessionStats.totalCleanupDeleted > 0 || this.sessionStats.totalCleanupSkipped > 0 || this.sessionStats.totalCleanupFailed > 0) {
+      const cp = [`${this.sessionStats.totalCleanupDownloaded} downloaded`, `${this.sessionStats.totalCleanupDeleted} deleted`];
+      if (this.sessionStats.totalCleanupSkipped > 0) cp.push(`${this.sessionStats.totalCleanupSkipped} kept (< 30s)`);
+      cp.push(`${this.sessionStats.totalCleanupFailed} failed`);
+      lines.push(`  Cleanup: ${cp.join(', ')}`);
     }
     lines.push('---');
     lines.push('');
@@ -762,8 +770,11 @@ export class AutoRunner {
       if (cycle.stats.abTestCount > 0) {
         lines.push(`  A/B tests auto-dismissed: ${cycle.stats.abTestCount}`);
       }
-      if (cycle.stats.cleanupDownloaded > 0 || cycle.stats.cleanupDeleted > 0 || cycle.stats.cleanupFailed > 0) {
-        lines.push(`  Cleanup: ${cycle.stats.cleanupDownloaded} downloaded, ${cycle.stats.cleanupDeleted} deleted, ${cycle.stats.cleanupFailed} failed`);
+      if (cycle.stats.cleanupDownloaded > 0 || cycle.stats.cleanupDeleted > 0 || cycle.stats.cleanupSkipped > 0 || cycle.stats.cleanupFailed > 0) {
+        const cp = [`${cycle.stats.cleanupDownloaded} downloaded`, `${cycle.stats.cleanupDeleted} deleted`];
+        if (cycle.stats.cleanupSkipped > 0) cp.push(`${cycle.stats.cleanupSkipped} kept (< 30s)`);
+        cp.push(`${cycle.stats.cleanupFailed} failed`);
+        lines.push(`  Cleanup: ${cp.join(', ')}`);
       }
       lines.push('---');
       lines.push('');
@@ -825,8 +836,11 @@ export class AutoRunner {
     if (this.sessionStats.totalABTestCount > 0) {
       console.log(chalk.gray(`  A/B tests auto-dismissed: ${this.sessionStats.totalABTestCount}`));
     }
-    if (this.sessionStats.totalCleanupDownloaded > 0 || this.sessionStats.totalCleanupDeleted > 0 || this.sessionStats.totalCleanupFailed > 0) {
-      console.log(chalk.cyan(`  Cleanup: ${this.sessionStats.totalCleanupDownloaded} downloaded, ${this.sessionStats.totalCleanupDeleted} deleted, ${this.sessionStats.totalCleanupFailed} failed`));
+    if (this.sessionStats.totalCleanupDownloaded > 0 || this.sessionStats.totalCleanupDeleted > 0 || this.sessionStats.totalCleanupSkipped > 0 || this.sessionStats.totalCleanupFailed > 0) {
+      const cp = [`${this.sessionStats.totalCleanupDownloaded} downloaded`, `${this.sessionStats.totalCleanupDeleted} deleted`];
+      if (this.sessionStats.totalCleanupSkipped > 0) cp.push(`${this.sessionStats.totalCleanupSkipped} kept (< 30s)`);
+      cp.push(`${this.sessionStats.totalCleanupFailed} failed`);
+      console.log(chalk.cyan(`  Cleanup: ${cp.join(', ')}`));
     }
     console.log(chalk.gray(`\nSummary log: ${this.summaryLogPath}`));
     console.log(chalk.gray(`Detailed logs: ${this.sessionDir}\n`));
@@ -859,8 +873,11 @@ export class AutoRunner {
     if (this.sessionStats.totalABTestCount > 0) {
       await this.logger.info(`  A/B tests auto-dismissed: ${this.sessionStats.totalABTestCount}`);
     }
-    if (this.sessionStats.totalCleanupDownloaded > 0 || this.sessionStats.totalCleanupDeleted > 0 || this.sessionStats.totalCleanupFailed > 0) {
-      await this.logger.info(`  Cleanup: ${this.sessionStats.totalCleanupDownloaded} downloaded, ${this.sessionStats.totalCleanupDeleted} deleted, ${this.sessionStats.totalCleanupFailed} failed`);
+    if (this.sessionStats.totalCleanupDownloaded > 0 || this.sessionStats.totalCleanupDeleted > 0 || this.sessionStats.totalCleanupSkipped > 0 || this.sessionStats.totalCleanupFailed > 0) {
+      const cp = [`${this.sessionStats.totalCleanupDownloaded} downloaded`, `${this.sessionStats.totalCleanupDeleted} deleted`];
+      if (this.sessionStats.totalCleanupSkipped > 0) cp.push(`${this.sessionStats.totalCleanupSkipped} kept (< 30s)`);
+      cp.push(`${this.sessionStats.totalCleanupFailed} failed`);
+      await this.logger.info(`  Cleanup: ${cp.join(', ')}`);
     }
   }
 }

@@ -323,8 +323,11 @@ export class ParallelRunner {
     if (summary.abTestCount > 0) {
       console.log(chalk.gray(`  A/B tests auto-dismissed: ${summary.abTestCount}`));
     }
-    if (this.downloadAndDeleteRemainingVideos && (summary.cleanupDownloaded > 0 || summary.cleanupDeleted > 0 || summary.cleanupFailed > 0)) {
-      console.log(chalk.cyan(`  Cleanup: ${summary.cleanupDownloaded} downloaded, ${summary.cleanupDeleted} deleted, ${summary.cleanupFailed} failed`));
+    if (this.downloadAndDeleteRemainingVideos && (summary.cleanupDownloaded > 0 || summary.cleanupDeleted > 0 || summary.cleanupSkipped > 0 || summary.cleanupFailed > 0)) {
+      const cleanupParts = [`${summary.cleanupDownloaded} downloaded`, `${summary.cleanupDeleted} deleted`];
+      if (summary.cleanupSkipped > 0) cleanupParts.push(`${summary.cleanupSkipped} kept (< 30s)`);
+      cleanupParts.push(`${summary.cleanupFailed} failed`);
+      console.log(chalk.cyan(`  Cleanup: ${cleanupParts.join(', ')}`));
     }
     console.log(chalk.gray(`  Status: ${summary.status}`));
     if (summary.stopReason) {
@@ -374,8 +377,11 @@ export class ParallelRunner {
     if (summary.abTestCount > 0) {
       await this.logger.logToFileOnly(`  A/B tests auto-dismissed: ${summary.abTestCount}`);
     }
-    if (this.downloadAndDeleteRemainingVideos && (summary.cleanupDownloaded > 0 || summary.cleanupDeleted > 0 || summary.cleanupFailed > 0)) {
-      await this.logger.logToFileOnly(`  Cleanup: ${summary.cleanupDownloaded} downloaded, ${summary.cleanupDeleted} deleted, ${summary.cleanupFailed} failed`);
+    if (this.downloadAndDeleteRemainingVideos && (summary.cleanupDownloaded > 0 || summary.cleanupDeleted > 0 || summary.cleanupSkipped > 0 || summary.cleanupFailed > 0)) {
+      const cleanupParts = [`${summary.cleanupDownloaded} downloaded`, `${summary.cleanupDeleted} deleted`];
+      if (summary.cleanupSkipped > 0) cleanupParts.push(`${summary.cleanupSkipped} kept (< 30s)`);
+      cleanupParts.push(`${summary.cleanupFailed} failed`);
+      await this.logger.logToFileOnly(`  Cleanup: ${cleanupParts.join(', ')}`);
     }
     await this.logger.logToFileOnly(`Status: ${summary.status}`);
     if (summary.stopReason) {

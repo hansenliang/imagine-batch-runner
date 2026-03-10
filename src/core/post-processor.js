@@ -183,13 +183,13 @@ export class PostProcessor {
       result.upscaleDownloadPath = hdDownloadResult.filePath;
       result.upscaleFileSize = hdDownloadResult.fileSize;
 
-      // Delete if download succeeded
-      if (result.downloaded) {
+      // Delete if enabled and download succeeded
+      if (this.autoDelete && result.downloaded) {
         await sleep(config.POST_DOWNLOAD_DELAY);
         const deleteResult = await this._deleteWithRetry(index);
         result.deleted = deleteResult.success;
         result.deleteError = deleteResult.error;
-      } else {
+      } else if (!result.downloaded) {
         result.deleteError = 'Skipped - download failed';
       }
     } else {

@@ -54,6 +54,7 @@ export class ManifestManager {
       extendAttemptCount: 0,   // total extend attempts (including failures)
       cleanupDownloadedCount: 0,
       cleanupDeletedCount: 0,
+      cleanupSkippedCount: 0,
       cleanupFailedCount: 0,
       items: Array.from({ length: batchSize }, (_, i) => ({
         index: i,
@@ -257,6 +258,7 @@ export class ManifestManager {
       extendAttempts: this.manifest.extendAttemptCount || 0,
       cleanupDownloaded: this.manifest.cleanupDownloadedCount || 0,
       cleanupDeleted: this.manifest.cleanupDeletedCount || 0,
+      cleanupSkipped: this.manifest.cleanupSkippedCount || 0,
       cleanupFailed: this.manifest.cleanupFailedCount || 0,
     };
   }

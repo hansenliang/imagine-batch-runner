@@ -981,25 +981,30 @@ export class ParallelWorker {
 
     this.logger.info(`[Worker ${this.workerId}] Starting cleanup of remaining videos...`);
 
-    const stats = { downloaded: 0, deleted: 0, failed: 0 };
+    const stats = { downloaded: 0, deleted: 0, skipped: 0, failed: 0 };
     let cleanupIndex = 0;
+    let skippedCount = 0; // Videos downloaded but not deleted (< max duration when autoExtend)
 
     while (true) {
       // Detect remaining videos
       const remaining = await this._detectRemainingVideos();
 
-      if (remaining.count === 0) {
+      // Stop if no videos left or all remaining have been processed (skipped)
+      if (remaining.count === 0 || remaining.count <= skippedCount) {
         this.logger.info(`[Worker ${this.workerId}] No more videos to cleanup`);
         break;
       }
 
       this.logger.info(`[Worker ${this.workerId}] ${remaining.count} video(s) remaining, processing...`);
 
-      // Navigate to the last video if there are multiple
+      // Navigate to the target video (process from last to first, skipping
+      // already-processed videos that were kept on server at the end)
       if (remaining.count > 1) {
-        const clicked = await this._clickLastThumbnail();
+        const targetIndex = remaining.count - 1 - skippedCount;
+        if (targetIndex < 0) break;
+        const clicked = await this._clickThumbnailAtIndex(targetIndex);
         if (!clicked) {
-          this.logger.warn(`[Worker ${this.workerId}] Failed to click last thumbnail, stopping cleanup`);
+          this.logger.warn(`[Worker ${this.workerId}] Failed to click thumbnail at index ${targetIndex}, stopping cleanup`);
           stats.failed++;
           break;
         }
@@ -1007,8 +1012,27 @@ export class ParallelWorker {
         await this._waitForVideoLoad();
       }
 
-      // Process this video (download, upscale if needed, delete)
+      // When autoExtend is on, suppress deletion for videos that haven't
+      // reached max duration — they can be extended further in a future run
+      const savedAutoDelete = this.postProcessor.autoDelete;
+      let deleteSkipped = false;
+
+      if (this.autoExtend && this.autoDelete) {
+        const duration = await this._getVideoDuration();
+        if (duration < config.MAX_VIDEO_DURATION) {
+          this.postProcessor.autoDelete = false;
+          deleteSkipped = true;
+          this.logger.info(
+            `[Worker ${this.workerId}] Cleanup: skipping delete — video is ${duration.toFixed(1)}s (< ${config.MAX_VIDEO_DURATION}s), can be extended further`
+          );
+        }
+      }
+
+      // Process this video (download, upscale if needed, delete if allowed)
       const result = await this.postProcessor.processExistingVideo(cleanupIndex);
+
+      // Restore autoDelete
+      this.postProcessor.autoDelete = savedAutoDelete;
 
       if (result.downloaded) {
         stats.downloaded++;
@@ -1018,12 +1042,17 @@ export class ParallelWorker {
         );
       }
 
-      if (result.deleted) {
+      if (deleteSkipped) {
+        // Video intentionally kept on server — track as skipped, not failed
+        skippedCount++;
+        stats.skipped++;
+        await this.manifest.incrementCounterAtomic('cleanupSkippedCount');
+      } else if (result.deleted) {
         stats.deleted++;
         await this.manifest.incrementCounterAtomic('cleanupDeletedCount');
         this.logger.success(`[Worker ${this.workerId}] Cleanup ${cleanupIndex + 1}: Deleted from server`);
       } else {
-        // Delete failed - stop to avoid infinite loop
+        // Actual delete failure (not intentional skip)
         stats.failed++;
         await this.manifest.incrementCounterAtomic('cleanupFailedCount');
         this.logger.error(
@@ -1038,8 +1067,16 @@ export class ParallelWorker {
       await sleep(1000);
     }
 
+    const summaryParts = [
+      `${stats.downloaded} downloaded`,
+      `${stats.deleted} deleted`,
+    ];
+    if (stats.skipped > 0) {
+      summaryParts.push(`${stats.skipped} kept (< ${config.MAX_VIDEO_DURATION}s)`);
+    }
+    summaryParts.push(`${stats.failed} failed`);
     this.logger.info(
-      `[Worker ${this.workerId}] Cleanup complete: ${stats.downloaded} downloaded, ${stats.deleted} deleted, ${stats.failed} failed`
+      `[Worker ${this.workerId}] Cleanup complete: ${summaryParts.join(', ')}`
     );
 
     return stats;
@@ -1323,6 +1360,31 @@ export class ParallelWorker {
       return true;
     } catch (error) {
       this.logger.debug(`[Worker ${this.workerId}] Error clicking last thumbnail: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Click a thumbnail button at a specific index
+   * @private
+   * @param {number} index - Zero-based index into the visible thumbnails array
+   * @returns {Promise<boolean>} True if click succeeded
+   */
+  async _clickThumbnailAtIndex(index) {
+    try {
+      const visibleThumbnails = await this._getVisibleThumbnails();
+
+      if (index < 0 || index >= visibleThumbnails.length) {
+        return false;
+      }
+
+      await visibleThumbnails[index].click();
+      this.logger.debug(`[Worker ${this.workerId}] Clicked thumbnail at index ${index} (${visibleThumbnails.length} total)`);
+
+      await sleep(config.UI_ACTION_DELAY);
+      return true;
+    } catch (error) {
+      this.logger.debug(`[Worker ${this.workerId}] Error clicking thumbnail at index ${index}: ${error.message}`);
       return false;
     }
   }
