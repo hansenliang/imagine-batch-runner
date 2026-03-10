@@ -713,10 +713,15 @@ export class ParallelWorker {
       // Subsequent extends always use the normal Settings → "Extend video" path.
       let triggered;
       if (successfulExtends === 0 && failedAttempts === 0 && this.extendFromTime != null) {
+        const extUrl = this.page.url();
+        const extDur = await this._getVideoDuration();
         this.logger.info(
-          `[Worker ${this.workerId}] Triggering extend-from-frame at ${this.extendFromTime}s`
+          `[Worker ${this.workerId}] Triggering extend-from-frame at ${this.extendFromTime}s (page: ${extUrl}, video: ${extDur.toFixed(1)}s)`
         );
         triggered = await this.generator.triggerExtendFromFrame(this.extendFromTime, index);
+        this.logger.info(
+          `[Worker ${this.workerId}] Extend-from-frame result: ${triggered ? 'SUCCESS' : 'FAILED'}`
+        );
         if (!triggered) {
           this.logger.warn(
             `[Worker ${this.workerId}] Extend-from-frame failed, falling back to normal extend`
@@ -1094,48 +1099,124 @@ export class ParallelWorker {
    * Grok auto-redirects permalink URLs to the latest video for that post.
    * To reach the original, we navigate to the permalink (accepting the redirect),
    * then find the thumbnail whose img src contains the permalink UUID and click it.
+   *
+   * Retries up to 3 times if the page fails to load a video (Grok sometimes shows
+   * transient "post doesn't exist" errors on first load).
    * @private
    */
   async _navigateToSourceVideo() {
-    await this.page.goto(this.permalink, {
-      waitUntil: 'domcontentloaded',
-      timeout: config.PAGE_LOAD_TIMEOUT,
-    });
-    await sleep(3000);
-    await this._waitForReadyUI();
-    await this._waitForVideoLoaded();
-
-    // If we weren't redirected, we're already on the right video
-    if (this.page.url() === this.permalink) return;
-
-    // Extract UUID from permalink (last path segment)
     const uuid = this.permalink.split('/').pop();
-    if (!uuid) return;
+    const maxRetries = 3;
 
-    // Find the thumbnail whose img src contains the permalink UUID
-    const thumbnails = await this._getVisibleThumbnails();
-    for (const thumb of thumbnails) {
-      const img = await thumb.$('img');
-      if (!img) continue;
-      const src = await img.getAttribute('src').catch(() => '');
-      if (src && src.includes(uuid)) {
-        this.logger.info(`[Worker ${this.workerId}] Clicking source video thumbnail (redirected to latest)`);
-        await thumb.click();
-        await sleep(config.UI_ACTION_DELAY);
-        await this._waitForVideoLoaded();
-        const navDur = await this._getVideoDuration();
-        this.logger.debug(
-          `[Worker ${this.workerId}] Source video after thumbnail click: url=${this.page.url()} duration=${navDur.toFixed(1)}s`
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      this.logger.info(
+        `[Worker ${this.workerId}] _navigateToSourceVideo attempt ${attempt}/${maxRetries} — going to ${this.permalink}`
+      );
+
+      try {
+        await this.page.goto(this.permalink, {
+          waitUntil: 'domcontentloaded',
+          timeout: config.PAGE_LOAD_TIMEOUT,
+        });
+      } catch (navError) {
+        this.logger.warn(
+          `[Worker ${this.workerId}] page.goto failed (attempt ${attempt}): ${navError.message}`
+        );
+        if (attempt < maxRetries) {
+          await sleep(3000);
+          continue;
+        }
+        throw navError;
+      }
+
+      await sleep(3000);
+      const landedUrl = this.page.url();
+      this.logger.info(
+        `[Worker ${this.workerId}] Landed on: ${landedUrl} (permalink: ${this.permalink})`
+      );
+
+      await this._waitForReadyUI();
+      await this._waitForVideoLoaded();
+
+      // Verify a video actually loaded (Grok may show a "post doesn't exist" error page)
+      const duration = await this._getVideoDuration();
+      if (duration <= 0) {
+        this.logger.warn(
+          `[Worker ${this.workerId}] No video loaded after navigation (attempt ${attempt}), duration=0`
+        );
+        if (attempt < maxRetries) {
+          await sleep(3000);
+          continue;
+        }
+        this.logger.warn(`[Worker ${this.workerId}] Exhausted retries — no video found`);
+        return;
+      }
+
+      this.logger.info(
+        `[Worker ${this.workerId}] Video loaded: duration=${duration.toFixed(1)}s, url=${landedUrl}`
+      );
+
+      // Check if we were redirected to a different video
+      const wasRedirected = landedUrl !== this.permalink;
+      if (!wasRedirected) {
+        // URL matches permalink — but still verify the page URL contains our UUID
+        // (Grok may have shown an error on the same URL then auto-recovered to a different video)
+        this.logger.info(
+          `[Worker ${this.workerId}] URL matches permalink, on correct video (${duration.toFixed(1)}s)`
         );
         return;
       }
-    }
 
-    this.logger.warn(`[Worker ${this.workerId}] Could not find source thumbnail for UUID ${uuid}, using current video`);
-    const fallbackDur = await this._getVideoDuration();
-    this.logger.debug(
-      `[Worker ${this.workerId}] Using fallback video: url=${this.page.url()} duration=${fallbackDur.toFixed(1)}s`
-    );
+      // We were redirected — need to find and click the correct thumbnail
+      this.logger.info(
+        `[Worker ${this.workerId}] Redirected to ${landedUrl}, searching for source thumbnail (UUID: ${uuid})`
+      );
+
+      if (!uuid) {
+        this.logger.warn(`[Worker ${this.workerId}] Could not extract UUID from permalink`);
+        return;
+      }
+
+      const thumbnails = await this._getVisibleThumbnails();
+      this.logger.info(
+        `[Worker ${this.workerId}] Found ${thumbnails.length} visible thumbnail(s)`
+      );
+
+      let foundMatch = false;
+      for (let i = 0; i < thumbnails.length; i++) {
+        const thumb = thumbnails[i];
+        const img = await thumb.$('img');
+        if (!img) continue;
+        const src = await img.getAttribute('src').catch(() => '');
+        this.logger.debug(
+          `[Worker ${this.workerId}] Thumbnail ${i}: src=${src ? src.substring(0, 80) + '...' : '(none)'}`
+        );
+        if (src && src.includes(uuid)) {
+          this.logger.info(
+            `[Worker ${this.workerId}] Clicking source video thumbnail ${i} (matches UUID ${uuid})`
+          );
+          await thumb.click();
+          await sleep(config.UI_ACTION_DELAY);
+          await this._waitForVideoLoaded();
+          const navDur = await this._getVideoDuration();
+          this.logger.info(
+            `[Worker ${this.workerId}] After thumbnail click: url=${this.page.url()}, duration=${navDur.toFixed(1)}s`
+          );
+          foundMatch = true;
+          return;
+        }
+      }
+
+      if (!foundMatch) {
+        this.logger.warn(
+          `[Worker ${this.workerId}] Could not find source thumbnail for UUID ${uuid} among ${thumbnails.length} thumbnail(s), using current video`
+        );
+        this.logger.info(
+          `[Worker ${this.workerId}] Fallback video: url=${landedUrl}, duration=${duration.toFixed(1)}s`
+        );
+      }
+      return;
+    }
   }
 
   /**

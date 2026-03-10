@@ -640,12 +640,12 @@ export class VideoGenerator {
       );
 
       if (!seeked.seeked) {
-        this.logger.debug(`${this._tag(index)} Could not seek video for extend-from-frame`);
+        this.logger.info(`${this._tag(index)} Extend-from-frame: could not seek video (no video with duration found)`);
         return false;
       }
 
-      this.logger.debug(
-        `${this._tag(index)} Video seeked to ${seeked.currentTime.toFixed(1)}s / ${seeked.duration.toFixed(1)}s`
+      this.logger.info(
+        `${this._tag(index)} Extend-from-frame: paused & seeked all videos to ${seeked.currentTime.toFixed(1)}s / ${seeked.duration.toFixed(1)}s`
       );
       await sleep(500); // Let the seek settle
 
@@ -665,7 +665,7 @@ export class VideoGenerator {
 
       const videoEl = visibleVideo.asElement();
       if (!videoEl) {
-        this.logger.debug(`${this._tag(index)} No video element found for extend-from-frame`);
+        this.logger.info(`${this._tag(index)} Extend-from-frame: no visible video element found`);
         return false;
       }
 
@@ -686,12 +686,12 @@ export class VideoGenerator {
 
       // Strategy B: Force-reveal via JS if hover didn't work
       if (!extendButton) {
-        this.logger.debug(`${this._tag(index)} Hover strategy failed, trying JS force-reveal`);
+        this.logger.info(`${this._tag(index)} Extend-from-frame: hover strategy didn't reveal button, trying JS force-reveal`);
         extendButton = await this._forceRevealExtendFromFrame(index);
       }
 
       if (!extendButton) {
-        this.logger.debug(`${this._tag(index)} "Extend from frame" button not found after all strategies`);
+        this.logger.info(`${this._tag(index)} Extend-from-frame: "Extend from frame" button not found after all strategies`);
         return false;
       }
 
@@ -699,12 +699,12 @@ export class VideoGenerator {
       await extendButton.click();
       await sleep(config.UI_ACTION_DELAY);
 
-      this.logger.debug(
-        `${this._tag(index)} Extend-from-frame triggered at ${timeSeconds}s`
+      this.logger.info(
+        `${this._tag(index)} Extend-from-frame: button clicked at ${timeSeconds}s`
       );
       return true;
     } catch (error) {
-      this.logger.debug(`${this._tag(index)} Extend-from-frame failed: ${error.message}`);
+      this.logger.info(`${this._tag(index)} Extend-from-frame: exception — ${error.message}`);
       return false;
     }
   }
@@ -748,22 +748,26 @@ export class VideoGenerator {
 
       const hoverEl = hoverTarget.asElement();
       if (!hoverEl) {
-        this.logger.debug(`${this._tag(index)} Progress bar container not found`);
+        this.logger.info(`${this._tag(index)} Extend-from-frame: progress bar container not found on page`);
         return null;
       }
 
       // Hover the container to trigger CSS :hover and reveal controls
+      this.logger.info(`${this._tag(index)} Extend-from-frame: hovering progress bar container (element.hover)`);
       await hoverEl.hover();
       await sleep(800); // Give CSS transitions time (duration-300 = 300ms)
 
       // Check for the button
       let button = await this._findExtendFromFrameButton();
-      if (button) return button;
+      if (button) {
+        this.logger.info(`${this._tag(index)} Extend-from-frame: button found after element.hover`);
+        return button;
+      }
 
       // Fallback: use raw mouse coordinates at the bottom of the visible video.
       // Sometimes Playwright's element.hover() doesn't trigger CSS :hover reliably
       // on overlay-positioned elements, but page.mouse.move() with real coords does.
-      this.logger.debug(`${this._tag(index)} Element hover didn't reveal button, trying mouse coordinates`);
+      this.logger.info(`${this._tag(index)} Extend-from-frame: element.hover didn't reveal button, trying mouse.move coordinates`);
       const box = await hoverEl.boundingBox();
       if (box) {
         await this.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
