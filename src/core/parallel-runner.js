@@ -25,6 +25,7 @@ export class ParallelRunner {
       selectMaxResolution = false,
       autoExtend = false,
       maxExtendMode = false,
+      extendFromTime = null,
       downloadAndDeleteRemainingVideos = false,
       logFilePath = null,  // Optional: caller can specify exact log file path
     } = options;
@@ -36,7 +37,7 @@ export class ParallelRunner {
     this.jobName = jobName;
     this.parallelism = parallelism;
     this.downloadAndDeleteRemainingVideos = downloadAndDeleteRemainingVideos;
-    
+
     // When downloadAndDeleteRemainingVideos is enabled, force autoDownload and autoDelete
     this.autoDownload = downloadAndDeleteRemainingVideos ? true : autoDownload;
     this.autoUpscale = autoUpscale;
@@ -45,6 +46,7 @@ export class ParallelRunner {
     this.selectMaxResolution = selectMaxResolution;
     this.autoExtend = autoExtend;
     this.maxExtendMode = maxExtendMode;
+    this.extendFromTime = extendFromTime;
 
     // Runtime state
     // If logFilePath provided, use it; otherwise default to logs/runs/<jobName>.log
@@ -127,6 +129,7 @@ export class ParallelRunner {
             selectMaxResolution: this.selectMaxResolution,
             autoExtend: this.autoExtend,
             maxExtendMode: this.maxExtendMode,
+            extendFromTime: this.extendFromTime,
             downloadAndDeleteRemainingVideos: this.downloadAndDeleteRemainingVideos,
             downloadDir: this.downloadDir,
             jobName: this.jobName,

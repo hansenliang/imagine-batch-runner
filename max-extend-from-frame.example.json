@@ -1,0 +1,11 @@
+{
+  "account": "my-account",
+  "permalink": "https://grok.com/imagine/post/abc123",
+  "prompt": "pixel art style, looping aesthetic",
+  "count": 3,
+  "parallel": 3,
+  "extendFromTime": 22,
+  "autoDownload": true,
+  "autoUpscale": true,
+  "autoDelete": false
+}

@@ -166,6 +166,9 @@ export const selectors = {
   // Extend video menu item (inside "..." more options menu)
   EXTEND_MENU_ITEM: '[role="menuitem"]:has-text("Extend video"), [role="menuitem"]:has-text("Extend Video")',
 
+  // "Extend from frame" button (appears on hover over video progress bar)
+  EXTEND_FROM_FRAME_BUTTON: 'button:has-text("extend from frame"), button:has-text("Extend from frame"), button:has-text("Extend from Frame")',
+
   // Announcement banner dismiss button (X button inside z-[9999] banner)
   ANNOUNCEMENT_BANNER_DISMISS: 'div.absolute[class*="z-[9999]"] button:has(svg.lucide-x)',
 

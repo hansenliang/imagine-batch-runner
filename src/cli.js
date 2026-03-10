@@ -98,6 +98,7 @@ run
   .option('--auto-upscale', 'Automatically upscale videos to HD (requires --auto-download)', true)
   .option('--auto-delete', 'Automatically delete videos after download (requires --auto-download)', false)
   .option('--auto-extend', 'Extend each video to max duration (30s) after generation', false)
+  .option('--extend-from-time <seconds>', 'Seek to this timestamp (seconds) and extend from that frame instead of from the end')
   .option('--download-and-delete-remaining', 'Download and delete any remaining videos at end of run (forces --auto-download and --auto-delete)', false)
   .action(async (options) => {
     try {
@@ -147,6 +148,11 @@ run
           options.autoExtend = configData.autoExtend;
         }
 
+        // If extend-from-time wasn't explicitly set on CLI, use config value
+        if (options.extendFromTime === undefined && configData.extendFromTime !== undefined) {
+          options.extendFromTime = configData.extendFromTime;
+        }
+
         // Handle downloadAndDeleteRemainingVideos from config
         if (configData.downloadAndDeleteRemainingVideos !== undefined) {
           options.downloadAndDeleteRemaining = configData.downloadAndDeleteRemainingVideos;
@@ -189,6 +195,15 @@ run
         throw new Error('Permalink must be a Grok Imagine URL');
       }
 
+      // Parse and validate extend-from-time
+      let extendFromTime = null;
+      if (options.extendFromTime !== undefined) {
+        extendFromTime = parseFloat(options.extendFromTime);
+        if (isNaN(extendFromTime) || extendFromTime < 0) {
+          throw new Error('--extend-from-time must be a non-negative number (seconds)');
+        }
+      }
+
       // Check if account exists
       const accountManager = new AccountManager();
       const exists = await accountManager.accountExists(options.account);
@@ -204,6 +219,9 @@ run
       console.log(chalk.gray(`Parallelism: ${parallelism} workers`));
       if (options.autoExtend) {
         console.log(chalk.gray(`Auto-extend: enabled (target ${config.MAX_VIDEO_DURATION}s)`));
+      }
+      if (extendFromTime != null) {
+        console.log(chalk.gray(`Extend from frame: ${extendFromTime}s`));
       }
       if (options.downloadAndDeleteRemaining) {
         console.log(chalk.gray(`Download and delete remaining: enabled (autoDownload and autoDelete forced to true)`));
@@ -232,6 +250,7 @@ run
         autoUpscale: options.autoUpscale || false,
         autoDelete: options.autoDelete || false,
         autoExtend: options.autoExtend || false,
+        extendFromTime,
         downloadAndDeleteRemainingVideos: options.downloadAndDeleteRemaining || false,
       });
 
@@ -260,6 +279,7 @@ run
   .option('--auto-download', 'Automatically download extended videos', true)
   .option('--auto-upscale', 'Automatically upscale videos to HD (requires --auto-download)', true)
   .option('--auto-delete', 'Automatically delete extensions after download (never deletes original)', false)
+  .option('--extend-from-time <seconds>', 'Seek to this timestamp (seconds) and extend from that frame instead of from the end')
   .action(async (options) => {
     try {
       // Load config file if specified
@@ -289,6 +309,11 @@ run
         }
         if (autoDeleteWasDefault && configData.autoDelete !== undefined) {
           options.autoDelete = configData.autoDelete;
+        }
+
+        // If extend-from-time wasn't explicitly set on CLI, use config value
+        if (options.extendFromTime === undefined && configData.extendFromTime !== undefined) {
+          options.extendFromTime = configData.extendFromTime;
         }
       }
 
@@ -328,6 +353,15 @@ run
         throw new Error('Permalink must be a Grok Imagine URL');
       }
 
+      // Parse and validate extend-from-time
+      let extendFromTime = null;
+      if (options.extendFromTime !== undefined) {
+        extendFromTime = parseFloat(options.extendFromTime);
+        if (isNaN(extendFromTime) || extendFromTime < 0) {
+          throw new Error('--extend-from-time must be a non-negative number (seconds)');
+        }
+      }
+
       // Check if account exists
       const accountManager = new AccountManager();
       const exists = await accountManager.accountExists(options.account);
@@ -342,6 +376,9 @@ run
       console.log(chalk.gray(`Extension chains: ${count}`));
       console.log(chalk.gray(`Parallelism: ${parallelism} workers`));
       console.log(chalk.gray(`Target: ${config.MAX_VIDEO_DURATION}s (max duration)`));
+      if (extendFromTime != null) {
+        console.log(chalk.gray(`Extend from frame: ${extendFromTime}s`));
+      }
       if (options.autoDownload) {
         console.log(chalk.gray(`Auto-download: enabled`));
       }
@@ -363,6 +400,7 @@ run
         autoDownload: options.autoDownload || false,
         autoUpscale: options.autoUpscale || false,
         autoDelete: options.autoDelete || false,
+        extendFromTime,
         maxExtendMode: true,
       });
 

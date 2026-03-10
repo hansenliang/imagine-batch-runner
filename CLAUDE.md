@@ -35,6 +35,26 @@ node src/cli.js run max-extend \
 - Content moderation retries automatically (up to 100 times per chain)
 - Rate limit stops the affected worker (after downloading any partial extensions); other workers continue
 
+## Extend From Frame
+When `extendFromTime` is set (in config or via `--extend-from-time <seconds>`), the first extension in a chain seeks to the specified timestamp and uses "extend from frame" instead of the normal "Extend video" menu. This trims everything after the specified frame and extends from there. Subsequent extensions in the same chain use the normal extend path (extending from the end).
+
+Example (max-extend from frame 22):
+```bash
+node src/cli.js run max-extend \
+  --account my-account \
+  --permalink "https://grok.com/imagine/post/abc123" \
+  --prompt "pixel art style, looping aesthetic" \
+  --extend-from-time 22 \
+  --count 3 \
+  --parallel 3
+```
+
+Config file equivalent: `"extendFromTime": 22`
+
+- Works with both `run start --auto-extend` and `run max-extend`
+- If extend-from-frame fails (button not found), falls back to normal "Extend video"
+- The "extend from frame" button only appears when hovering over the video progress bar — the automation seeks the video, hovers the progress bar to reveal the button, then clicks it
+
 ## Key Files
 - `src/cli.js` — CLI entry point
 - `src/core/parallel-runner.js` — Worker orchestration
@@ -70,6 +90,7 @@ node src/cli.js run max-extend \
 - **Delete safety**: In max-extend mode, post-processing only runs if at least one extension succeeded (or the video is already at max duration), so the original video is never deleted. In both modes, auto-delete is suppressed for videos under 30s. The worker must sync `autoDelete` to *both* `this.autoDelete` and `this.postProcessor.autoDelete` since the PostProcessor has its own copy of the flag.
 - **Download filenames**: Format is `YYMMDD-HHmmss_UUID8_DURs.mp4` (e.g., `260309-152031_8e181808_30s.mp4`). HD upscales append `_hd` before the extension (e.g., `260309-152031_8e181808_30s_hd.mp4`). Duplicates are prefixed with `DUPLICATE_`. UUID is extracted from the page URL (`/imagine/post/UUID`), falling back to video src pattern.
 - **Log labels**: `generator.generate()` accepts `options.logLabel` (default `"Attempt"`) to distinguish generation vs extension in logs. The extend loop passes `{ logLabel: 'Extend' }` so log lines read `[Extend N]` instead of `[Attempt N]`.
+- **Extend from frame**: The "extend from frame" button only appears when the mouse hovers over the video playback progress bar (a `div` with `cursor-pointer`, `rounded-full`, `opacity-0` classes). `triggerExtendFromFrame()` in `generator.js` seeks the video to the target time, pauses, hovers the progress bar to reveal the button, and clicks it. Falls back to JS force-reveal if CSS hover doesn't work. Only used for the first extension in a chain; subsequent extensions use normal `triggerExtendMode()`.
 
 ## When to Read More
 - Setup or install issues → `docs/quickstart.md`

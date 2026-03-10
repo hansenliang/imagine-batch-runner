@@ -425,6 +425,7 @@ export class AutoRunner {
         autoUpscale: configData.autoUpscale !== false,    // default true
         autoDelete: configData.autoDelete || false,       // default false
         autoExtend: configData.autoExtend || false,         // default false (disabled)
+        extendFromTime: configData.extendFromTime != null ? configData.extendFromTime : null,
         downloadAndDeleteRemainingVideos: configData.downloadAndDeleteRemainingVideos || false, // default false
         selectMaxDuration: configData.selectMaxDuration || false,   // default false
         selectMaxResolution: configData.selectMaxResolution || false, // default false

@@ -41,6 +41,7 @@ export class ParallelWorker {
     this.maxExtendMode = options.maxExtendMode || false;
     // maxExtendMode implies autoExtend
     this.autoExtend = this.maxExtendMode ? true : (options.autoExtend || false);
+    this.extendFromTime = options.extendFromTime != null ? options.extendFromTime : null;
 
     // Browser resources
     this.context = null;
@@ -706,8 +707,25 @@ export class ParallelWorker {
         }
       }
 
-      // Step 1: Trigger extend mode via Settings menu → "Extend video"
-      const triggered = await this.generator.triggerExtendMode(index);
+      // Step 1: Trigger extend mode.
+      // On the first extend, if extendFromTime is set, use "extend from frame"
+      // (seek to specific time → hover progress bar → click button).
+      // Subsequent extends always use the normal Settings → "Extend video" path.
+      let triggered;
+      if (successfulExtends === 0 && failedAttempts === 0 && this.extendFromTime != null) {
+        this.logger.info(
+          `[Worker ${this.workerId}] Triggering extend-from-frame at ${this.extendFromTime}s`
+        );
+        triggered = await this.generator.triggerExtendFromFrame(this.extendFromTime, index);
+        if (!triggered) {
+          this.logger.warn(
+            `[Worker ${this.workerId}] Extend-from-frame failed, falling back to normal extend`
+          );
+          triggered = await this.generator.triggerExtendMode(index);
+        }
+      } else {
+        triggered = await this.generator.triggerExtendMode(index);
+      }
       if (!triggered) {
         // Check if the video is already at max duration — "Extend video" won't
         // appear for videos that have reached Grok's maximum length.

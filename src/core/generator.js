@@ -600,6 +600,211 @@ export class VideoGenerator {
   }
 
   /**
+   * Trigger "extend from frame" mode by seeking the video to a specific time,
+   * hovering over the progress bar to reveal the button, and clicking it.
+   *
+   * After this, the UI transitions to extend mode (same as triggerExtendMode)
+   * where generate() can be called with a prompt.
+   *
+   * @param {number} timeSeconds - Time in seconds to seek to before extending
+   * @param {number} index - Current attempt index for logging
+   * @returns {Promise<boolean>} - Whether extend-from-frame was triggered successfully
+   */
+  async triggerExtendFromFrame(timeSeconds, index) {
+    try {
+      await this._dismissBanners();
+
+      // Step 1: Find the video element, seek to target time, and pause
+      const videoEl = await this.page.$(selectors.VIDEO_CONTAINER);
+      if (!videoEl) {
+        this.logger.debug(`${this._tag(index)} No video element found for extend-from-frame`);
+        return false;
+      }
+
+      const seeked = await this.page.evaluate(
+        ({ sel, targetTime }) => {
+          const videos = document.querySelectorAll(sel);
+          for (const v of videos) {
+            if ((v.currentSrc || v.src) && v.duration > 0) {
+              v.currentTime = Math.min(targetTime, v.duration - 0.1);
+              v.pause();
+              return { seeked: true, duration: v.duration, currentTime: v.currentTime };
+            }
+          }
+          return { seeked: false };
+        },
+        { sel: selectors.VIDEO_CONTAINER, targetTime: timeSeconds }
+      );
+
+      if (!seeked.seeked) {
+        this.logger.debug(`${this._tag(index)} Could not seek video for extend-from-frame`);
+        return false;
+      }
+
+      this.logger.debug(
+        `${this._tag(index)} Video seeked to ${seeked.currentTime.toFixed(1)}s / ${seeked.duration.toFixed(1)}s`
+      );
+      await sleep(500); // Let the seek settle
+
+      // Step 2: Hover over the video area to reveal player controls
+      const videoVisible = await videoEl.isVisible().catch(() => false);
+      if (videoVisible) {
+        await videoEl.hover();
+        await sleep(500);
+      }
+
+      // Step 3: Find the progress bar and hover over it.
+      // The progress bar has a distinctive class pattern: opacity-0, cursor-pointer,
+      // rounded-full, with a child div that shows progress width.
+      // We try multiple strategies to locate and hover it.
+      let extendButton = null;
+
+      // Strategy A: Hover the video area and look for the progress bar by class pattern
+      extendButton = await this._hoverProgressBarAndFindButton(index);
+
+      // Strategy B: Force-reveal via JS if hover didn't work
+      if (!extendButton) {
+        this.logger.debug(`${this._tag(index)} Hover strategy failed, trying JS force-reveal`);
+        extendButton = await this._forceRevealExtendFromFrame(index);
+      }
+
+      if (!extendButton) {
+        this.logger.debug(`${this._tag(index)} "Extend from frame" button not found after all strategies`);
+        return false;
+      }
+
+      // Step 4: Click the button
+      await extendButton.click();
+      await sleep(config.UI_ACTION_DELAY);
+
+      this.logger.debug(
+        `${this._tag(index)} Extend-from-frame triggered at ${timeSeconds}s`
+      );
+      return true;
+    } catch (error) {
+      this.logger.debug(`${this._tag(index)} Extend-from-frame failed: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Hover over the video progress bar to reveal the "extend from frame" button.
+   * The progress bar is an opacity-0 div with cursor-pointer that becomes visible on hover.
+   * @param {number} index - Attempt index for logging
+   * @returns {Promise<import('playwright').ElementHandle|null>}
+   * @private
+   */
+  async _hoverProgressBarAndFindButton(index) {
+    try {
+      // Find candidate progress bar elements: div with cursor-pointer and rounded-full
+      // that contains a child div (the fill bar)
+      const progressBar = await this.page.evaluateHandle(() => {
+        const candidates = document.querySelectorAll('div.cursor-pointer.rounded-full');
+        for (const el of candidates) {
+          // Must have a child div (the progress fill) and be within the video player area
+          if (el.querySelector('div') && el.closest('video, [class*="video"], [class*="player"]')?.parentElement) {
+            return el;
+          }
+        }
+        // Broader fallback: any cursor-pointer rounded-full with opacity-0
+        for (const el of candidates) {
+          if (el.querySelector('div')) {
+            const style = window.getComputedStyle(el);
+            if (style.opacity === '0' || el.classList.contains('opacity-0')) {
+              return el;
+            }
+          }
+        }
+        return null;
+      });
+
+      const progressBarEl = progressBar.asElement();
+      if (!progressBarEl) {
+        this.logger.debug(`${this._tag(index)} Progress bar element not found`);
+        return null;
+      }
+
+      // Hover to reveal the bar and its controls
+      await progressBarEl.hover();
+      await sleep(800); // Give CSS transitions time (duration-300 = 300ms)
+
+      // Now look for the "extend from frame" button
+      const button = await this._findExtendFromFrameButton();
+      return button;
+    } catch (error) {
+      this.logger.debug(`${this._tag(index)} Progress bar hover failed: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Force-reveal the "extend from frame" button via JavaScript.
+   * Sets opacity on hidden overlay elements and dispatches mouseover events.
+   * @param {number} index - Attempt index for logging
+   * @returns {Promise<import('playwright').ElementHandle|null>}
+   * @private
+   */
+  async _forceRevealExtendFromFrame(index) {
+    try {
+      // Force all opacity-0 elements near the video to become visible
+      await this.page.evaluate(() => {
+        // Reveal all opacity-0 elements that are children of the video player area
+        const hiddenEls = document.querySelectorAll('.opacity-0');
+        for (const el of hiddenEls) {
+          el.style.opacity = '1';
+          el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+          el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        }
+        // Also dispatch hover on video elements to trigger any React hover state
+        const videos = document.querySelectorAll('video');
+        for (const v of videos) {
+          let parent = v.parentElement;
+          for (let i = 0; i < 5 && parent; i++) {
+            parent.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+            parent.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+            parent = parent.parentElement;
+          }
+        }
+      });
+
+      await sleep(800);
+
+      const button = await this._findExtendFromFrameButton();
+      return button;
+    } catch (error) {
+      this.logger.debug(`${this._tag(index)} Force-reveal failed: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Find the "extend from frame" button on the page (case-insensitive text search).
+   * @returns {Promise<import('playwright').ElementHandle|null>}
+   * @private
+   */
+  async _findExtendFromFrameButton() {
+    // Try the selector from config first
+    let button = await this.page.$(selectors.EXTEND_FROM_FRAME_BUTTON);
+    if (button) {
+      const isVisible = await button.isVisible().catch(() => false);
+      if (isVisible) return button;
+    }
+
+    // Fallback: scan all buttons for case-insensitive text match
+    const buttons = await this.page.$$('button');
+    for (const btn of buttons) {
+      const isVisible = await btn.isVisible().catch(() => false);
+      if (!isVisible) continue;
+      const text = await btn.innerText().catch(() => '');
+      if (/extend\s+from\s+frame/i.test(text)) {
+        return btn;
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Detect progress percentage anywhere on screen (e.g., "Generating 16%", "45%")
    * New UI shows progress as overlay text on the video area, not inside a button.
    * Uses DOM tree walker for efficient full-page scan.
