@@ -55,6 +55,30 @@ Config file equivalent: `"extendFromTime": 22`
 - If extend-from-frame fails (button not found), falls back to normal "Extend video"
 - The "extend from frame" button only appears when hovering over the video progress bar — the automation seeks the video, hovers the progress bar to reveal the button, then clicks it
 
+## Autorun Max-Extend
+Combines autorun (periodic scheduling) with max-extend mode. Place a config with `"maxExtendMode": true` in the autorun configs directory. Each autorun cycle will repeatedly extend the source video from the given frame, running workers until rate-limited, then wait for the next cycle.
+
+Example autorun config (`autorun-configs/my-extend.json`):
+```json
+{
+  "account": "my-account",
+  "permalink": "https://grok.com/imagine/post/abc123",
+  "prompt": "pixel art style, looping aesthetic",
+  "maxExtendMode": true,
+  "extendFromTime": 22,
+  "parallel": 3,
+  "autoDownload": true,
+  "autoUpscale": true,
+  "autoDelete": true
+}
+```
+
+- `count` is optional — defaults to 9999 in maxExtendMode (effectively "run until rate-limited")
+- `parallel` controls how many workers run simultaneously
+- Each worker independently navigates to the permalink, extends from the given frame to 30s, downloads/upscales/deletes, then starts the next chain
+- Rate limit stops the cycle; autorun waits for the interval then starts a fresh cycle
+- All existing max-extend behaviors apply (original video never deleted, partial extensions preserved, etc.)
+
 ## Key Files
 - `src/cli.js` — CLI entry point
 - `src/core/parallel-runner.js` — Worker orchestration

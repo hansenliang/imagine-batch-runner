@@ -408,7 +408,10 @@ export class AutoRunner {
     const logFilePath = path.join(this.detailedLogsDir, `${jobName}.log`);
 
     // Extract config values with defaults
-    const batchSize = parseInt(configData.count, 10) || config.DEFAULT_BATCH_SIZE;
+    const maxExtendMode = configData.maxExtendMode || false;
+    // In maxExtendMode, default to a large batch size so workers run until rate-limited
+    const defaultBatchSize = maxExtendMode ? 9999 : config.DEFAULT_BATCH_SIZE;
+    const batchSize = parseInt(configData.count, 10) || defaultBatchSize;
     const parallelism = parseInt(configData.parallel, 10) || config.DEFAULT_PARALLELISM;
 
     await this.logger.info(`Starting config: ${file}`);
@@ -429,6 +432,7 @@ export class AutoRunner {
         autoUpscale: configData.autoUpscale !== false,    // default true
         autoDelete: configData.autoDelete || false,       // default false
         autoExtend: configData.autoExtend || false,         // default false (disabled)
+        maxExtendMode,
         extendFromTime: configData.extendFromTime != null ? configData.extendFromTime : null,
         downloadAndDeleteRemainingVideos: configData.downloadAndDeleteRemainingVideos || false, // default false
         selectMaxDuration: configData.selectMaxDuration || false,   // default false
@@ -552,8 +556,8 @@ export class AutoRunner {
       errors.push('Permalink must be a Grok Imagine URL');
     }
 
-    // Count validation
-    if (configData.count !== undefined) {
+    // Count validation (skip for maxExtendMode — defaults to run-until-rate-limit)
+    if (configData.count !== undefined && !configData.maxExtendMode) {
       const count = parseInt(configData.count, 10);
       if (isNaN(count) || count < 1 || count > 1000) {
         errors.push('Count must be between 1 and 1000');
