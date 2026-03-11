@@ -710,8 +710,19 @@ export class VideoGenerator {
       this.logger.info(
         `${this._tag(index)} Extend-from-frame: seeked to ${seeked.currentTime.toFixed(1)}s / ${seeked.duration.toFixed(1)}s (paused=${seeked.paused})`
       );
-      // Short delay for the rendered frame to fully display after the seeked event
-      await sleep(300);
+
+      // Wait for Grok's UI time indicator to confirm the seek.
+      // video.currentTime updates synchronously but the actual frame decode and UI
+      // update can lag significantly on slow CPUs. The time display button
+      // (button.tabular-nums, text "M:SS / M:SS") reflects Grok's internal state
+      // which is what extend-from-frame captures.
+      const clampedTarget = Math.min(timeSeconds, seeked.duration - 0.1);
+      const displayConfirmed = await this._waitForDisplayedTime(clampedTarget, index);
+      if (!displayConfirmed) {
+        this.logger.warn(
+          `${this._tag(index)} Extend-from-frame: UI time display didn't reach target ${timeSeconds}s, proceeding anyway`
+        );
+      }
 
       // Step 2: Reveal the "extend from frame" button and click it.
       // The button only appears when hovering the progress bar area at the bottom
@@ -724,53 +735,28 @@ export class VideoGenerator {
         return false;
       }
 
-      // Step 3: Verify the video is still paused at the target time before clicking.
-      // Under high parallelism / slow CPU, the video may have resumed or drifted
-      // during the hover strategies (800ms+ gap). Re-pause and re-seek if needed.
-      const targetTime = Math.min(timeSeconds, seeked.duration - 0.1);
-      const verified = await this.page.evaluate(
-        ({ sel, targetTime: tt }) => {
-          const videos = document.querySelectorAll(sel);
-          let target = null;
-          for (const v of videos) {
-            if (v.duration > 0) { target = v; break; }
-          }
-          if (!target) return { ok: false, reason: 'no video' };
-
-          const drift = Math.abs(target.currentTime - tt);
-          const needsFix = !target.paused || drift > 1.0;
-          if (!needsFix) {
-            return { ok: true, currentTime: target.currentTime, paused: target.paused };
-          }
-
-          // Re-patch play() in case Grok re-mounted the element
-          if (!target._origPlay) {
-            target._origPlay = target.play.bind(target);
-            target.play = () => Promise.resolve();
-          }
-          try { target.pause(); } catch (_) { /* ignore */ }
-          target.currentTime = tt;
-
-          return new Promise((resolve) => {
-            const onSeeked = () => {
-              target.removeEventListener('seeked', onSeeked);
-              resolve({ ok: true, fixed: true, currentTime: target.currentTime, paused: target.paused });
-            };
-            target.addEventListener('seeked', onSeeked);
-            setTimeout(() => {
-              target.removeEventListener('seeked', onSeeked);
-              resolve({ ok: true, fixed: true, currentTime: target.currentTime, paused: target.paused, seekTimeout: true });
-            }, 3000);
-          });
-        },
-        { sel: selectors.VIDEO_CONTAINER, targetTime }
-      );
-
-      if (verified.fixed) {
-        this.logger.info(
-          `${this._tag(index)} Extend-from-frame: video drifted, re-stabilized to ${verified.currentTime.toFixed(1)}s (paused=${verified.paused})`
+      // Step 3: Final check — verify the UI time indicator still shows the right time
+      // before clicking. The hover strategies take 800ms+ and the video may have drifted.
+      const preClickTime = await this._readDisplayedTime();
+      if (preClickTime && Math.abs(preClickTime.current - clampedTarget) > 2) {
+        this.logger.warn(
+          `${this._tag(index)} Extend-from-frame: UI time drifted to ${preClickTime.text} before click, re-seeking`
         );
-        await sleep(300); // Let the re-seeked frame render
+        // Re-seek via JS and wait for UI confirmation
+        await this.page.evaluate(
+          ({ sel, tt }) => {
+            const videos = document.querySelectorAll(sel);
+            for (const v of videos) {
+              if (v.duration > 0) {
+                if (!v._origPlay) { v._origPlay = v.play.bind(v); v.play = () => Promise.resolve(); }
+                try { v.pause(); } catch (_) {}
+                v.currentTime = tt;
+              }
+            }
+          },
+          { sel: selectors.VIDEO_CONTAINER, tt: clampedTarget }
+        );
+        await this._waitForDisplayedTime(clampedTarget, index);
       }
 
       // Step 4: Click the button, then restore play() so generation can proceed
@@ -794,6 +780,73 @@ export class VideoGenerator {
    * extend-from-frame. Safe to call even if play() was never patched.
    * @private
    */
+
+  /**
+   * Read the current playback time from Grok's UI time indicator button.
+   * The button has class "tabular-nums" and displays text like "0:15 / 0:16".
+   * This reflects Grok's internal state and is more reliable than video.currentTime
+   * on slow CPUs where the JS property can update before the frame renders.
+   * @returns {Promise<{current: number, total: number, text: string}|null>}
+   * @private
+   */
+  async _readDisplayedTime() {
+    try {
+      return await this.page.evaluate(() => {
+        const buttons = document.querySelectorAll('button.tabular-nums');
+        for (const btn of buttons) {
+          const text = btn.textContent.trim();
+          const match = text.match(/^(\d+):(\d{2})\s*\/\s*(\d+):(\d{2})$/);
+          if (match) {
+            return {
+              current: parseInt(match[1]) * 60 + parseInt(match[2]),
+              total: parseInt(match[3]) * 60 + parseInt(match[4]),
+              text,
+            };
+          }
+        }
+        return null;
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Poll Grok's UI time indicator until it shows the target time.
+   * Waits up to timeoutMs for the displayed time to come within tolerance of the target.
+   * @param {number} targetSeconds - Expected displayed time in seconds
+   * @param {number} index - Attempt index for logging
+   * @param {number} [toleranceSeconds=2] - How close the display must be (seconds)
+   * @param {number} [timeoutMs=8000] - Max time to wait
+   * @returns {Promise<{current: number, total: number, text: string}|null>} Display info, or null if timed out
+   * @private
+   */
+  async _waitForDisplayedTime(targetSeconds, index, toleranceSeconds = 2, timeoutMs = 8000) {
+    const start = Date.now();
+    let lastDisplay = null;
+
+    while (Date.now() - start < timeoutMs) {
+      const displayed = await this._readDisplayedTime();
+      if (displayed) {
+        lastDisplay = displayed;
+        if (Math.abs(displayed.current - targetSeconds) <= toleranceSeconds) {
+          this.logger.info(
+            `${this._tag(index)} Extend-from-frame: UI time confirmed at ${displayed.text}`
+          );
+          return displayed;
+        }
+      }
+      await sleep(300);
+    }
+
+    if (lastDisplay) {
+      this.logger.warn(
+        `${this._tag(index)} Extend-from-frame: UI time stuck at ${lastDisplay.text}, expected ~${targetSeconds}s after ${timeoutMs}ms`
+      );
+    }
+    return null;
+  }
+
   async _restoreVideoPlay() {
     await this.page.evaluate((sel) => {
       for (const v of document.querySelectorAll(sel)) {
