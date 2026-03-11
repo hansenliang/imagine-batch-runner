@@ -724,7 +724,56 @@ export class VideoGenerator {
         return false;
       }
 
-      // Step 3: Click the button, then restore play() so generation can proceed
+      // Step 3: Verify the video is still paused at the target time before clicking.
+      // Under high parallelism / slow CPU, the video may have resumed or drifted
+      // during the hover strategies (800ms+ gap). Re-pause and re-seek if needed.
+      const targetTime = Math.min(timeSeconds, seeked.duration - 0.1);
+      const verified = await this.page.evaluate(
+        ({ sel, targetTime: tt }) => {
+          const videos = document.querySelectorAll(sel);
+          let target = null;
+          for (const v of videos) {
+            if (v.duration > 0) { target = v; break; }
+          }
+          if (!target) return { ok: false, reason: 'no video' };
+
+          const drift = Math.abs(target.currentTime - tt);
+          const needsFix = !target.paused || drift > 1.0;
+          if (!needsFix) {
+            return { ok: true, currentTime: target.currentTime, paused: target.paused };
+          }
+
+          // Re-patch play() in case Grok re-mounted the element
+          if (!target._origPlay) {
+            target._origPlay = target.play.bind(target);
+            target.play = () => Promise.resolve();
+          }
+          try { target.pause(); } catch (_) { /* ignore */ }
+          target.currentTime = tt;
+
+          return new Promise((resolve) => {
+            const onSeeked = () => {
+              target.removeEventListener('seeked', onSeeked);
+              resolve({ ok: true, fixed: true, currentTime: target.currentTime, paused: target.paused });
+            };
+            target.addEventListener('seeked', onSeeked);
+            setTimeout(() => {
+              target.removeEventListener('seeked', onSeeked);
+              resolve({ ok: true, fixed: true, currentTime: target.currentTime, paused: target.paused, seekTimeout: true });
+            }, 3000);
+          });
+        },
+        { sel: selectors.VIDEO_CONTAINER, targetTime }
+      );
+
+      if (verified.fixed) {
+        this.logger.info(
+          `${this._tag(index)} Extend-from-frame: video drifted, re-stabilized to ${verified.currentTime.toFixed(1)}s (paused=${verified.paused})`
+        );
+        await sleep(300); // Let the re-seeked frame render
+      }
+
+      // Step 4: Click the button, then restore play() so generation can proceed
       await extendButton.click();
       await sleep(config.UI_ACTION_DELAY);
       await this._restoreVideoPlay();
