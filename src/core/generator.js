@@ -641,6 +641,8 @@ export class VideoGenerator {
 
       // Monkey-patch play() on ALL video elements to prevent Grok from resuming,
       // call v.pause() as belt-and-suspenders, then seek to target time.
+      // Wait for the browser's 'seeked' event to fire (the frame is rendered)
+      // instead of using a fixed sleep — slow CPUs can take longer to decode.
       const seeked = await this.page.evaluate(
         ({ sel, targetTime }) => {
           const videos = document.querySelectorAll(sel);
@@ -651,16 +653,46 @@ export class VideoGenerator {
             }
             try { v.pause(); } catch (_) { /* ignore */ }
           }
-          let result = { seeked: false, paused: false };
+          // Find the first video with a valid duration and seek it
+          let target = null;
           for (const v of videos) {
-            if (v.duration > 0) {
-              v.currentTime = Math.min(targetTime, v.duration - 0.1);
-              if (!result.seeked) {
-                result = { seeked: true, paused: v.paused, duration: v.duration, currentTime: v.currentTime };
+            if (v.duration > 0) { target = v; break; }
+          }
+          if (!target) return { seeked: false };
+
+          const seekTime = Math.min(targetTime, target.duration - 0.1);
+          return new Promise((resolve) => {
+            const onSeeked = () => {
+              target.removeEventListener('seeked', onSeeked);
+              resolve({
+                seeked: true,
+                paused: target.paused,
+                duration: target.duration,
+                currentTime: target.currentTime,
+              });
+            };
+            target.addEventListener('seeked', onSeeked);
+            target.currentTime = seekTime;
+
+            // Also seek any other video elements (e.g. hd-video)
+            for (const v of videos) {
+              if (v !== target && v.duration > 0) {
+                v.currentTime = seekTime;
               }
             }
-          }
-          return result;
+
+            // Safety timeout — don't wait forever if seeked event doesn't fire
+            setTimeout(() => {
+              target.removeEventListener('seeked', onSeeked);
+              resolve({
+                seeked: true,
+                paused: target.paused,
+                duration: target.duration,
+                currentTime: target.currentTime,
+                seekedEventTimeout: true,
+              });
+            }, 5000);
+          });
         },
         { sel: selectors.VIDEO_CONTAINER, targetTime: timeSeconds }
       );
@@ -671,10 +703,15 @@ export class VideoGenerator {
         return false;
       }
 
+      if (seeked.seekedEventTimeout) {
+        this.logger.warn(`${this._tag(index)} Extend-from-frame: seeked event timed out, proceeding anyway`);
+      }
+
       this.logger.info(
         `${this._tag(index)} Extend-from-frame: seeked to ${seeked.currentTime.toFixed(1)}s / ${seeked.duration.toFixed(1)}s (paused=${seeked.paused})`
       );
-      await sleep(500);
+      // Short delay for the rendered frame to fully display after the seeked event
+      await sleep(300);
 
       // Step 2: Reveal the "extend from frame" button and click it.
       // The button only appears when hovering the progress bar area at the bottom

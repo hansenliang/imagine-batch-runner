@@ -207,6 +207,39 @@ export class ParallelWorker {
   }
 
   /**
+   * Wait for the page URL to stabilize (no SPA redirect pending).
+   * Grok's SPA navigation can asynchronously redirect after domcontentloaded,
+   * so we poll the URL until it stays the same for a stable window.
+   * @param {number} [stableMs=1500] - How long the URL must stay unchanged
+   * @param {number} [timeoutMs=8000] - Max time to wait for stability
+   * @returns {Promise<string>} The stable URL
+   * @private
+   */
+  async _waitForUrlStable(stableMs = 1500, timeoutMs = 8000) {
+    const start = Date.now();
+    let lastUrl = this.page.url();
+    let lastChangeTime = start;
+
+    while (Date.now() - start < timeoutMs) {
+      await sleep(300);
+      const currentUrl = this.page.url();
+      if (currentUrl !== lastUrl) {
+        this.logger.debug(
+          `[Worker ${this.workerId}] URL changed during stability wait: ${lastUrl} → ${currentUrl}`
+        );
+        lastUrl = currentUrl;
+        lastChangeTime = Date.now();
+      } else if (Date.now() - lastChangeTime >= stableMs) {
+        return lastUrl;
+      }
+    }
+    this.logger.debug(
+      `[Worker ${this.workerId}] URL stability timeout after ${timeoutMs}ms, using: ${lastUrl}`
+    );
+    return lastUrl;
+  }
+
+  /**
    * Switch from image mode to video mode if a Settings button is present.
    * On Grok Imagine image pages, a "Settings" gear button opens a menu
    * with a "Make Video" option to switch to video generation mode.
@@ -698,9 +731,10 @@ export class ParallelWorker {
         await sleep(3000);
         await this._waitForReadyUI();
         await this._waitForVideoLoaded();
+        // Wait for SPA redirect to settle before checking URL
+        const landedUrl = await this._waitForUrlStable();
         // Grok may redirect stale/image permalinks to the latest video's permalink.
         // Accept whatever /post/ URL we land on as the new checkpoint.
-        const landedUrl = this.page.url();
         if (landedUrl.includes('/imagine/post/') && landedUrl !== checkpointUrl) {
           this.logger.info(`[Worker ${this.workerId}] Checkpoint redirected to ${landedUrl}`);
           checkpointUrl = landedUrl;
@@ -1167,13 +1201,16 @@ export class ParallelWorker {
       }
 
       await sleep(3000);
-      const landedUrl = this.page.url();
+      await this._waitForReadyUI();
+      await this._waitForVideoLoaded();
+
+      // Wait for Grok's async SPA redirect to settle before checking the URL.
+      // Without this, the URL may match our permalink briefly before Grok redirects
+      // to the latest video for this post.
+      const landedUrl = await this._waitForUrlStable();
       this.logger.info(
         `[Worker ${this.workerId}] Landed on: ${landedUrl} (permalink: ${this.permalink})`
       );
-
-      await this._waitForReadyUI();
-      await this._waitForVideoLoaded();
 
       // Verify a video actually loaded (Grok may show a "post doesn't exist" error page)
       const duration = await this._getVideoDuration();
@@ -1193,11 +1230,8 @@ export class ParallelWorker {
         `[Worker ${this.workerId}] Video loaded: duration=${duration.toFixed(1)}s, url=${landedUrl}`
       );
 
-      // Check if we were redirected to a different video
-      const wasRedirected = landedUrl !== this.permalink;
-      if (!wasRedirected) {
-        // URL matches permalink — but still verify the page URL contains our UUID
-        // (Grok may have shown an error on the same URL then auto-recovered to a different video)
+      // Check if we're on the correct video (URL contains our UUID)
+      if (landedUrl.includes(uuid)) {
         this.logger.info(
           `[Worker ${this.workerId}] URL matches permalink, on correct video (${duration.toFixed(1)}s)`
         );
@@ -1233,12 +1267,26 @@ export class ParallelWorker {
             `[Worker ${this.workerId}] Clicking source video thumbnail ${i} (matches UUID ${uuid})`
           );
           await thumb.click();
-          await sleep(config.UI_ACTION_DELAY);
+
+          // Wait for SPA navigation to settle after thumbnail click.
+          // Grok may re-redirect back to the latest video if we don't wait.
           await this._waitForVideoLoaded();
+          const stableUrl = await this._waitForUrlStable();
+
           const navDur = await this._getVideoDuration();
           this.logger.info(
-            `[Worker ${this.workerId}] After thumbnail click: url=${this.page.url()}, duration=${navDur.toFixed(1)}s`
+            `[Worker ${this.workerId}] After thumbnail click: url=${stableUrl}, duration=${navDur.toFixed(1)}s`
           );
+
+          // Verify we actually ended up on the right video
+          if (!stableUrl.includes(uuid)) {
+            this.logger.warn(
+              `[Worker ${this.workerId}] URL after thumbnail click doesn't contain UUID ${uuid}, got ${stableUrl}`
+            );
+            // Don't return — fall through to foundMatch=false for retry on next attempt
+            break;
+          }
+
           foundMatch = true;
           return;
         }
@@ -1288,8 +1336,8 @@ export class ParallelWorker {
     await sleep(3000);
     await this._waitForReadyUI();
     await this._waitForVideoLoaded();
-
-    const landedUrl = this.page.url();
+    // Wait for SPA redirect to settle
+    const landedUrl = await this._waitForUrlStable();
     const landedDuration = await this._getVideoDuration();
 
     // If Grok redirected us to a different video, try to find the correct one via thumbnails
@@ -1311,11 +1359,11 @@ export class ParallelWorker {
               `[Worker ${this.workerId}] Found checkpoint video in thumbnails, clicking (UUID: ${checkpointUuid.substring(0, 8)})`
             );
             await thumb.click();
-            await sleep(config.UI_ACTION_DELAY);
             await this._waitForVideoLoaded();
+            const stableUrl = await this._waitForUrlStable();
             const recoveredDuration = await this._getVideoDuration();
             this.logger.debug(
-              `[Worker ${this.workerId}] Recovered checkpoint: url=${this.page.url()} duration=${recoveredDuration.toFixed(1)}s`
+              `[Worker ${this.workerId}] Recovered checkpoint: url=${stableUrl} duration=${recoveredDuration.toFixed(1)}s`
             );
             return;
           }
