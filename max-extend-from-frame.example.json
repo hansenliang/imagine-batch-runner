@@ -7,5 +7,6 @@
   "extendFromTime": 22,
   "autoDownload": true,
   "autoUpscale": true,
-  "autoDelete": false
+  "autoDelete": false,
+  "downloadMaxDurationOnly": false
 }
