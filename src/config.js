@@ -82,6 +82,7 @@ export const config = {
   DEFAULT_DOWNLOAD_ENABLED: true,
   DEFAULT_UPSCALE_ENABLED: true,
   DEFAULT_DELETE_ENABLED: false,
+  DEFAULT_DOWNLOAD_MAX_DURATION_ONLY: false, // Only download/process videos that reached MAX_VIDEO_DURATION
   DEFAULT_DOWNLOAD_AND_DELETE_REMAINING: false, // Cleanup remaining videos at end of run
   DOWNLOAD_DIR: path.resolve(__dirname, '..', 'downloads'),
   DOWNLOAD_TIMEOUT: 60000, // 60 seconds

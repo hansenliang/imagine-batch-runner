@@ -99,6 +99,7 @@ run
   .option('--auto-delete', 'Automatically delete videos after download (requires --auto-download)', false)
   .option('--auto-extend', 'Extend each video to max duration (30s) after generation', false)
   .option('--extend-from-time <seconds>', 'Seek to this timestamp (seconds) and extend from that frame instead of from the end')
+  .option('--download-max-duration-only', 'Only download/process videos that reached max duration (30s)', false)
   .option('--download-and-delete-remaining', 'Download and delete any remaining videos at end of run (forces --auto-download and --auto-delete)', false)
   .action(async (options) => {
     try {
@@ -151,6 +152,11 @@ run
         // If extend-from-time wasn't explicitly set on CLI, use config value
         if (options.extendFromTime === undefined && configData.extendFromTime !== undefined) {
           options.extendFromTime = configData.extendFromTime;
+        }
+
+        // If downloadMaxDurationOnly wasn't explicitly set on CLI, use config value
+        if (options.downloadMaxDurationOnly === false && configData.downloadMaxDurationOnly !== undefined) {
+          options.downloadMaxDurationOnly = configData.downloadMaxDurationOnly;
         }
 
         // Handle downloadAndDeleteRemainingVideos from config
@@ -223,6 +229,9 @@ run
       if (extendFromTime != null) {
         console.log(chalk.gray(`Extend from frame: ${extendFromTime}s`));
       }
+      if (options.downloadMaxDurationOnly) {
+        console.log(chalk.gray(`Download max-duration only: enabled (skip download for videos < ${config.MAX_VIDEO_DURATION}s)`));
+      }
       if (options.downloadAndDeleteRemaining) {
         console.log(chalk.gray(`Download and delete remaining: enabled (autoDownload and autoDelete forced to true)`));
       } else {
@@ -251,6 +260,7 @@ run
         autoDelete: options.autoDelete || false,
         autoExtend: options.autoExtend || false,
         extendFromTime,
+        downloadMaxDurationOnly: options.downloadMaxDurationOnly || false,
         downloadAndDeleteRemainingVideos: options.downloadAndDeleteRemaining || false,
       });
 
@@ -279,6 +289,7 @@ run
   .option('--auto-download', 'Automatically download extended videos', true)
   .option('--auto-upscale', 'Automatically upscale videos to HD (requires --auto-download)', true)
   .option('--auto-delete', 'Automatically delete extensions after download (never deletes original)', false)
+  .option('--download-max-duration-only', 'Only download/process videos that reached max duration (30s)', false)
   .option('--extend-from-time <seconds>', 'Seek to this timestamp (seconds) and extend from that frame instead of from the end')
   .action(async (options) => {
     try {
@@ -314,6 +325,11 @@ run
         // If extend-from-time wasn't explicitly set on CLI, use config value
         if (options.extendFromTime === undefined && configData.extendFromTime !== undefined) {
           options.extendFromTime = configData.extendFromTime;
+        }
+
+        // If downloadMaxDurationOnly wasn't explicitly set on CLI, use config value
+        if (options.downloadMaxDurationOnly === false && configData.downloadMaxDurationOnly !== undefined) {
+          options.downloadMaxDurationOnly = configData.downloadMaxDurationOnly;
         }
       }
 
@@ -379,6 +395,9 @@ run
       if (extendFromTime != null) {
         console.log(chalk.gray(`Extend from frame: ${extendFromTime}s`));
       }
+      if (options.downloadMaxDurationOnly) {
+        console.log(chalk.gray(`Download max-duration only: enabled (skip download for videos < ${config.MAX_VIDEO_DURATION}s)`));
+      }
       if (options.autoDownload) {
         console.log(chalk.gray(`Auto-download: enabled`));
       }
@@ -400,6 +419,7 @@ run
         autoDownload: options.autoDownload || false,
         autoUpscale: options.autoUpscale || false,
         autoDelete: options.autoDelete || false,
+        downloadMaxDurationOnly: options.downloadMaxDurationOnly || false,
         extendFromTime,
         maxExtendMode: true,
       });

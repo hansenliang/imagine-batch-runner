@@ -29,6 +29,7 @@ export class ParallelWorker {
     this.autoDownload = options.autoDownload || false;
     this.autoUpscale = options.autoUpscale || false;
     this.autoDelete = options.autoDelete || false;
+    this.downloadMaxDurationOnly = options.downloadMaxDurationOnly || false;
     this.downloadDir = options.downloadDir || null;
     this.jobName = options.jobName || null;
     this.downloadAndDeleteRemainingVideos = options.downloadAndDeleteRemainingVideos || false;
@@ -619,10 +620,27 @@ export class ParallelWorker {
 
         // ── Step 3: Post-processing (download / upscale / delete) ──────
         if (generationOk) {
-          // Only auto-delete if video reached max duration; partial extensions
-          // are preserved on server for future continuation
+          const savedAutoDownload = this.autoDownload;
           const savedAutoDelete = this.autoDelete;
-          if (this.autoExtend && this.autoDelete) {
+
+          // When downloadMaxDurationOnly is set, skip all post-processing for
+          // videos that haven't reached max duration
+          if (this.downloadMaxDurationOnly) {
+            const finalDuration = await this._getVideoDuration();
+            if (finalDuration < config.MAX_VIDEO_DURATION) {
+              this.autoDownload = false;
+              this.autoDelete = false;
+              if (this.postProcessor) {
+                this.postProcessor.autoDownload = false;
+                this.postProcessor.autoDelete = false;
+              }
+              this.logger.info(
+                `[Worker ${this.workerId}] Skipping download — video is ${finalDuration.toFixed(1)}s (< ${config.MAX_VIDEO_DURATION}s), downloadMaxDurationOnly enabled`
+              );
+            }
+          } else if (this.autoExtend && this.autoDelete) {
+            // Only auto-delete if video reached max duration; partial extensions
+            // are preserved on server for future continuation
             const finalDuration = await this._getVideoDuration();
             if (finalDuration < config.MAX_VIDEO_DURATION) {
               this.autoDelete = false;
@@ -633,9 +651,15 @@ export class ParallelWorker {
               );
             }
           }
+
           await this._runPostProcessing(index);
+
+          this.autoDownload = savedAutoDownload;
           this.autoDelete = savedAutoDelete;
-          if (this.postProcessor) this.postProcessor.autoDelete = savedAutoDelete;
+          if (this.postProcessor) {
+            this.postProcessor.autoDownload = savedAutoDownload;
+            this.postProcessor.autoDelete = savedAutoDelete;
+          }
         }
 
         // Propagate rate limit after post-processing partial extensions.
@@ -1046,12 +1070,26 @@ export class ParallelWorker {
         await this._waitForVideoLoad();
       }
 
-      // When autoExtend is on, suppress deletion for videos that haven't
-      // reached max duration — they can be extended further in a future run
+      // Duration gates: suppress download/delete for videos under max duration
+      const savedAutoDownload = this.postProcessor.autoDownload;
       const savedAutoDelete = this.postProcessor.autoDelete;
       let deleteSkipped = false;
+      let downloadSkipped = false;
 
-      if (this.autoExtend && this.autoDelete) {
+      if (this.downloadMaxDurationOnly) {
+        const duration = await this._getVideoDuration();
+        if (duration < config.MAX_VIDEO_DURATION) {
+          this.postProcessor.autoDownload = false;
+          this.postProcessor.autoDelete = false;
+          downloadSkipped = true;
+          deleteSkipped = true;
+          this.logger.info(
+            `[Worker ${this.workerId}] Cleanup: skipping download — video is ${duration.toFixed(1)}s (< ${config.MAX_VIDEO_DURATION}s), downloadMaxDurationOnly enabled`
+          );
+        }
+      } else if (this.autoExtend && this.autoDelete) {
+        // When autoExtend is on, suppress deletion for videos that haven't
+        // reached max duration — they can be extended further in a future run
         const duration = await this._getVideoDuration();
         if (duration < config.MAX_VIDEO_DURATION) {
           this.postProcessor.autoDelete = false;
@@ -1065,7 +1103,8 @@ export class ParallelWorker {
       // Process this video (download, upscale if needed, delete if allowed)
       const result = await this.postProcessor.processExistingVideo(cleanupIndex);
 
-      // Restore autoDelete
+      // Restore flags
+      this.postProcessor.autoDownload = savedAutoDownload;
       this.postProcessor.autoDelete = savedAutoDelete;
 
       if (result.downloaded) {

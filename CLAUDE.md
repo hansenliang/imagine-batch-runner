@@ -9,6 +9,9 @@ Automates Grok Imagine video generation via Playwright. Runs 1-100 parallel work
 - `node src/cli.js run max-extend --config max-extend-config.json` — Extend existing video to 30s
 - `npm test` — Validate imports
 
+## Download Max Duration Only
+When `downloadMaxDurationOnly: true` is set (in config or via `--download-max-duration-only` flag), only videos that reached the maximum duration (30s) are downloaded, upscaled, and deleted. Videos under 30s are left on server untouched — no download, no upscale, no delete. Works in all modes: `run start`, `run max-extend`, and autorun configs. The threshold is controlled by `config.MAX_VIDEO_DURATION`.
+
 ## Auto-Extend
 When `autoExtend: true` is set (in config or via `--auto-extend` flag), each generated video is automatically extended to the maximum 30s duration. Videos that don't reach 30s (e.g., due to rate limits) are downloaded/upscaled but not deleted — they can be extended further in a future run.
 

@@ -26,6 +26,7 @@ export class ParallelRunner {
       autoExtend = false,
       maxExtendMode = false,
       extendFromTime = null,
+      downloadMaxDurationOnly = false,
       downloadAndDeleteRemainingVideos = false,
       logFilePath = null,  // Optional: caller can specify exact log file path
     } = options;
@@ -47,6 +48,7 @@ export class ParallelRunner {
     this.autoExtend = autoExtend;
     this.maxExtendMode = maxExtendMode;
     this.extendFromTime = extendFromTime;
+    this.downloadMaxDurationOnly = downloadMaxDurationOnly;
 
     // Runtime state
     // If logFilePath provided, use it; otherwise default to logs/runs/<jobName>.log
@@ -84,6 +86,9 @@ export class ParallelRunner {
       await this.logger.info(`Mode: max-extend (target ${config.MAX_VIDEO_DURATION}s)`);
     } else if (this.autoExtend) {
       await this.logger.info(`Auto-extend: enabled (target ${config.MAX_VIDEO_DURATION}s)`);
+    }
+    if (this.downloadMaxDurationOnly) {
+      await this.logger.info(`downloadMaxDurationOnly enabled - only downloading videos >= ${config.MAX_VIDEO_DURATION}s`);
     }
     if (this.downloadAndDeleteRemainingVideos) {
       await this.logger.info('downloadAndDeleteRemainingVideos enabled - autoDownload and autoDelete forced to true');
@@ -130,6 +135,7 @@ export class ParallelRunner {
             autoExtend: this.autoExtend,
             maxExtendMode: this.maxExtendMode,
             extendFromTime: this.extendFromTime,
+            downloadMaxDurationOnly: this.downloadMaxDurationOnly,
             downloadAndDeleteRemainingVideos: this.downloadAndDeleteRemainingVideos,
             downloadDir: this.downloadDir,
             jobName: this.jobName,
