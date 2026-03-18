@@ -622,6 +622,7 @@ export class ParallelWorker {
         if (generationOk) {
           const savedAutoDownload = this.autoDownload;
           const savedAutoDelete = this.autoDelete;
+          const savedAutoUpscale = this.postProcessor?.autoUpscale;
 
           // When downloadMaxDurationOnly is set, skip all post-processing for
           // videos that haven't reached max duration
@@ -632,6 +633,7 @@ export class ParallelWorker {
               this.autoDelete = false;
               if (this.postProcessor) {
                 this.postProcessor.autoDownload = false;
+                this.postProcessor.autoUpscale = false;
                 this.postProcessor.autoDelete = false;
               }
               this.logger.info(
@@ -658,6 +660,7 @@ export class ParallelWorker {
           this.autoDelete = savedAutoDelete;
           if (this.postProcessor) {
             this.postProcessor.autoDownload = savedAutoDownload;
+            this.postProcessor.autoUpscale = savedAutoUpscale;
             this.postProcessor.autoDelete = savedAutoDelete;
           }
         }
@@ -1070,8 +1073,9 @@ export class ParallelWorker {
         await this._waitForVideoLoad();
       }
 
-      // Duration gates: suppress download/delete for videos under max duration
+      // Duration gates: suppress download/delete/upscale for videos under max duration
       const savedAutoDownload = this.postProcessor.autoDownload;
+      const savedAutoUpscale = this.postProcessor.autoUpscale;
       const savedAutoDelete = this.postProcessor.autoDelete;
       let deleteSkipped = false;
       let downloadSkipped = false;
@@ -1080,6 +1084,7 @@ export class ParallelWorker {
         const duration = await this._getVideoDuration();
         if (duration < config.MAX_VIDEO_DURATION) {
           this.postProcessor.autoDownload = false;
+          this.postProcessor.autoUpscale = false;
           this.postProcessor.autoDelete = false;
           downloadSkipped = true;
           deleteSkipped = true;
@@ -1105,6 +1110,7 @@ export class ParallelWorker {
 
       // Restore flags
       this.postProcessor.autoDownload = savedAutoDownload;
+      this.postProcessor.autoUpscale = savedAutoUpscale;
       this.postProcessor.autoDelete = savedAutoDelete;
 
       if (result.downloaded) {
