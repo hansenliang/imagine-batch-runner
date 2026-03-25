@@ -478,24 +478,72 @@ export class ParallelWorker {
         // ── Step 1: Get a video to work with ──────────────────────────
         let generationOk = false;
 
+        // Track whether the video was freshly generated from an image (no existing
+        // video at the permalink). When true, extendFromTime is skipped since the
+        // generated video is too short for a specific-frame extend to make sense.
+        let generatedFromImage = false;
+
         if (this.maxExtendMode) {
-          // Max-extend: navigate to existing permalink, verify video
+          // Max-extend: navigate to existing permalink, check for video
           this.logger.info(`[Worker ${this.workerId}] Chain ${index + 1}: navigating to source video`);
           await this._navigateToSourceVideo();
 
           const initialDuration = await this._getVideoDuration();
           if (initialDuration <= 0) {
-            this.logger.error(`[Worker ${this.workerId}] Chain ${index + 1}: No video found at permalink`);
-            await this.manifest.updateItemAtomic(
-              index,
-              { status: 'FAILED', error: 'No video found at permalink', attempts: 0 },
-              this.workerId
+            // No video at permalink (e.g. static image) — generate one first,
+            // then let the extend loop bring it to max duration.
+            this.logger.info(
+              `[Worker ${this.workerId}] Chain ${index + 1}: No video at permalink, generating from image`
             );
-            await sleep(2000);
-            continue;
-          }
+            await this._ensureOnPermalink();
 
-          if (initialDuration >= config.MAX_VIDEO_DURATION) {
+            const result = await this.generator.generate(index, this.prompt);
+            const duration = Math.round((result.durationMs || 0) / 1000);
+
+            if (result.rateLimited) {
+              this.logger.warn(`[Worker ${this.workerId}] Chain ${index + 1}: Rate limit during generation`);
+              await this.manifest.updateItemAtomic(
+                index,
+                { status: 'RATE_LIMITED', error: result.error, attempts: 0 },
+                this.workerId
+              );
+              throw new Error('RATE_LIMIT_STOP');
+            }
+
+            if (result.success) {
+              this.logger.success(
+                `[Worker ${this.workerId}] Chain ${index + 1}: Generated video in ${duration}s - ${this.page.url()}`
+              );
+              generationOk = true;
+              generatedFromImage = true;
+            } else if (result.contentModerated) {
+              await this.manifest.updateItemAtomic(
+                index,
+                { status: 'CONTENT_MODERATED', error: result.error, attempts: 1 },
+                this.workerId
+              );
+            } else {
+              await this.manifest.updateItemAtomic(
+                index,
+                { status: 'FAILED', error: result.error, attempts: result.attempted ? 1 : 0 },
+                this.workerId
+              );
+              this.logger.error(
+                `[Worker ${this.workerId}] Chain ${index + 1}: Generation failed - ${result.error || 'Unknown error'}`
+              );
+
+              // Page may be in a broken state — reload for next attempt
+              this.logger.info(`[Worker ${this.workerId}] Reloading page after failure`);
+              try {
+                await this.page.reload({ waitUntil: 'domcontentloaded', timeout: config.PAGE_LOAD_TIMEOUT });
+                await sleep(3000);
+                await this._waitForReadyUI();
+              } catch (reloadError) {
+                this.logger.warn(`[Worker ${this.workerId}] Page reload failed: ${reloadError.message}`);
+              }
+            }
+
+          } else if (initialDuration >= config.MAX_VIDEO_DURATION) {
             this.logger.warn(
               `[Worker ${this.workerId}] Chain ${index + 1}: Video already at max duration (${initialDuration.toFixed(1)}s), skipping`
             );
@@ -506,12 +554,13 @@ export class ParallelWorker {
             );
             await sleep(2000);
             continue;
-          }
 
-          this.logger.info(
-            `[Worker ${this.workerId}] Chain ${index + 1}: Source video is ${initialDuration.toFixed(1)}s, extending to ${config.MAX_VIDEO_DURATION}s`
-          );
-          generationOk = true;
+          } else {
+            this.logger.info(
+              `[Worker ${this.workerId}] Chain ${index + 1}: Source video is ${initialDuration.toFixed(1)}s, extending to ${config.MAX_VIDEO_DURATION}s`
+            );
+            generationOk = true;
+          }
 
         } else {
           // Normal mode: generate a new video
@@ -579,7 +628,9 @@ export class ParallelWorker {
         // ── Step 2: Extend to max duration (if enabled and we have a video) ──
         let extResult = null;
         if (generationOk && this.autoExtend) {
-          extResult = await this._runExtendLoop(this.page.url(), index);
+          extResult = await this._runExtendLoop(this.page.url(), index, {
+            skipExtendFromTime: generatedFromImage,
+          });
 
           if (extResult.rateLimited) {
             // In max-extend mode, rate limit on extend is fatal (nothing else to do)
@@ -724,10 +775,14 @@ export class ParallelWorker {
    *
    * @param {string} startCheckpointUrl - URL of the video to start extending from
    * @param {number} index - Manifest item index for logging/counters
+   * @param {Object} [options] - Options
+   * @param {boolean} [options.skipExtendFromTime] - Skip extendFromTime on first extend
+   *   (used when the video was freshly generated from an image and is too short for
+   *   a specific-frame extend to make sense)
    * @returns {Promise<{successfulExtends: number, rateLimited: boolean, checkpointUrl: string}>}
    * @private
    */
-  async _runExtendLoop(startCheckpointUrl, index) {
+  async _runExtendLoop(startCheckpointUrl, index, options = {}) {
     let successfulExtends = 0;
     let failedAttempts = 0;
     const maxFailedAttempts = 100;
@@ -773,7 +828,7 @@ export class ParallelWorker {
       // (seek to specific time → hover progress bar → click button).
       // Subsequent extends always use the normal Settings → "Extend video" path.
       let triggered;
-      if (successfulExtends === 0 && failedAttempts === 0 && this.extendFromTime != null) {
+      if (successfulExtends === 0 && failedAttempts === 0 && this.extendFromTime != null && !options.skipExtendFromTime) {
         const extUrl = this.page.url();
         const extDur = await this._getVideoDuration();
         this.logger.info(
