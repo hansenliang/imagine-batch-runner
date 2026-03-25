@@ -492,10 +492,18 @@ export class ParallelWorker {
           if (initialDuration <= 0) {
             // No video at permalink (e.g. static image) — generate one first,
             // then let the extend loop bring it to max duration.
+            // Navigate to /imagine (not the permalink) because the image post page
+            // has a full-screen overlay that blocks the generate button click.
             this.logger.info(
               `[Worker ${this.workerId}] Chain ${index + 1}: No video at permalink, generating from image`
             );
-            await this._ensureOnPermalink();
+            this.logger.info(`[Worker ${this.workerId}] Navigating to /imagine for clean generation page`);
+            await this.page.goto('https://grok.com/imagine', {
+              waitUntil: 'domcontentloaded',
+              timeout: config.PAGE_LOAD_TIMEOUT,
+            });
+            await sleep(3000);
+            await this._waitForReadyUI();
 
             const result = await this.generator.generate(index, this.prompt);
             const duration = Math.round((result.durationMs || 0) / 1000);
@@ -1302,6 +1310,23 @@ export class ParallelWorker {
 
       await sleep(3000);
       await this._waitForReadyUI();
+
+      // Quick check: if the page has a static image matching our UUID and no <video>
+      // element, this is an image post. Skip the expensive _waitForVideoLoaded() timeout
+      // (30s) and bail immediately so the caller can generate a video instead.
+      const isImagePost = await this.page.evaluate((id) => {
+        const hasVideo = [...document.querySelectorAll('video')].some(v => !!(v.currentSrc || v.src));
+        const hasImage = !!document.querySelector(`img[src*="${id}"]`);
+        return !hasVideo && hasImage;
+      }, uuid).catch(() => false);
+
+      if (isImagePost) {
+        this.logger.info(
+          `[Worker ${this.workerId}] Detected static image post (UUID: ${uuid}), skipping video wait`
+        );
+        return;
+      }
+
       await this._waitForVideoLoaded();
 
       // Wait for Grok's async SPA redirect to settle before checking the URL.
