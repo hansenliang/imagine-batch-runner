@@ -1315,6 +1315,15 @@ export class ParallelWorker {
       // Verify a video actually loaded (Grok may show a "post doesn't exist" error page)
       const duration = await this._getVideoDuration();
       if (duration <= 0) {
+        // If we landed on the correct permalink (URL contains our UUID) but no video
+        // loaded, this is likely a static image post — retrying won't help. Bail
+        // immediately so the caller can handle it (e.g. generate a video from the image).
+        if (landedUrl.includes(uuid)) {
+          this.logger.info(
+            `[Worker ${this.workerId}] URL matches permalink but no video — static image post, skipping retries`
+          );
+          return;
+        }
         this.logger.warn(
           `[Worker ${this.workerId}] No video loaded after navigation (attempt ${attempt}), duration=0`
         );
