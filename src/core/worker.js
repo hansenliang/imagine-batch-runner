@@ -455,17 +455,16 @@ export class ParallelWorker {
     // If so, generation uses the normal mode path (_ensureOnPermalink + generate) so that
     // content moderation retries stay on the same page instead of re-navigating each time.
     // The extend loop still runs after each successful generation (autoExtend is true).
+    // Check the current page directly — init already navigated to the permalink and
+    // selected video mode/duration/resolution, so no re-navigation needed.
     let isImagePost = false;
     if (this.maxExtendMode) {
-      await this._navigateToSourceVideo();
       const checkDuration = await this._getVideoDuration();
       if (checkDuration <= 0) {
         isImagePost = true;
         this.logger.info(
           `[Worker ${this.workerId}] Permalink is a static image — will generate videos then extend to ${config.MAX_VIDEO_DURATION}s`
         );
-        // Re-select video mode since _navigateToSourceVideo() reloaded the page
-        await this._selectVideoMode();
       }
     }
 
