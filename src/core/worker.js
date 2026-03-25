@@ -492,18 +492,13 @@ export class ParallelWorker {
           if (initialDuration <= 0) {
             // No video at permalink (e.g. static image) — generate one first,
             // then let the extend loop bring it to max duration.
-            // Navigate to /imagine (not the permalink) because the image post page
-            // has a full-screen overlay that blocks the generate button click.
+            // Stay on the image post page so generation is grounded in the image.
+            // Re-select video mode since _navigateToSourceVideo() reloaded the page
+            // and reset the init-time settings (video mode, duration, resolution).
             this.logger.info(
               `[Worker ${this.workerId}] Chain ${index + 1}: No video at permalink, generating from image`
             );
-            this.logger.info(`[Worker ${this.workerId}] Navigating to /imagine for clean generation page`);
-            await this.page.goto('https://grok.com/imagine', {
-              waitUntil: 'domcontentloaded',
-              timeout: config.PAGE_LOAD_TIMEOUT,
-            });
-            await sleep(3000);
-            await this._waitForReadyUI();
+            await this._selectVideoMode();
 
             const result = await this.generator.generate(index, this.prompt);
             const duration = Math.round((result.durationMs || 0) / 1000);
