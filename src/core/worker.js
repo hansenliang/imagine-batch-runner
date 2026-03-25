@@ -451,6 +451,24 @@ export class ParallelWorker {
     this.isRunning = true;
     let stoppedEarly = false;
 
+    // For maxExtendMode, check once whether the permalink is a static image (no video).
+    // If so, generation uses the normal mode path (_ensureOnPermalink + generate) so that
+    // content moderation retries stay on the same page instead of re-navigating each time.
+    // The extend loop still runs after each successful generation (autoExtend is true).
+    let isImagePost = false;
+    if (this.maxExtendMode) {
+      await this._navigateToSourceVideo();
+      const checkDuration = await this._getVideoDuration();
+      if (checkDuration <= 0) {
+        isImagePost = true;
+        this.logger.info(
+          `[Worker ${this.workerId}] Permalink is a static image — will generate videos then extend to ${config.MAX_VIDEO_DURATION}s`
+        );
+        // Re-select video mode since _navigateToSourceVideo() reloaded the page
+        await this._selectVideoMode();
+      }
+    }
+
     try {
       while (!this.shouldStop) {
         // Claim next item atomically
@@ -481,72 +499,26 @@ export class ParallelWorker {
         // Track whether the video was freshly generated from an image (no existing
         // video at the permalink). When true, extendFromTime is skipped since the
         // generated video is too short for a specific-frame extend to make sense.
-        let generatedFromImage = false;
+        let generatedFromImage = isImagePost;
 
-        if (this.maxExtendMode) {
-          // Max-extend: navigate to existing permalink, check for video
+        if (this.maxExtendMode && !isImagePost) {
+          // Max-extend with existing video: navigate to source, check duration
           this.logger.info(`[Worker ${this.workerId}] Chain ${index + 1}: navigating to source video`);
           await this._navigateToSourceVideo();
 
           const initialDuration = await this._getVideoDuration();
           if (initialDuration <= 0) {
-            // No video at permalink (e.g. static image) — generate one first,
-            // then let the extend loop bring it to max duration.
-            // Stay on the image post page so generation is grounded in the image.
-            // Re-select video mode since _navigateToSourceVideo() reloaded the page
-            // and reset the init-time settings (video mode, duration, resolution).
-            this.logger.info(
-              `[Worker ${this.workerId}] Chain ${index + 1}: No video at permalink, generating from image`
+            this.logger.error(`[Worker ${this.workerId}] Chain ${index + 1}: No video found at permalink`);
+            await this.manifest.updateItemAtomic(
+              index,
+              { status: 'FAILED', error: 'No video found at permalink', attempts: 0 },
+              this.workerId
             );
-            await this._selectVideoMode();
+            await sleep(2000);
+            continue;
+          }
 
-            const result = await this.generator.generate(index, this.prompt);
-            const duration = Math.round((result.durationMs || 0) / 1000);
-
-            if (result.rateLimited) {
-              this.logger.warn(`[Worker ${this.workerId}] Chain ${index + 1}: Rate limit during generation`);
-              await this.manifest.updateItemAtomic(
-                index,
-                { status: 'RATE_LIMITED', error: result.error, attempts: 0 },
-                this.workerId
-              );
-              throw new Error('RATE_LIMIT_STOP');
-            }
-
-            if (result.success) {
-              this.logger.success(
-                `[Worker ${this.workerId}] Chain ${index + 1}: Generated video in ${duration}s - ${this.page.url()}`
-              );
-              generationOk = true;
-              generatedFromImage = true;
-            } else if (result.contentModerated) {
-              await this.manifest.updateItemAtomic(
-                index,
-                { status: 'CONTENT_MODERATED', error: result.error, attempts: 1 },
-                this.workerId
-              );
-            } else {
-              await this.manifest.updateItemAtomic(
-                index,
-                { status: 'FAILED', error: result.error, attempts: result.attempted ? 1 : 0 },
-                this.workerId
-              );
-              this.logger.error(
-                `[Worker ${this.workerId}] Chain ${index + 1}: Generation failed - ${result.error || 'Unknown error'}`
-              );
-
-              // Page may be in a broken state — reload for next attempt
-              this.logger.info(`[Worker ${this.workerId}] Reloading page after failure`);
-              try {
-                await this.page.reload({ waitUntil: 'domcontentloaded', timeout: config.PAGE_LOAD_TIMEOUT });
-                await sleep(3000);
-                await this._waitForReadyUI();
-              } catch (reloadError) {
-                this.logger.warn(`[Worker ${this.workerId}] Page reload failed: ${reloadError.message}`);
-              }
-            }
-
-          } else if (initialDuration >= config.MAX_VIDEO_DURATION) {
+          if (initialDuration >= config.MAX_VIDEO_DURATION) {
             this.logger.warn(
               `[Worker ${this.workerId}] Chain ${index + 1}: Video already at max duration (${initialDuration.toFixed(1)}s), skipping`
             );
