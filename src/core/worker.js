@@ -1034,6 +1034,9 @@ export class ParallelWorker {
       });
       await sleep(3000);
       await this._waitForReadyUI();
+      // Re-navigating resets the page to default mode. If this is an image post,
+      // re-select video mode so the generate button is accessible.
+      await this._selectVideoMode();
     } catch (error) {
       this.logger.warn(`[Worker ${this.workerId}] _ensureOnPermalink failed: ${error.message}`);
     }
