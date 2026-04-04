@@ -118,6 +118,10 @@ export class ParallelWorker {
         throw new Error('AUTH_REQUIRED: Not authenticated. Worker cannot proceed.');
       }
 
+      // Dismiss any blocking overlays (privacy toasts, cookie banners, etc.)
+      // before interacting with the page — these can intercept pointer events.
+      await this._dismissOverlays();
+
       // Switch to video mode if on an image page (Settings → Make Video)
       await this._selectVideoMode();
 
@@ -149,6 +153,38 @@ export class ParallelWorker {
       this.logger.error(`[Worker ${this.workerId}] Initialization failed`, error);
       await this.shutdown();
       throw error;
+    }
+  }
+
+  /**
+   * Dismiss any blocking overlays (privacy toasts, cookie banners, etc.)
+   * that sit above the main UI and intercept pointer events.
+   * Called before any click interactions to ensure a clean slate.
+   * @private
+   */
+  async _dismissOverlays() {
+    try {
+      const removed = await this.page.evaluate(() => {
+        let count = 0;
+        // Pattern 1: Fixed-position toast/banner overlays (e.g. privacy policy toast)
+        // Matches elements like: div.fixed.z-50.shadow-lg (notification toasts)
+        document.querySelectorAll('div.fixed[class*="z-50"][class*="shadow"]').forEach(el => {
+          el.remove();
+          count++;
+        });
+        // Pattern 2: Absolute-position announcement banners (z-[9999])
+        document.querySelectorAll('div.absolute[class*="z-[9999]"]').forEach(el => {
+          el.remove();
+          count++;
+        });
+        return count;
+      });
+      if (removed > 0) {
+        this.logger.debug(`[Worker ${this.workerId}] Dismissed ${removed} blocking overlay(s)`);
+        await sleep(300);
+      }
+    } catch {
+      // Best-effort — don't let overlay dismissal break the flow
     }
   }
 
@@ -1279,6 +1315,7 @@ export class ParallelWorker {
 
       await sleep(3000);
       await this._waitForReadyUI();
+      await this._dismissOverlays();
 
       // Quick check: if the page has a static image matching our UUID and no <video>
       // element, this is an image post. Skip the expensive _waitForVideoLoaded() timeout

@@ -399,6 +399,11 @@ export class PostProcessor {
    */
   async _dismissBanners() {
     try {
+      // Remove any blocking overlays first (privacy toasts, cookie banners, etc.)
+      await this.page.evaluate(() => {
+        document.querySelectorAll('div.fixed[class*="z-50"][class*="shadow"]').forEach(el => el.remove());
+      }).catch(() => {});
+
       const dismissButton = await this.page.$(selectors.ANNOUNCEMENT_BANNER_DISMISS);
       if (dismissButton) {
         const isVisible = await dismissButton.isVisible().catch(() => false);
