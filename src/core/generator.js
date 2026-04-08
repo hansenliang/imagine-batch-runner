@@ -154,12 +154,14 @@ export class VideoGenerator {
 
     let button = makeVideoBtn || redoBtn;
     let buttonLabel = null;
+    let buttonSource = makeVideoBtn ? 'MAKE_VIDEO_BUTTON selector' : redoBtn ? 'REDO_BUTTON selector' : null;
 
     if (!button) {
       const promptResult = await this._findGenerationButtonNearPrompt(index);
       if (promptResult.element) {
         button = promptResult.element;
         buttonLabel = promptResult.label;
+        buttonSource = 'prompt-adjacent scan';
       }
     }
 
@@ -189,6 +191,7 @@ export class VideoGenerator {
         if (matchers.some((pattern) => pattern.test(label))) {
           button = candidate;
           buttonLabel = label;
+          buttonSource = 'visible-button scan';
           break;
         }
       }
@@ -217,7 +220,10 @@ export class VideoGenerator {
     }
 
     const buttonText = buttonLabel || await button.textContent().catch(() => '(unknown)');
-    this.logger.debug(`${this._tag(index)} Found button: "${buttonText}"`);
+    const buttonAria = await button.getAttribute('aria-label').catch(() => '');
+    this.logger.debug(
+      `${this._tag(index)} Found button via ${buttonSource}: text="${buttonText}", aria="${buttonAria}"`
+    );
 
     // Check if button is disabled (might indicate rate limit)
     const isDisabled = await button.isDisabled().catch(() => false);
@@ -225,11 +231,20 @@ export class VideoGenerator {
       throw new Error('RATE_LIMIT: Generation button is disabled');
     }
 
-    // Use force:true to bypass overlays that intercept pointer events
-    // (e.g. image caption overlays with pointer-events-none whose children
-    // still block Playwright's element-at-point actionability check)
-    await button.click({ force: true });
-    this.logger.debug(`${this._tag(index)} Clicked generation button`);
+    // Try normal click first; if an overlay intercepts pointer events,
+    // fall back to a direct JS el.click() which bypasses screen coordinates
+    // entirely and invokes the DOM click handler on the element itself.
+    try {
+      await button.click();
+    } catch (clickError) {
+      if (clickError.message?.includes('intercepts pointer events')) {
+        this.logger.info(`${this._tag(index)} Click intercepted by overlay, using JS click fallback`);
+        await button.evaluate(el => el.click());
+      } else {
+        throw clickError;
+      }
+    }
+    this.logger.info(`${this._tag(index)} Clicked generation button`);
 
     // Wait for UI to respond
     await sleep(config.UI_ACTION_DELAY);
