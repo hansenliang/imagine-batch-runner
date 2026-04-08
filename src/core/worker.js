@@ -167,13 +167,18 @@ export class ParallelWorker {
       const removed = await this.page.evaluate(() => {
         let count = 0;
         // Pattern 1: Fixed-position toast/banner overlays (e.g. privacy policy toast)
-        // Matches elements like: div.fixed.z-50.shadow-lg (notification toasts)
         document.querySelectorAll('div.fixed[class*="z-50"][class*="shadow"]').forEach(el => {
           el.remove();
           count++;
         });
         // Pattern 2: Absolute-position announcement banners (z-[9999])
         document.querySelectorAll('div.absolute[class*="z-[9999]"]').forEach(el => {
+          el.remove();
+          count++;
+        });
+        // Pattern 3: Image caption overlays that intercept pointer events
+        // (div.absolute at bottom with pointer-events-none but children still block clicks)
+        document.querySelectorAll('div.absolute[class*="pointer-events-none"][class*="z-10"]').forEach(el => {
           el.remove();
           count++;
         });

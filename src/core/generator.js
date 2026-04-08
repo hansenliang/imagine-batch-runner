@@ -114,9 +114,10 @@ export class VideoGenerator {
    */
   async _dismissBanners() {
     try {
-      // Remove any blocking overlays first (privacy toasts, cookie banners, etc.)
+      // Remove any blocking overlays (privacy toasts, image caption overlays, etc.)
       await this.page.evaluate(() => {
         document.querySelectorAll('div.fixed[class*="z-50"][class*="shadow"]').forEach(el => el.remove());
+        document.querySelectorAll('div.absolute[class*="pointer-events-none"][class*="z-10"]').forEach(el => el.remove());
       }).catch(() => {});
 
       const dismissButton = await this.page.$(selectors.ANNOUNCEMENT_BANNER_DISMISS);
@@ -225,7 +226,10 @@ export class VideoGenerator {
       throw new Error('RATE_LIMIT: Generation button is disabled');
     }
 
-    await button.click();
+    // Use force:true to bypass overlays that intercept pointer events
+    // (e.g. image caption overlays with pointer-events-none whose children
+    // still block Playwright's element-at-point actionability check)
+    await button.click({ force: true });
     this.logger.debug(`${this._tag(index)} Clicked generation button`);
 
     // Wait for UI to respond
