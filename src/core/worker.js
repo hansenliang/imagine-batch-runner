@@ -277,17 +277,19 @@ export class ParallelWorker {
   }
 
   /**
-   * Switch from image mode to video mode if a Settings button is present.
-   * On Grok Imagine image pages, a "Settings" gear button opens a menu
-   * with a "Make Video" option to switch to video generation mode.
-   * If the Settings button is not found (already in video mode), this is a no-op.
+   * Switch from image mode to video mode.
+   *
+   * Grok UI variants (tried in order):
+   *   1. Direct "Video" button (aria-label="Video") — current UI (April 2026)
+   *   2. Settings gear → "Make Video" menu item — legacy UI
+   *
+   * If neither is found, assumes already in video mode (no-op).
    * @private
    */
   async _selectVideoMode() {
     try {
       // If any video element already has a src (e.g. from a previous run), we're already
-      // in video mode. Skip the Settings interaction to avoid triggering SPA navigation.
-      // Handles dual sd-video/hd-video elements (see claude.md "Dual video elements").
+      // in video mode. Skip the interaction to avoid triggering SPA navigation.
       const hasExistingVideo = await this.page.$$eval(selectors.VIDEO_CONTAINER,
         videos => videos.some(v => !!(v.currentSrc || v.src))
       ).catch(() => false);
@@ -296,9 +298,22 @@ export class ParallelWorker {
         return;
       }
 
+      // ── Path 1: Direct "Video" button (current Grok UI) ──
+      const videoButton = await this.page.$(selectors.VIDEO_MODE_BUTTON);
+      if (videoButton) {
+        const isVisible = await videoButton.isVisible().catch(() => false);
+        if (isVisible) {
+          await videoButton.click();
+          await sleep(config.UI_ACTION_DELAY);
+          this.logger.info(`[Worker ${this.workerId}] Switched to video mode via Video button`);
+          return;
+        }
+      }
+
+      // ── Path 2: Settings gear → "Make Video" menu item (legacy UI) ──
       const settingsButton = await this.page.$(selectors.SETTINGS_BUTTON);
       if (!settingsButton) {
-        this.logger.debug(`[Worker ${this.workerId}] No Settings button found, assuming video mode`);
+        this.logger.debug(`[Worker ${this.workerId}] No video/settings button found, assuming video mode`);
         return;
       }
 
@@ -308,14 +323,11 @@ export class ParallelWorker {
         return;
       }
 
-      // Click Settings to open the mode menu
       await settingsButton.click();
       await sleep(config.UI_ACTION_DELAY);
 
-      // Look for "Make Video" menu item
       let makeVideoItem = await this.page.$(selectors.MAKE_VIDEO_MODE_ITEM);
 
-      // Fallback: scan menu items for "Make Video" text
       if (!makeVideoItem) {
         const menuItems = await this.page.$$('[role="menuitem"]');
         for (const item of menuItems) {

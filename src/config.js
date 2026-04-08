@@ -158,10 +158,13 @@ export const selectors = {
   UPSCALING_INDICATOR: 'text=/upscaling/i',
   HD_BADGE: 'text=/^HD$/i',
 
-  // Settings button (gear icon next to prompt, opens mode selection menu)
+  // Direct "Video" mode toggle button (current Grok UI, April 2026)
+  VIDEO_MODE_BUTTON: 'button[aria-label="Video"], button[aria-label="video"]',
+
+  // Settings button (gear icon next to prompt, opens mode selection menu — legacy UI)
   SETTINGS_BUTTON: 'button[aria-label="Settings"], button[aria-label="settings"]',
 
-  // "Make Video" mode menu item (inside Settings menu, switches from image to video mode)
+  // "Make Video" mode menu item (inside Settings menu, switches from image to video mode — legacy UI)
   MAKE_VIDEO_MODE_ITEM: '[role="menuitem"]:has-text("Make Video"), [role="menuitem"]:has-text("Make video")',
 
   // Extend video menu item (inside "..." more options menu)
