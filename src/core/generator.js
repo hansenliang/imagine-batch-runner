@@ -231,19 +231,10 @@ export class VideoGenerator {
       throw new Error('RATE_LIMIT: Generation button is disabled');
     }
 
-    // Try normal click first; if an overlay intercepts pointer events,
-    // fall back to a direct JS el.click() which bypasses screen coordinates
-    // entirely and invokes the DOM click handler on the element itself.
-    try {
-      await button.click();
-    } catch (clickError) {
-      if (clickError.message?.includes('intercepts pointer events')) {
-        this.logger.info(`${this._tag(index)} Click intercepted by overlay, using JS click fallback`);
-        await button.evaluate(el => el.click());
-      } else {
-        throw clickError;
-      }
-    }
+    // Use direct JS click — Grok's image caption overlay intercepts Playwright's
+    // coordinate-based click (even with force:true). el.click() invokes the DOM
+    // handler directly, bypassing screen coordinates and overlay hit-testing.
+    await button.evaluate(el => el.click());
     this.logger.info(`${this._tag(index)} Clicked generation button`);
 
     // Wait for UI to respond
