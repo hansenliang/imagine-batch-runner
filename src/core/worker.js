@@ -176,12 +176,6 @@ export class ParallelWorker {
           el.remove();
           count++;
         });
-        // Pattern 3: Image caption overlays that intercept pointer events
-        // (div.absolute at bottom with pointer-events-none but children still block clicks)
-        document.querySelectorAll('div.absolute[class*="pointer-events-none"][class*="z-10"]').forEach(el => {
-          el.remove();
-          count++;
-        });
         return count;
       });
       if (removed > 0) {

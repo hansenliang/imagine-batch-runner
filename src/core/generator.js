@@ -114,10 +114,9 @@ export class VideoGenerator {
    */
   async _dismissBanners() {
     try {
-      // Remove any blocking overlays (privacy toasts, image caption overlays, etc.)
+      // Remove any blocking overlays (privacy toasts, cookie banners, etc.)
       await this.page.evaluate(() => {
         document.querySelectorAll('div.fixed[class*="z-50"][class*="shadow"]').forEach(el => el.remove());
-        document.querySelectorAll('div.absolute[class*="pointer-events-none"][class*="z-10"]').forEach(el => el.remove());
       }).catch(() => {});
 
       const dismissButton = await this.page.$(selectors.ANNOUNCEMENT_BANNER_DISMISS);
