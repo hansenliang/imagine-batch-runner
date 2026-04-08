@@ -9,5 +9,6 @@
   "autoUpscale": true,
   "autoDelete": false,
   "autoExtend": false,
+  "downloadMaxDurationOnly": false,
   "downloadAndDeleteRemainingVideos": false
 }

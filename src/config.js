@@ -82,6 +82,7 @@ export const config = {
   DEFAULT_DOWNLOAD_ENABLED: true,
   DEFAULT_UPSCALE_ENABLED: true,
   DEFAULT_DELETE_ENABLED: false,
+  DEFAULT_DOWNLOAD_MAX_DURATION_ONLY: false, // Only download/process videos that reached MAX_VIDEO_DURATION
   DEFAULT_DOWNLOAD_AND_DELETE_REMAINING: false, // Cleanup remaining videos at end of run
   DOWNLOAD_DIR: path.resolve(__dirname, '..', 'downloads'),
   DOWNLOAD_TIMEOUT: 60000, // 60 seconds
@@ -157,10 +158,13 @@ export const selectors = {
   UPSCALING_INDICATOR: 'text=/upscaling/i',
   HD_BADGE: 'text=/^HD$/i',
 
-  // Settings button (gear icon next to prompt, opens mode selection menu)
+  // Direct "Video" mode toggle button (current Grok UI, April 2026)
+  VIDEO_MODE_BUTTON: 'button[aria-label="Video"], button[aria-label="video"]',
+
+  // Settings button (gear icon next to prompt, opens mode selection menu — legacy UI)
   SETTINGS_BUTTON: 'button[aria-label="Settings"], button[aria-label="settings"]',
 
-  // "Make Video" mode menu item (inside Settings menu, switches from image to video mode)
+  // "Make Video" mode menu item (inside Settings menu, switches from image to video mode — legacy UI)
   MAKE_VIDEO_MODE_ITEM: '[role="menuitem"]:has-text("Make Video"), [role="menuitem"]:has-text("Make video")',
 
   // Extend video menu item (inside "..." more options menu)

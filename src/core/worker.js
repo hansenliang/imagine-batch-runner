@@ -29,6 +29,7 @@ export class ParallelWorker {
     this.autoDownload = options.autoDownload || false;
     this.autoUpscale = options.autoUpscale || false;
     this.autoDelete = options.autoDelete || false;
+    this.downloadMaxDurationOnly = options.downloadMaxDurationOnly || false;
     this.downloadDir = options.downloadDir || null;
     this.jobName = options.jobName || null;
     this.downloadAndDeleteRemainingVideos = options.downloadAndDeleteRemainingVideos || false;
@@ -117,6 +118,10 @@ export class ParallelWorker {
         throw new Error('AUTH_REQUIRED: Not authenticated. Worker cannot proceed.');
       }
 
+      // Dismiss any blocking overlays (privacy toasts, cookie banners, etc.)
+      // before interacting with the page — these can intercept pointer events.
+      await this._dismissOverlays();
+
       // Switch to video mode if on an image page (Settings → Make Video)
       await this._selectVideoMode();
 
@@ -148,6 +153,37 @@ export class ParallelWorker {
       this.logger.error(`[Worker ${this.workerId}] Initialization failed`, error);
       await this.shutdown();
       throw error;
+    }
+  }
+
+  /**
+   * Dismiss any blocking overlays (privacy toasts, cookie banners, etc.)
+   * that sit above the main UI and intercept pointer events.
+   * Called before any click interactions to ensure a clean slate.
+   * @private
+   */
+  async _dismissOverlays() {
+    try {
+      const removed = await this.page.evaluate(() => {
+        let count = 0;
+        // Pattern 1: Fixed-position toast/banner overlays (e.g. privacy policy toast)
+        document.querySelectorAll('div.fixed[class*="z-50"][class*="shadow"]').forEach(el => {
+          el.remove();
+          count++;
+        });
+        // Pattern 2: Absolute-position announcement banners (z-[9999])
+        document.querySelectorAll('div.absolute[class*="z-[9999]"]').forEach(el => {
+          el.remove();
+          count++;
+        });
+        return count;
+      });
+      if (removed > 0) {
+        this.logger.debug(`[Worker ${this.workerId}] Dismissed ${removed} blocking overlay(s)`);
+        await sleep(300);
+      }
+    } catch {
+      // Best-effort — don't let overlay dismissal break the flow
     }
   }
 
@@ -240,17 +276,19 @@ export class ParallelWorker {
   }
 
   /**
-   * Switch from image mode to video mode if a Settings button is present.
-   * On Grok Imagine image pages, a "Settings" gear button opens a menu
-   * with a "Make Video" option to switch to video generation mode.
-   * If the Settings button is not found (already in video mode), this is a no-op.
+   * Switch from image mode to video mode.
+   *
+   * Grok UI variants (tried in order):
+   *   1. Direct "Video" button (aria-label="Video") — current UI (April 2026)
+   *   2. Settings gear → "Make Video" menu item — legacy UI
+   *
+   * If neither is found, assumes already in video mode (no-op).
    * @private
    */
   async _selectVideoMode() {
     try {
       // If any video element already has a src (e.g. from a previous run), we're already
-      // in video mode. Skip the Settings interaction to avoid triggering SPA navigation.
-      // Handles dual sd-video/hd-video elements (see claude.md "Dual video elements").
+      // in video mode. Skip the interaction to avoid triggering SPA navigation.
       const hasExistingVideo = await this.page.$$eval(selectors.VIDEO_CONTAINER,
         videos => videos.some(v => !!(v.currentSrc || v.src))
       ).catch(() => false);
@@ -259,9 +297,22 @@ export class ParallelWorker {
         return;
       }
 
+      // ── Path 1: Direct "Video" button (current Grok UI) ──
+      const videoButton = await this.page.$(selectors.VIDEO_MODE_BUTTON);
+      if (videoButton) {
+        const isVisible = await videoButton.isVisible().catch(() => false);
+        if (isVisible) {
+          await videoButton.click();
+          await sleep(config.UI_ACTION_DELAY);
+          this.logger.info(`[Worker ${this.workerId}] Switched to video mode via Video button`);
+          return;
+        }
+      }
+
+      // ── Path 2: Settings gear → "Make Video" menu item (legacy UI) ──
       const settingsButton = await this.page.$(selectors.SETTINGS_BUTTON);
       if (!settingsButton) {
-        this.logger.debug(`[Worker ${this.workerId}] No Settings button found, assuming video mode`);
+        this.logger.debug(`[Worker ${this.workerId}] No video/settings button found, assuming video mode`);
         return;
       }
 
@@ -271,14 +322,11 @@ export class ParallelWorker {
         return;
       }
 
-      // Click Settings to open the mode menu
       await settingsButton.click();
       await sleep(config.UI_ACTION_DELAY);
 
-      // Look for "Make Video" menu item
       let makeVideoItem = await this.page.$(selectors.MAKE_VIDEO_MODE_ITEM);
 
-      // Fallback: scan menu items for "Make Video" text
       if (!makeVideoItem) {
         const menuItems = await this.page.$$('[role="menuitem"]');
         for (const item of menuItems) {
@@ -450,6 +498,23 @@ export class ParallelWorker {
     this.isRunning = true;
     let stoppedEarly = false;
 
+    // For maxExtendMode, check once whether the permalink is a static image (no video).
+    // If so, generation uses the normal mode path (_ensureOnPermalink + generate) so that
+    // content moderation retries stay on the same page instead of re-navigating each time.
+    // The extend loop still runs after each successful generation (autoExtend is true).
+    // Check the current page directly — init already navigated to the permalink and
+    // selected video mode/duration/resolution, so no re-navigation needed.
+    let isImagePost = false;
+    if (this.maxExtendMode) {
+      const checkDuration = await this._getVideoDuration();
+      if (checkDuration <= 0) {
+        isImagePost = true;
+        this.logger.info(
+          `[Worker ${this.workerId}] Permalink is a static image — will generate videos then extend to ${config.MAX_VIDEO_DURATION}s`
+        );
+      }
+    }
+
     try {
       while (!this.shouldStop) {
         // Claim next item atomically
@@ -477,8 +542,13 @@ export class ParallelWorker {
         // ── Step 1: Get a video to work with ──────────────────────────
         let generationOk = false;
 
-        if (this.maxExtendMode) {
-          // Max-extend: navigate to existing permalink, verify video
+        // Track whether the video was freshly generated from an image (no existing
+        // video at the permalink). When true, extendFromTime is skipped since the
+        // generated video is too short for a specific-frame extend to make sense.
+        let generatedFromImage = isImagePost;
+
+        if (this.maxExtendMode && !isImagePost) {
+          // Max-extend with existing video: navigate to source, check duration
           this.logger.info(`[Worker ${this.workerId}] Chain ${index + 1}: navigating to source video`);
           await this._navigateToSourceVideo();
 
@@ -505,12 +575,13 @@ export class ParallelWorker {
             );
             await sleep(2000);
             continue;
-          }
 
-          this.logger.info(
-            `[Worker ${this.workerId}] Chain ${index + 1}: Source video is ${initialDuration.toFixed(1)}s, extending to ${config.MAX_VIDEO_DURATION}s`
-          );
-          generationOk = true;
+          } else {
+            this.logger.info(
+              `[Worker ${this.workerId}] Chain ${index + 1}: Source video is ${initialDuration.toFixed(1)}s, extending to ${config.MAX_VIDEO_DURATION}s`
+            );
+            generationOk = true;
+          }
 
         } else {
           // Normal mode: generate a new video
@@ -578,7 +649,9 @@ export class ParallelWorker {
         // ── Step 2: Extend to max duration (if enabled and we have a video) ──
         let extResult = null;
         if (generationOk && this.autoExtend) {
-          extResult = await this._runExtendLoop(this.page.url(), index);
+          extResult = await this._runExtendLoop(this.page.url(), index, {
+            skipExtendFromTime: generatedFromImage,
+          });
 
           if (extResult.rateLimited) {
             // In max-extend mode, rate limit on extend is fatal (nothing else to do)
@@ -619,10 +692,29 @@ export class ParallelWorker {
 
         // ── Step 3: Post-processing (download / upscale / delete) ──────
         if (generationOk) {
-          // Only auto-delete if video reached max duration; partial extensions
-          // are preserved on server for future continuation
+          const savedAutoDownload = this.autoDownload;
           const savedAutoDelete = this.autoDelete;
-          if (this.autoExtend && this.autoDelete) {
+          const savedAutoUpscale = this.postProcessor?.autoUpscale;
+
+          // When downloadMaxDurationOnly is set, skip all post-processing for
+          // videos that haven't reached max duration
+          if (this.downloadMaxDurationOnly) {
+            const finalDuration = await this._getVideoDuration();
+            if (finalDuration < config.MAX_VIDEO_DURATION) {
+              this.autoDownload = false;
+              this.autoDelete = false;
+              if (this.postProcessor) {
+                this.postProcessor.autoDownload = false;
+                this.postProcessor.autoUpscale = false;
+                this.postProcessor.autoDelete = false;
+              }
+              this.logger.info(
+                `[Worker ${this.workerId}] Skipping download — video is ${finalDuration.toFixed(1)}s (< ${config.MAX_VIDEO_DURATION}s), downloadMaxDurationOnly enabled`
+              );
+            }
+          } else if (this.autoExtend && this.autoDelete) {
+            // Only auto-delete if video reached max duration; partial extensions
+            // are preserved on server for future continuation
             const finalDuration = await this._getVideoDuration();
             if (finalDuration < config.MAX_VIDEO_DURATION) {
               this.autoDelete = false;
@@ -633,9 +725,16 @@ export class ParallelWorker {
               );
             }
           }
+
           await this._runPostProcessing(index);
+
+          this.autoDownload = savedAutoDownload;
           this.autoDelete = savedAutoDelete;
-          if (this.postProcessor) this.postProcessor.autoDelete = savedAutoDelete;
+          if (this.postProcessor) {
+            this.postProcessor.autoDownload = savedAutoDownload;
+            this.postProcessor.autoUpscale = savedAutoUpscale;
+            this.postProcessor.autoDelete = savedAutoDelete;
+          }
         }
 
         // Propagate rate limit after post-processing partial extensions.
@@ -697,10 +796,14 @@ export class ParallelWorker {
    *
    * @param {string} startCheckpointUrl - URL of the video to start extending from
    * @param {number} index - Manifest item index for logging/counters
+   * @param {Object} [options] - Options
+   * @param {boolean} [options.skipExtendFromTime] - Skip extendFromTime on first extend
+   *   (used when the video was freshly generated from an image and is too short for
+   *   a specific-frame extend to make sense)
    * @returns {Promise<{successfulExtends: number, rateLimited: boolean, checkpointUrl: string}>}
    * @private
    */
-  async _runExtendLoop(startCheckpointUrl, index) {
+  async _runExtendLoop(startCheckpointUrl, index, options = {}) {
     let successfulExtends = 0;
     let failedAttempts = 0;
     const maxFailedAttempts = 100;
@@ -746,7 +849,7 @@ export class ParallelWorker {
       // (seek to specific time → hover progress bar → click button).
       // Subsequent extends always use the normal Settings → "Extend video" path.
       let triggered;
-      if (successfulExtends === 0 && failedAttempts === 0 && this.extendFromTime != null) {
+      if (successfulExtends === 0 && failedAttempts === 0 && this.extendFromTime != null && !options.skipExtendFromTime) {
         const extUrl = this.page.url();
         const extDur = await this._getVideoDuration();
         this.logger.info(
@@ -978,6 +1081,9 @@ export class ParallelWorker {
       });
       await sleep(3000);
       await this._waitForReadyUI();
+      // Re-navigating resets the page to default mode. If this is an image post,
+      // re-select video mode so the generate button is accessible.
+      await this._selectVideoMode();
     } catch (error) {
       this.logger.warn(`[Worker ${this.workerId}] _ensureOnPermalink failed: ${error.message}`);
     }
@@ -1046,12 +1152,28 @@ export class ParallelWorker {
         await this._waitForVideoLoad();
       }
 
-      // When autoExtend is on, suppress deletion for videos that haven't
-      // reached max duration — they can be extended further in a future run
+      // Duration gates: suppress download/delete/upscale for videos under max duration
+      const savedAutoDownload = this.postProcessor.autoDownload;
+      const savedAutoUpscale = this.postProcessor.autoUpscale;
       const savedAutoDelete = this.postProcessor.autoDelete;
       let deleteSkipped = false;
+      let downloadSkipped = false;
 
-      if (this.autoExtend && this.autoDelete) {
+      if (this.downloadMaxDurationOnly) {
+        const duration = await this._getVideoDuration();
+        if (duration < config.MAX_VIDEO_DURATION) {
+          this.postProcessor.autoDownload = false;
+          this.postProcessor.autoUpscale = false;
+          this.postProcessor.autoDelete = false;
+          downloadSkipped = true;
+          deleteSkipped = true;
+          this.logger.info(
+            `[Worker ${this.workerId}] Cleanup: skipping download — video is ${duration.toFixed(1)}s (< ${config.MAX_VIDEO_DURATION}s), downloadMaxDurationOnly enabled`
+          );
+        }
+      } else if (this.autoExtend && this.autoDelete) {
+        // When autoExtend is on, suppress deletion for videos that haven't
+        // reached max duration — they can be extended further in a future run
         const duration = await this._getVideoDuration();
         if (duration < config.MAX_VIDEO_DURATION) {
           this.postProcessor.autoDelete = false;
@@ -1065,7 +1187,9 @@ export class ParallelWorker {
       // Process this video (download, upscale if needed, delete if allowed)
       const result = await this.postProcessor.processExistingVideo(cleanupIndex);
 
-      // Restore autoDelete
+      // Restore flags
+      this.postProcessor.autoDownload = savedAutoDownload;
+      this.postProcessor.autoUpscale = savedAutoUpscale;
       this.postProcessor.autoDelete = savedAutoDelete;
 
       if (result.downloaded) {
@@ -1202,6 +1326,24 @@ export class ParallelWorker {
 
       await sleep(3000);
       await this._waitForReadyUI();
+      await this._dismissOverlays();
+
+      // Quick check: if the page has a static image matching our UUID and no <video>
+      // element, this is an image post. Skip the expensive _waitForVideoLoaded() timeout
+      // (30s) and bail immediately so the caller can generate a video instead.
+      const isImagePost = await this.page.evaluate((id) => {
+        const hasVideo = [...document.querySelectorAll('video')].some(v => !!(v.currentSrc || v.src));
+        const hasImage = !!document.querySelector(`img[src*="${id}"]`);
+        return !hasVideo && hasImage;
+      }, uuid).catch(() => false);
+
+      if (isImagePost) {
+        this.logger.info(
+          `[Worker ${this.workerId}] Detected static image post (UUID: ${uuid}), skipping video wait`
+        );
+        return;
+      }
+
       await this._waitForVideoLoaded();
 
       // Wait for Grok's async SPA redirect to settle before checking the URL.
@@ -1215,6 +1357,15 @@ export class ParallelWorker {
       // Verify a video actually loaded (Grok may show a "post doesn't exist" error page)
       const duration = await this._getVideoDuration();
       if (duration <= 0) {
+        // If we landed on the correct permalink (URL contains our UUID) but no video
+        // loaded, this is likely a static image post — retrying won't help. Bail
+        // immediately so the caller can handle it (e.g. generate a video from the image).
+        if (landedUrl.includes(uuid)) {
+          this.logger.info(
+            `[Worker ${this.workerId}] URL matches permalink but no video — static image post, skipping retries`
+          );
+          return;
+        }
         this.logger.warn(
           `[Worker ${this.workerId}] No video loaded after navigation (attempt ${attempt}), duration=0`
         );

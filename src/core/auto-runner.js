@@ -434,6 +434,7 @@ export class AutoRunner {
         autoExtend: configData.autoExtend || false,         // default false (disabled)
         maxExtendMode,
         extendFromTime: configData.extendFromTime != null ? configData.extendFromTime : null,
+        downloadMaxDurationOnly: configData.downloadMaxDurationOnly || false,  // default false
         downloadAndDeleteRemainingVideos: configData.downloadAndDeleteRemainingVideos || false, // default false
         selectMaxDuration: configData.selectMaxDuration || false,   // default false
         selectMaxResolution: configData.selectMaxResolution || false, // default false

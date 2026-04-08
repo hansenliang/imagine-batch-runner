@@ -7,5 +7,6 @@
   "parallel": 3,
   "autoDownload": true,
   "autoUpscale": true,
-  "autoDelete": true
+  "autoDelete": true,
+  "downloadMaxDurationOnly": false
 }

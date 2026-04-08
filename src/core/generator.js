@@ -114,6 +114,11 @@ export class VideoGenerator {
    */
   async _dismissBanners() {
     try {
+      // Remove any blocking overlays (privacy toasts, cookie banners, etc.)
+      await this.page.evaluate(() => {
+        document.querySelectorAll('div.fixed[class*="z-50"][class*="shadow"]').forEach(el => el.remove());
+      }).catch(() => {});
+
       const dismissButton = await this.page.$(selectors.ANNOUNCEMENT_BANNER_DISMISS);
       if (dismissButton) {
         const isVisible = await dismissButton.isVisible().catch(() => false);
@@ -149,12 +154,14 @@ export class VideoGenerator {
 
     let button = makeVideoBtn || redoBtn;
     let buttonLabel = null;
+    let buttonSource = makeVideoBtn ? 'MAKE_VIDEO_BUTTON selector' : redoBtn ? 'REDO_BUTTON selector' : null;
 
     if (!button) {
       const promptResult = await this._findGenerationButtonNearPrompt(index);
       if (promptResult.element) {
         button = promptResult.element;
         buttonLabel = promptResult.label;
+        buttonSource = 'prompt-adjacent scan';
       }
     }
 
@@ -184,6 +191,7 @@ export class VideoGenerator {
         if (matchers.some((pattern) => pattern.test(label))) {
           button = candidate;
           buttonLabel = label;
+          buttonSource = 'visible-button scan';
           break;
         }
       }
@@ -212,7 +220,10 @@ export class VideoGenerator {
     }
 
     const buttonText = buttonLabel || await button.textContent().catch(() => '(unknown)');
-    this.logger.debug(`${this._tag(index)} Found button: "${buttonText}"`);
+    const buttonAria = await button.getAttribute('aria-label').catch(() => '');
+    this.logger.debug(
+      `${this._tag(index)} Found button via ${buttonSource}: text="${buttonText}", aria="${buttonAria}"`
+    );
 
     // Check if button is disabled (might indicate rate limit)
     const isDisabled = await button.isDisabled().catch(() => false);
@@ -220,8 +231,11 @@ export class VideoGenerator {
       throw new Error('RATE_LIMIT: Generation button is disabled');
     }
 
-    await button.click();
-    this.logger.debug(`${this._tag(index)} Clicked generation button`);
+    // Use direct JS click — Grok's image caption overlay intercepts Playwright's
+    // coordinate-based click (even with force:true). el.click() invokes the DOM
+    // handler directly, bypassing screen coordinates and overlay hit-testing.
+    await button.evaluate(el => el.click());
+    this.logger.info(`${this._tag(index)} Clicked generation button`);
 
     // Wait for UI to respond
     await sleep(config.UI_ACTION_DELAY);

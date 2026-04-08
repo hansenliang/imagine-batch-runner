@@ -113,6 +113,44 @@ autorun-configs/
 └── job3.json
 ```
 
+## Download Max-Duration Only
+
+When `downloadMaxDurationOnly` is enabled, only videos that reached the maximum duration (30s) are downloaded, upscaled, and deleted. Videos under 30s are left untouched on the server — no download, no upscale, no delete.
+
+This is useful when running auto-extend or max-extend and you only want to collect the fully-extended results, leaving partial extensions on the server for future continuation.
+
+Config file:
+```json
+{
+  "account": "primary-account",
+  "permalink": "https://grok.com/imagine/post/YOUR_POST_ID",
+  "prompt": "cinematic slow pan over landscape",
+  "count": 20,
+  "parallel": 3,
+  "autoExtend": true,
+  "autoDownload": true,
+  "autoUpscale": true,
+  "autoDelete": true,
+  "downloadMaxDurationOnly": true
+}
+```
+
+CLI usage:
+```bash
+node src/cli.js run start --config batch-config.json --download-max-duration-only
+```
+
+Works in all modes:
+```bash
+# Normal run with auto-extend
+node src/cli.js run start --config config.json --download-max-duration-only
+
+# Max-extend mode
+node src/cli.js run max-extend --config max-extend-config.json --download-max-duration-only
+```
+
+Also works in autorun configs — just add `"downloadMaxDurationOnly": true` to any config file in the autorun-configs directory.
+
 ## Cleanup Remaining Videos
 
 Sometimes videos remain on the server due to failed downloads or deletes. The `downloadAndDeleteRemainingVideos` option runs a cleanup at the end of each batch to ensure all videos are downloaded and deleted:
