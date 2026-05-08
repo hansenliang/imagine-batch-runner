@@ -1102,15 +1102,18 @@ export class VideoGenerator {
     while (true) {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
 
-      // URL drift detection. Any change to the /post/<UUID> we're on resets our
-      // progress tracking — we need to see fresh progress on the new URL before
-      // we'll accept a "video ready" reading from it. This catches the Grok
-      // moderation-redirect pattern where the page gets bounced to an unrelated
-      // existing post that has its own playable video element.
+      // URL drift detection. Grok normally navigates to a new /post/<UUID> at
+      // the start of every generation — that's expected and benign. We reset
+      // our progress tracking so we require fresh progress on the new URL,
+      // which keeps the "video ready" success gate honest: in the normal case
+      // progress reappears on the new URL within ~1–2s and the gate works
+      // normally; in the moderation-redirect case (Grok bouncing us to an
+      // unrelated existing post) no progress ever appears on the new URL and
+      // the timeout below throws CONTENT_MODERATED.
       const currentUrl = this.page.url();
       if (currentUrl !== trackedUrl) {
-        this.logger.warn(
-          `${this._tag(index)} Page URL changed during generation: ${trackedUrl} → ${currentUrl} (resetting progress tracking)`
+        this.logger.debug(
+          `${this._tag(index)} URL advanced ${trackedUrl} → ${currentUrl} (awaiting fresh progress on new URL)`
         );
         loggedStart = false;
         trackedUrl = currentUrl;
