@@ -7,7 +7,15 @@ Automates Grok Imagine video generation via Playwright. Runs 1-100 parallel work
 - `npm start accounts list` — List accounts
 - `node src/cli.js run start --config batch-config.json` — Start batch run
 - `node src/cli.js run max-extend --config max-extend-config.json` — Extend existing video to 30s
+- `node src/cli.js run prune --account <a> --permalink <url> [--keep uuid1,uuid2] [--keep-file path] [--dry-run]` — Delete unwanted variations, keeping only whitelisted UUIDs (source always kept)
 - `npm test` — Validate imports
+
+## UUID Registry (download dedup)
+A persistent per-job UUID registry at `./logs/uuid-registry/<jobName>.txt` (one 8-char UUID prefix per line) tracks every video that has ever been downloaded for that job. Before any download (generation or cleanup), the worker checks this registry — if the UUID is already there, the download is **skipped entirely** (no bytes, no file, no `DUPLICATE_*` cruft). The source/permalink UUID is preseeded into the registry so the seed video is never downloaded.
+
+Registry survives manual cleanup of the downloads folder. To force re-download of a job's videos, delete the registry file. Concurrent workers append safely (POSIX atomic append).
+
+When cleanup encounters a registry-skipped video, it's counted as `skipped` and left on the server — pair with `run prune` to remove server-side leftovers.
 
 ## Download Max Duration Only
 When `downloadMaxDurationOnly: true` is set (in config or via `--download-max-duration-only` flag), only videos that reached the maximum duration (30s) are downloaded, upscaled, and deleted. Videos under 30s are left on server untouched — no download, no upscale, no delete. Works in all modes: `run start`, `run max-extend`, and autorun configs. The threshold is controlled by `config.MAX_VIDEO_DURATION`.

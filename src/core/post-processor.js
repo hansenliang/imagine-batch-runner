@@ -55,6 +55,8 @@ export class PostProcessor {
    * @param {boolean} options.autoDelete - Whether to delete videos after download
    * @param {string} options.downloadDir - Directory to save downloads
    * @param {string} options.jobName - Job name for logging
+   * @param {string} [options.registryPath] - Path to persistent UUID registry file
+   * @param {string} [options.sourceUUID] - Permalink/source UUID to always treat as already-downloaded
    */
   constructor(page, logger, options = {}) {
     this.page = page;
@@ -65,7 +67,63 @@ export class PostProcessor {
     this.downloadDir = options.downloadDir || config.DOWNLOAD_DIR;
     this.jobName = options.jobName || 'unknown';
     this.downloadDirCreated = false;
-    this._knownUUIDs = new Set(); // Track UUIDs seen in this session for faster dedup
+    this._knownUUIDs = new Set();
+    this._registryPath = options.registryPath || null;
+    this._registryLoaded = false;
+    if (options.sourceUUID) {
+      const sourceUUID8 = options.sourceUUID.substring(0, 8).toLowerCase();
+      this._knownUUIDs.add(sourceUUID8);
+    }
+  }
+
+  /**
+   * Lazy-load the persistent UUID registry into the in-memory set.
+   * Idempotent. Missing file is treated as empty registry.
+   * @private
+   */
+  async _ensureRegistryLoaded() {
+    if (this._registryLoaded || !this._registryPath) {
+      this._registryLoaded = true;
+      return;
+    }
+    this._registryLoaded = true;
+    try {
+      const text = await fs.readFile(this._registryPath, 'utf-8');
+      let count = 0;
+      for (const line of text.split('\n')) {
+        const uuid8 = line.trim().toLowerCase();
+        if (uuid8.length === 8) {
+          this._knownUUIDs.add(uuid8);
+          count++;
+        }
+      }
+      if (count > 0) {
+        this.logger.debug(`Loaded ${count} UUID(s) from registry: ${this._registryPath}`);
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        this.logger.warn(`Failed to read UUID registry (${this._registryPath}): ${error.message}`);
+      }
+    }
+  }
+
+  /**
+   * Append a UUID to the persistent registry file and add to the in-memory set.
+   * Idempotent on the in-memory set; the file may accumulate occasional duplicate
+   * lines from concurrent workers, which is harmless.
+   * @private
+   */
+  async _recordDownloadedUUID(uuid8) {
+    if (!uuid8 || uuid8 === 'unknown') return;
+    const normalized = uuid8.toLowerCase();
+    this._knownUUIDs.add(normalized);
+    if (!this._registryPath) return;
+    try {
+      await fs.mkdir(path.dirname(this._registryPath), { recursive: true });
+      await fs.appendFile(this._registryPath, normalized + '\n');
+    } catch (error) {
+      this.logger.warn(`Failed to append UUID to registry (${this._registryPath}): ${error.message}`);
+    }
   }
 
   /**
@@ -76,6 +134,7 @@ export class PostProcessor {
   async process(index) {
     const result = {
       downloaded: false,
+      skipped: false,
       downloadPath: null,
       fileSize: null,
       upscaled: false,
@@ -93,10 +152,17 @@ export class PostProcessor {
     // Step 1: Download original video if enabled
     if (this.autoDownload) {
       const downloadResult = await this._downloadWithRetry(index);
-      result.downloaded = downloadResult.success;
+      result.downloaded = downloadResult.success && !downloadResult.skipped;
+      result.skipped = downloadResult.skipped || false;
       result.downloadPath = downloadResult.filePath;
       result.fileSize = downloadResult.fileSize;
       result.downloadError = downloadResult.error;
+    }
+
+    // If we skipped the download (UUID already in registry), leave the server video
+    // untouched — no upscale, no delete. The registry is the source of truth.
+    if (result.skipped) {
+      return result;
     }
 
     // Step 2: Upscale if enabled AND original download succeeded
@@ -154,6 +220,7 @@ export class PostProcessor {
   async processExistingVideo(index) {
     const result = {
       downloaded: false,
+      skipped: false,
       downloadPath: null,
       fileSize: null,
       upscaled: false,
@@ -173,15 +240,21 @@ export class PostProcessor {
     if (isAlreadyHD) {
       // Video is already HD - just download HD version and delete
       this.logger.debug(`[Cleanup ${index + 1}] Video already HD, downloading HD version`);
-      
+
       const hdDownloadResult = await this._downloadHDVideo(index, null);
-      result.downloaded = hdDownloadResult.success;
+      result.downloaded = hdDownloadResult.success && !hdDownloadResult.skipped;
+      result.skipped = hdDownloadResult.skipped || false;
       result.downloadPath = hdDownloadResult.filePath;
       result.fileSize = hdDownloadResult.fileSize;
       result.downloadError = hdDownloadResult.error;
-      result.upscaled = true; // Mark as upscaled since it was already HD
+      result.upscaled = result.downloaded; // Mark as upscaled since it was already HD
       result.upscaleDownloadPath = hdDownloadResult.filePath;
       result.upscaleFileSize = hdDownloadResult.fileSize;
+
+      // If skipped, leave the server video untouched.
+      if (result.skipped) {
+        return result;
+      }
 
       // Delete if enabled and download succeeded
       if (this.autoDelete && result.downloaded) {
@@ -260,10 +333,20 @@ export class PostProcessor {
 
     // Extract video UUID for deduplication
     const uuid = await this._extractVideoUUID();
-    const uuid8 = uuid ? uuid.substring(0, 8) : 'unknown';
+    const uuid8 = uuid ? uuid.substring(0, 8).toLowerCase() : 'unknown';
 
-    // Check for duplicates
+    // If we've already downloaded this UUID, skip the actual download entirely.
     const duplicateCheck = await this._checkForDuplicate(uuid8);
+    if (duplicateCheck.isDuplicate) {
+      this.logger.info(`[Attempt ${index + 1}] Skipping download — UUID ${uuid8} already in registry`);
+      return {
+        success: true,
+        skipped: true,
+        filePath: null,
+        fileSize: null,
+        error: null,
+      };
+    }
 
     // Get video duration for filename
     const durationSec = await getVideoDurationSeconds(this.page);
@@ -271,13 +354,8 @@ export class PostProcessor {
 
     // Generate filename: YYMMDD-HHmmss_UUID8_DURs.mp4
     const timestamp = formatTimestamp();
-    const baseFilename = `${timestamp}_${uuid8}_${durTag}.mp4`;
-    const filename = duplicateCheck.isDuplicate ? `DUPLICATE_${baseFilename}` : baseFilename;
+    const filename = `${timestamp}_${uuid8}_${durTag}.mp4`;
     const filePath = path.join(this.downloadDir, filename);
-
-    if (duplicateCheck.isDuplicate) {
-      this.logger.warn(`[Attempt ${index + 1}] Duplicate detected (UUID ${uuid8} exists in ${duplicateCheck.existingFile}), saving as ${filename}`);
-    }
 
     try {
       // Click button and wait for download (handles both same-page and new-tab downloads)
@@ -297,10 +375,8 @@ export class PostProcessor {
         };
       }
 
-      // Track this UUID as downloaded
-      if (uuid8 !== 'unknown') {
-        this._knownUUIDs.add(uuid8);
-      }
+      // Persist this UUID so future runs (after manual folder cleanup) skip it.
+      await this._recordDownloadedUUID(uuid8);
 
       // Get file size
       const stats = await fs.stat(filePath);
@@ -311,7 +387,6 @@ export class PostProcessor {
         filePath,
         fileSize,
         error: null,
-        isDuplicate: duplicateCheck.isDuplicate,
       };
     } catch (error) {
       return {
@@ -362,35 +437,17 @@ export class PostProcessor {
   }
 
   /**
-   * Check if a video with the given UUID already exists in downloads
+   * Check if a UUID has already been downloaded (in-memory set + persistent registry).
    * @private
    * @param {string} uuid8 - First 8 chars of UUID
-   * @returns {Promise<{isDuplicate: boolean, existingFile: string|null}>}
+   * @returns {Promise<{isDuplicate: boolean}>}
    */
   async _checkForDuplicate(uuid8) {
     if (!uuid8 || uuid8 === 'unknown') {
-      return { isDuplicate: false, existingFile: null };
+      return { isDuplicate: false };
     }
-
-    // Quick check against in-memory set first
-    if (this._knownUUIDs.has(uuid8)) {
-      return { isDuplicate: true, existingFile: '(in current session)' };
-    }
-
-    try {
-      // Scan download directory for files containing this UUID
-      const files = await fs.readdir(this.downloadDir).catch(() => []);
-      for (const file of files) {
-        // Check if filename contains the UUID (but not if it's already marked as DUPLICATE)
-        if (file.includes(uuid8) && !file.startsWith('DUPLICATE_')) {
-          return { isDuplicate: true, existingFile: file };
-        }
-      }
-      return { isDuplicate: false, existingFile: null };
-    } catch (error) {
-      // If we can't check, assume no duplicate to avoid blocking downloads
-      return { isDuplicate: false, existingFile: null };
-    }
+    await this._ensureRegistryLoaded();
+    return { isDuplicate: this._knownUUIDs.has(uuid8.toLowerCase()) };
   }
 
   /**
@@ -916,35 +973,33 @@ export class PostProcessor {
     // Generate HD filename from original path or create new one with UUID
     let hdFilename;
     let uuid8ForTracking = null; // Track UUID for standalone HD downloads
-    
+
     if (originalPath) {
       // Derive from original: YYMMDD-HHmmss_UUID8_DURs.mp4 -> YYMMDD-HHmmss_UUID8_DURs_hd.mp4
       const originalFilename = path.basename(originalPath, '.mp4');
-      // Remove DUPLICATE_ prefix if present for HD version naming
-      const cleanFilename = originalFilename.replace(/^DUPLICATE_/, '');
-      hdFilename = `${cleanFilename}_hd.mp4`;
-
-      // Check if original was a duplicate - if so, HD should also be marked
-      if (originalFilename.startsWith('DUPLICATE_')) {
-        hdFilename = `DUPLICATE_${cleanFilename}_hd.mp4`;
-      }
+      hdFilename = `${originalFilename}_hd.mp4`;
     } else {
-      // No original path - extract UUID and create filename
+      // No original path - extract UUID, dedup, build filename
       const uuid = await this._extractVideoUUID();
-      const uuid8 = uuid ? uuid.substring(0, 8) : 'unknown';
+      const uuid8 = uuid ? uuid.substring(0, 8).toLowerCase() : 'unknown';
+
+      const duplicateCheck = await this._checkForDuplicate(uuid8);
+      if (duplicateCheck.isDuplicate) {
+        this.logger.info(`[Attempt ${index + 1}] Skipping HD download — UUID ${uuid8} already in registry`);
+        return {
+          success: true,
+          skipped: true,
+          filePath: null,
+          fileSize: null,
+          error: null,
+        };
+      }
+
       uuid8ForTracking = uuid8 !== 'unknown' ? uuid8 : null;
       const timestamp = formatTimestamp();
       const durationSec = await getVideoDurationSeconds(this.page);
       const durTag = durationSec > 0 ? `${durationSec}s` : 'unknown';
-
-      // Check for duplicates (for HD-only downloads during cleanup)
-      const duplicateCheck = await this._checkForDuplicate(uuid8);
-      const baseFilename = `${timestamp}_${uuid8}_${durTag}_hd.mp4`;
-      hdFilename = duplicateCheck.isDuplicate ? `DUPLICATE_${baseFilename}` : baseFilename;
-      
-      if (duplicateCheck.isDuplicate) {
-        this.logger.warn(`[Attempt ${index + 1}] Duplicate HD detected (UUID ${uuid8} exists in ${duplicateCheck.existingFile}), saving as ${hdFilename}`);
-      }
+      hdFilename = `${timestamp}_${uuid8}_${durTag}_hd.mp4`;
     }
     const hdFilePath = path.join(this.downloadDir, hdFilename);
 
@@ -966,9 +1021,10 @@ export class PostProcessor {
         };
       }
 
-      // Track UUID for standalone HD downloads (no original path)
+      // Persist UUID for standalone HD downloads (no original path; the original-flow
+      // already recorded the UUID before reaching here).
       if (uuid8ForTracking) {
-        this._knownUUIDs.add(uuid8ForTracking);
+        await this._recordDownloadedUUID(uuid8ForTracking);
       }
 
       // Get file size
