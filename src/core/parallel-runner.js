@@ -331,7 +331,7 @@ export class ParallelRunner {
     }
     if (this.downloadAndDeleteRemainingVideos && (summary.cleanupDownloaded > 0 || summary.cleanupDeleted > 0 || summary.cleanupSkipped > 0 || summary.cleanupFailed > 0)) {
       const cleanupParts = [`${summary.cleanupDownloaded} downloaded`, `${summary.cleanupDeleted} deleted`];
-      if (summary.cleanupSkipped > 0) cleanupParts.push(`${summary.cleanupSkipped} kept (< 30s)`);
+      if (summary.cleanupSkipped > 0) cleanupParts.push(`${summary.cleanupSkipped} kept on server`);
       cleanupParts.push(`${summary.cleanupFailed} failed`);
       console.log(chalk.cyan(`  Cleanup: ${cleanupParts.join(', ')}`));
     }
@@ -385,7 +385,7 @@ export class ParallelRunner {
     }
     if (this.downloadAndDeleteRemainingVideos && (summary.cleanupDownloaded > 0 || summary.cleanupDeleted > 0 || summary.cleanupSkipped > 0 || summary.cleanupFailed > 0)) {
       const cleanupParts = [`${summary.cleanupDownloaded} downloaded`, `${summary.cleanupDeleted} deleted`];
-      if (summary.cleanupSkipped > 0) cleanupParts.push(`${summary.cleanupSkipped} kept (< 30s)`);
+      if (summary.cleanupSkipped > 0) cleanupParts.push(`${summary.cleanupSkipped} kept on server`);
       cleanupParts.push(`${summary.cleanupFailed} failed`);
       await this.logger.logToFileOnly(`  Cleanup: ${cleanupParts.join(', ')}`);
     }
