@@ -544,9 +544,15 @@ export class VideoGenerator {
   }
 
   /**
-   * Trigger extend mode by clicking "..." menu → "Extend video".
+   * Trigger extend mode by clicking "..." (More options) menu → "Extend".
    * After this, the UI transitions to extend mode where generate() can be called
    * with the same prompt to extend the video.
+   *
+   * Current Grok UI (May 2026): the trigger is button[aria-label="More options"]
+   * (same button used by the delete flow) and the menu item is labelled "Extend".
+   * Legacy UIs used a "Settings" gear and "Extend video" label — both supported
+   * via fallbacks below.
+   *
    * @param {number} index - Current attempt index for logging
    * @returns {Promise<boolean>} - Whether extend mode was triggered successfully
    */
@@ -554,34 +560,39 @@ export class VideoGenerator {
     try {
       await this._dismissBanners();
 
-      // Step 1: Click the Settings button (same button used for mode selection).
-      // When a video is already generated, its menu includes "Extend video".
-      const settingsButton = await this.page.$(selectors.SETTINGS_BUTTON);
-      if (!settingsButton) {
-        this.logger.debug(`${this._tag(index)} Settings button not found for extend`);
+      // Step 1: Click the "..." More options button. Same selector as delete flow.
+      let menuButton = await this.page.$(selectors.VIDEO_MENU_BUTTON);
+      if (!menuButton) {
+        // Legacy fallback: older Grok UI used a Settings gear for this menu.
+        menuButton = await this.page.$(selectors.SETTINGS_BUTTON);
+      }
+      if (!menuButton) {
+        this.logger.debug(`${this._tag(index)} More options button not found for extend`);
         return false;
       }
 
-      const isVisible = await settingsButton.isVisible().catch(() => false);
+      const isVisible = await menuButton.isVisible().catch(() => false);
       if (!isVisible) {
-        this.logger.debug(`${this._tag(index)} Settings button not visible for extend`);
+        this.logger.debug(`${this._tag(index)} More options button not visible for extend`);
         return false;
       }
 
-      await settingsButton.click();
+      await menuButton.click();
       await sleep(config.UI_ACTION_DELAY);
 
-      // Step 2: Click "Extend video" menu item
+      // Step 2: Click "Extend" menu item (legacy: "Extend video")
       let extendItem = await this.page.$(selectors.EXTEND_MENU_ITEM);
 
-      // Fallback: scan menu items for extend text
+      // Fallback: scan menu items for an exact-trim "Extend" or "Extend video" label.
+      // We do not match arbitrary substrings, to avoid hitting "Extend from frame"
+      // or any future "Extend X" items.
       if (!extendItem) {
         const menuItems = await this.page.$$('[role="menuitem"]');
         for (const item of menuItems) {
           const itemVisible = await item.isVisible().catch(() => false);
           if (!itemVisible) continue;
-          const text = await item.innerText().catch(() => '');
-          if (/extend\s+video/i.test(text)) {
+          const text = (await item.innerText().catch(() => '')).trim();
+          if (/^extend(\s+video)?$/i.test(text)) {
             extendItem = item;
             break;
           }
@@ -589,14 +600,14 @@ export class VideoGenerator {
       }
 
       if (!extendItem) {
-        this.logger.debug(`${this._tag(index)} Extend video menu item not found in Settings menu`);
+        this.logger.debug(`${this._tag(index)} Extend menu item not found in More options menu`);
         await this.page.keyboard.press('Escape');
         return false;
       }
 
       const itemVisible = await extendItem.isVisible().catch(() => false);
       if (!itemVisible) {
-        this.logger.debug(`${this._tag(index)} Extend video menu item not visible`);
+        this.logger.debug(`${this._tag(index)} Extend menu item not visible`);
         await this.page.keyboard.press('Escape');
         return false;
       }
@@ -604,7 +615,7 @@ export class VideoGenerator {
       await extendItem.click();
       await sleep(config.UI_ACTION_DELAY);
 
-      this.logger.debug(`${this._tag(index)} Extend mode triggered via Settings menu`);
+      this.logger.debug(`${this._tag(index)} Extend mode triggered via More options menu`);
       return true;
     } catch (error) {
       this.logger.debug(`${this._tag(index)} Extend mode trigger failed: ${error.message}`);

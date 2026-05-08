@@ -167,8 +167,11 @@ export const selectors = {
   // "Make Video" mode menu item (inside Settings menu, switches from image to video mode — legacy UI)
   MAKE_VIDEO_MODE_ITEM: '[role="menuitem"]:has-text("Make Video"), [role="menuitem"]:has-text("Make video")',
 
-  // Extend video menu item (inside "..." more options menu)
-  EXTEND_MENU_ITEM: '[role="menuitem"]:has-text("Extend video"), [role="menuitem"]:has-text("Extend Video")',
+  // Extend menu item (inside "..." more options menu).
+  // Current Grok UI (May 2026) labels it just "Extend"; legacy UI used "Extend video".
+  // :text-is matches the element's normalized text exactly so we don't accidentally
+  // match "Extend from frame" or other future "Extend X" items.
+  EXTEND_MENU_ITEM: '[role="menuitem"]:text-is("Extend"), [role="menuitem"]:text-is("extend"), [role="menuitem"]:has-text("Extend video")',
 
   // "Extend from frame" button (appears on hover over video progress bar)
   EXTEND_FROM_FRAME_BUTTON: 'button:has-text("extend from frame"), button:has-text("Extend from frame"), button:has-text("Extend from Frame")',
