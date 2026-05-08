@@ -47,6 +47,9 @@ export class ParallelWorker {
     // Video settings selection (opt-in)
     this.selectMaxDuration = options.selectMaxDuration || false;
     this.selectMaxResolution = options.selectMaxResolution || false;
+    // When false, a resolution downgrade (e.g. 720p → 480p due to per-resolution
+    // rate limit) is treated as a hard rate limit instead of silently continuing.
+    this.allowDowngradedQuality = options.allowDowngradedQuality !== false; // default true
 
     // Extend settings
     this.maxExtendMode = options.maxExtendMode || false;
@@ -144,7 +147,9 @@ export class ParallelWorker {
       }
 
       // Create video generator
-      this.generator = new VideoGenerator(this.page, this.logger);
+      this.generator = new VideoGenerator(this.page, this.logger, {
+        allowDowngradedQuality: this.allowDowngradedQuality,
+      });
 
       // Create post-processor if download/upscale/delete enabled, or if cleanup is enabled
       if (this.autoDownload || this.downloadAndDeleteRemainingVideos) {

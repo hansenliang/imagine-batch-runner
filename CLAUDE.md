@@ -20,6 +20,9 @@ When cleanup encounters a registry-skipped video, it's counted as `skipped` and 
 ## Download Max Duration Only
 When `downloadMaxDurationOnly: true` is set (in config or via `--download-max-duration-only` flag), only videos that reached the maximum duration (30s) are downloaded, upscaled, and deleted. Videos under 30s are left on server untouched — no download, no upscale, no delete. Works in all modes: `run start`, `run max-extend`, and autorun configs. The threshold is controlled by `config.MAX_VIDEO_DURATION`.
 
+## Allow Downgraded Quality
+`allowDowngradedQuality` (config field or `--no-allow-downgraded-quality` flag) controls how a per-resolution rate-limit toast (e.g. "720p rate limit reached. Switched to 480p.") is handled. **Default `true`**: detection is logged at INFO and generation continues at the downgraded resolution, with the actual resolution recorded in success logs. **Set to `false`**: the downgrade is treated as a hard rate limit — `_waitForCompletion` throws `RATE_LIMIT: Resolution downgrade — …`, which surfaces through the existing rate-limit pathway (`RATE_LIMIT_STOP`) and stops the run / advances to the next phase. Useful when you'd rather wait out the higher-tier rate limit than accept lower-quality output. Works in `run start`, `run max-extend`, and autorun configs.
+
 ## Auto-Extend
 When `autoExtend: true` is set (in config or via `--auto-extend` flag), each generated video is automatically extended to the maximum 30s duration. Videos that don't reach 30s (e.g., due to rate limits) are downloaded/upscaled but not deleted — they can be extended further in a future run.
 

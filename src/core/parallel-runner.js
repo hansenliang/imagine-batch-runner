@@ -23,6 +23,7 @@ export class ParallelRunner {
       autoDelete = false,
       selectMaxDuration = false,
       selectMaxResolution = false,
+      allowDowngradedQuality = true,
       autoExtend = false,
       maxExtendMode = false,
       extendFromTime = null,
@@ -45,6 +46,7 @@ export class ParallelRunner {
     this.autoDelete = downloadAndDeleteRemainingVideos ? true : autoDelete;
     this.selectMaxDuration = selectMaxDuration;
     this.selectMaxResolution = selectMaxResolution;
+    this.allowDowngradedQuality = allowDowngradedQuality;
     this.autoExtend = autoExtend;
     this.maxExtendMode = maxExtendMode;
     this.extendFromTime = extendFromTime;
@@ -132,6 +134,7 @@ export class ParallelRunner {
             autoDelete: this.autoDelete,
             selectMaxDuration: this.selectMaxDuration,
             selectMaxResolution: this.selectMaxResolution,
+            allowDowngradedQuality: this.allowDowngradedQuality,
             autoExtend: this.autoExtend,
             maxExtendMode: this.maxExtendMode,
             extendFromTime: this.extendFromTime,

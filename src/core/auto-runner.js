@@ -438,6 +438,9 @@ export class AutoRunner {
         downloadAndDeleteRemainingVideos: configData.downloadAndDeleteRemainingVideos || false, // default false
         selectMaxDuration: configData.selectMaxDuration || false,   // default false
         selectMaxResolution: configData.selectMaxResolution || false, // default false
+        // When false, a 720p→480p (or any) resolution downgrade aborts the
+        // run with a hard rate limit instead of silently continuing.
+        allowDowngradedQuality: configData.allowDowngradedQuality !== false, // default true
         logFilePath,  // Pass the detailed log path
         downloadBaseName: baseName,  // Use base name (without timestamp) for download folder
       });

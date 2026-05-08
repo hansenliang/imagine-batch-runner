@@ -14,11 +14,17 @@ export class VideoGenerator {
   /**
    * @param {import('playwright').Page} page - Playwright page instance
    * @param {import('../utils/logger.js').Logger} logger - Logger instance
+   * @param {Object} [options]
+   * @param {boolean} [options.allowDowngradedQuality=true] - When false, a
+   *   resolution downgrade toast (e.g. "720p rate limit reached. Switched to
+   *   480p.") is treated as a hard rate limit and aborts generation with
+   *   RATE_LIMIT instead of silently continuing at the downgraded resolution.
    */
-  constructor(page, logger) {
+  constructor(page, logger, options = {}) {
     this.page = page;
     this.logger = logger;
     this._logLabel = 'Attempt'; // Default label; overridden per generate() call
+    this.allowDowngradedQuality = options.allowDowngradedQuality !== false; // default true
   }
 
   /**
@@ -1126,10 +1132,19 @@ export class VideoGenerator {
       // % > 0 means generation is actively in progress
       const generationInProgress = percentageProgress.detected && percentageProgress.percentage > 0;
 
-      // Check for resolution downgrade once, early in generation (before loggedStart)
+      // Check for resolution downgrade once, early in generation (before loggedStart).
+      // When allowDowngradedQuality=false, the downgrade is treated as a hard
+      // rate limit (caller wants to stop and move on rather than silently
+      // accept a lower-quality output).
       if (!actualResolution && !loggedStart) {
         const downgrade = await this._detectResolutionDowngrade();
         if (downgrade.detected) {
+          if (!this.allowDowngradedQuality) {
+            this.logger.warn(
+              `${this._tag(index)} Resolution downgrade detected (${downgrade.message}); allowDowngradedQuality=false — treating as rate limit`
+            );
+            throw new Error(`RATE_LIMIT: Resolution downgrade — ${downgrade.message}`);
+          }
           actualResolution = downgrade.actualResolution;
           this.logger.info(`${this._tag(index)} Resolution downgraded: ${downgrade.message}`);
         }
