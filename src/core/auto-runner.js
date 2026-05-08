@@ -732,7 +732,7 @@ export class AutoRunner {
     }
     if (this.sessionStats.totalCleanupDownloaded > 0 || this.sessionStats.totalCleanupDeleted > 0 || this.sessionStats.totalCleanupSkipped > 0 || this.sessionStats.totalCleanupFailed > 0) {
       const cp = [`${this.sessionStats.totalCleanupDownloaded} downloaded`, `${this.sessionStats.totalCleanupDeleted} deleted`];
-      if (this.sessionStats.totalCleanupSkipped > 0) cp.push(`${this.sessionStats.totalCleanupSkipped} kept (< 30s)`);
+      if (this.sessionStats.totalCleanupSkipped > 0) cp.push(`${this.sessionStats.totalCleanupSkipped} kept on server`);
       cp.push(`${this.sessionStats.totalCleanupFailed} failed`);
       lines.push(`  Cleanup: ${cp.join(', ')}`);
     }
@@ -777,7 +777,7 @@ export class AutoRunner {
       }
       if (cycle.stats.cleanupDownloaded > 0 || cycle.stats.cleanupDeleted > 0 || cycle.stats.cleanupSkipped > 0 || cycle.stats.cleanupFailed > 0) {
         const cp = [`${cycle.stats.cleanupDownloaded} downloaded`, `${cycle.stats.cleanupDeleted} deleted`];
-        if (cycle.stats.cleanupSkipped > 0) cp.push(`${cycle.stats.cleanupSkipped} kept (< 30s)`);
+        if (cycle.stats.cleanupSkipped > 0) cp.push(`${cycle.stats.cleanupSkipped} kept on server`);
         cp.push(`${cycle.stats.cleanupFailed} failed`);
         lines.push(`  Cleanup: ${cp.join(', ')}`);
       }
@@ -843,7 +843,7 @@ export class AutoRunner {
     }
     if (this.sessionStats.totalCleanupDownloaded > 0 || this.sessionStats.totalCleanupDeleted > 0 || this.sessionStats.totalCleanupSkipped > 0 || this.sessionStats.totalCleanupFailed > 0) {
       const cp = [`${this.sessionStats.totalCleanupDownloaded} downloaded`, `${this.sessionStats.totalCleanupDeleted} deleted`];
-      if (this.sessionStats.totalCleanupSkipped > 0) cp.push(`${this.sessionStats.totalCleanupSkipped} kept (< 30s)`);
+      if (this.sessionStats.totalCleanupSkipped > 0) cp.push(`${this.sessionStats.totalCleanupSkipped} kept on server`);
       cp.push(`${this.sessionStats.totalCleanupFailed} failed`);
       console.log(chalk.cyan(`  Cleanup: ${cp.join(', ')}`));
     }
@@ -880,7 +880,7 @@ export class AutoRunner {
     }
     if (this.sessionStats.totalCleanupDownloaded > 0 || this.sessionStats.totalCleanupDeleted > 0 || this.sessionStats.totalCleanupSkipped > 0 || this.sessionStats.totalCleanupFailed > 0) {
       const cp = [`${this.sessionStats.totalCleanupDownloaded} downloaded`, `${this.sessionStats.totalCleanupDeleted} deleted`];
-      if (this.sessionStats.totalCleanupSkipped > 0) cp.push(`${this.sessionStats.totalCleanupSkipped} kept (< 30s)`);
+      if (this.sessionStats.totalCleanupSkipped > 0) cp.push(`${this.sessionStats.totalCleanupSkipped} kept on server`);
       cp.push(`${this.sessionStats.totalCleanupFailed} failed`);
       await this.logger.info(`  Cleanup: ${cp.join(', ')}`);
     }

@@ -436,6 +436,102 @@ run
     }
   });
 
+run
+  .command('prune')
+  .description('Delete unwanted videos from a permalink, keeping only whitelisted UUIDs (and the source)')
+  .option('--account <alias>', 'Account alias to use')
+  .option('--permalink <url>', 'Grok Imagine permalink to prune')
+  .option('--keep <uuids>', 'Comma-separated UUIDs to keep (full UUID or 8-char prefix)')
+  .option('--keep-file <path>', 'Path to file with one UUID per line')
+  .option('--dry-run', 'Log intended deletions without performing them', false)
+  .action(async (options) => {
+    try {
+      if (!options.account) {
+        throw new Error('--account is required');
+      }
+      if (!options.permalink) {
+        throw new Error('--permalink is required');
+      }
+      if (!options.permalink.includes('grok.com/imagine')) {
+        throw new Error('Permalink must be a Grok Imagine URL');
+      }
+
+      const keepUUIDs = [];
+      if (options.keep) {
+        for (const u of options.keep.split(',')) {
+          const trimmed = u.trim();
+          if (trimmed) keepUUIDs.push(trimmed);
+        }
+      }
+      if (options.keepFile) {
+        const text = await fs.readFile(options.keepFile, 'utf-8');
+        for (const line of text.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed && !trimmed.startsWith('#')) keepUUIDs.push(trimmed);
+        }
+      }
+
+      const accountManager = new AccountManager();
+      const exists = await accountManager.accountExists(options.account);
+      if (!exists) {
+        throw new Error(`Account "${options.account}" not found.`);
+      }
+
+      console.log(chalk.blue('\n🧹 Starting prune run...\n'));
+      console.log(chalk.gray(`Code version: ${await getCodeVersionLabel()}`));
+      console.log(chalk.gray(`Account: ${options.account}`));
+      console.log(chalk.gray(`Permalink: ${options.permalink}`));
+      console.log(chalk.gray(`Keep set: ${keepUUIDs.length} UUID(s) (source always kept)`));
+      if (options.dryRun) {
+        console.log(chalk.yellow(`Mode: DRY RUN — no deletions will occur`));
+      }
+      console.log('');
+
+      // Lazy imports to avoid loading playwright machinery for non-prune CLI calls.
+      const { Logger } = await import('./utils/logger.js');
+      const { ParallelWorker } = await import('./core/worker.js');
+
+      const jobName = `prune_${Date.now()}`;
+      const logDir = config.SINGLE_RUN_LOGS_DIR;
+      const logPath = path.join(logDir, `${jobName}.log`);
+      await fs.mkdir(logDir, { recursive: true });
+      const logger = new Logger(logPath);
+
+      const cacheDir = path.join(config.CACHE_DIR, jobName);
+      await fs.mkdir(cacheDir, { recursive: true });
+
+      const worker = new ParallelWorker(
+        0,
+        options.account,
+        options.permalink,
+        '', // prompt unused for prune
+        null, // manifest unused — prune doesn't touch counter state
+        logger,
+        cacheDir
+      );
+
+      try {
+        await worker.initialize();
+        const stats = await worker.prune(keepUUIDs, { dryRun: options.dryRun === true });
+        const verb = options.dryRun ? 'would delete' : 'deleted';
+        console.log(chalk.green(`\n✓ Prune complete:`));
+        console.log(chalk.gray(`  Kept:    ${stats.kept}`));
+        console.log(chalk.gray(`  ${verb.charAt(0).toUpperCase() + verb.slice(1)}: ${stats.deleted}`));
+        console.log(chalk.gray(`  Failed:  ${stats.failed}`));
+        console.log(chalk.gray(`  Unknown: ${stats.unknown}`));
+      } finally {
+        await worker.shutdown();
+        // Best-effort cache cleanup
+        await fs.rm(cacheDir, { recursive: true, force: true }).catch(() => {});
+      }
+
+      await accountManager.updateLastUsed(options.account);
+    } catch (error) {
+      console.error(chalk.red(`\n✗ Error: ${error.message}\n`));
+      process.exit(1);
+    }
+  });
+
 /**
  * Auto-run commands
  */

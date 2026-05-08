@@ -12,6 +12,16 @@ function sleep(ms) {
 }
 
 /**
+ * Extract the post UUID from a Grok Imagine permalink.
+ * Returns null if the URL doesn't match the /imagine/post/{UUID} pattern.
+ */
+function extractPermalinkUUID(permalink) {
+  if (!permalink) return null;
+  const match = permalink.match(/\/imagine\/post\/([a-f0-9-]+)/i);
+  return match ? match[1] : null;
+}
+
+/**
  * Worker - handles video generation in a dedicated browser context
  * Each worker runs independently with its own profile copy
  */
@@ -139,12 +149,21 @@ export class ParallelWorker {
       // Create post-processor if download/upscale/delete enabled, or if cleanup is enabled
       if (this.autoDownload || this.downloadAndDeleteRemainingVideos) {
         const { PostProcessor } = await import('./post-processor.js');
+        const sourceUUID = extractPermalinkUUID(this.permalink);
+        // Derive registry name from the download folder (stable across autorun
+        // cycles), not jobName (which gets a per-cycle timestamp suffix in autorun).
+        const registryName = this.downloadDir ? path.basename(this.downloadDir) : this.jobName;
+        const registryPath = registryName
+          ? path.join(config.RUNS_DIR, 'uuid-registry', `${registryName}.txt`)
+          : null;
         this.postProcessor = new PostProcessor(this.page, this.logger, {
           autoDownload: this.autoDownload || this.downloadAndDeleteRemainingVideos,
           autoUpscale: this.autoUpscale,
           autoDelete: this.autoDelete || this.downloadAndDeleteRemainingVideos,
           downloadDir: this.downloadDir,
           jobName: this.jobName,
+          registryPath,
+          sourceUUID,
         });
       }
 
@@ -1100,6 +1119,126 @@ export class ParallelWorker {
   }
 
   /**
+   * Prune unwanted variations from the server. Walks every thumbnail at the
+   * permalink, extracts each video's UUID, and deletes any video whose UUID is
+   * not in the keep set (the source/permalink UUID is always kept).
+   *
+   * @param {string[]} keepUUIDs - UUIDs (full or 8-char prefix) to preserve
+   * @param {Object} [options]
+   * @param {boolean} [options.dryRun=false] - Log intended deletions without performing them
+   * @returns {Promise<{kept: number, deleted: number, failed: number, unknown: number}>}
+   */
+  async prune(keepUUIDs = [], options = {}) {
+    // Prune doesn't need autoDownload/cleanup wiring, so initialize() may not have
+    // created the PostProcessor. Construct one on demand for UUID extraction +
+    // delete plumbing.
+    if (!this.postProcessor) {
+      const { PostProcessor } = await import('./post-processor.js');
+      this.postProcessor = new PostProcessor(this.page, this.logger, {
+        downloadDir: this.downloadDir,
+        jobName: this.jobName,
+      });
+    }
+    const dryRun = options.dryRun === true;
+
+    // Build keep set with both full UUIDs and 8-char prefixes so callers can
+    // pass either form. Source/permalink UUID is always preserved.
+    const keepSet = new Set();
+    for (const u of keepUUIDs) {
+      if (!u) continue;
+      const lower = String(u).toLowerCase().trim();
+      if (lower.length >= 8) {
+        keepSet.add(lower);
+        keepSet.add(lower.substring(0, 8));
+      }
+    }
+    const sourceUUID = extractPermalinkUUID(this.permalink);
+    if (sourceUUID) {
+      const lower = sourceUUID.toLowerCase();
+      keepSet.add(lower);
+      keepSet.add(lower.substring(0, 8));
+    }
+
+    this.logger.info(`[Pruner] Walking thumbnails at ${this.permalink}`);
+    this.logger.info(`[Pruner] Keep set: ${keepSet.size / 2} UUID(s) (incl. source)`);
+    if (dryRun) {
+      this.logger.info(`[Pruner] DRY RUN — no deletions will occur`);
+    }
+
+    const stats = { kept: 0, deleted: 0, failed: 0, unknown: 0 };
+    let skippedCount = 0; // Videos walked-past (kept on server)
+    let actionIndex = 0;
+
+    while (true) {
+      const remaining = await this._detectRemainingVideos();
+
+      if (remaining.count === 0 || remaining.count <= skippedCount) {
+        this.logger.info(`[Pruner] No more videos to process`);
+        break;
+      }
+
+      // Navigate to a thumbnail (walk backwards past already-kept videos)
+      if (remaining.count > 1) {
+        const targetIndex = remaining.count - 1 - skippedCount;
+        if (targetIndex < 0) break;
+        const clicked = await this._clickThumbnailAtIndex(targetIndex);
+        if (!clicked) {
+          this.logger.warn(`[Pruner] Failed to click thumbnail at index ${targetIndex}, stopping`);
+          stats.failed++;
+          break;
+        }
+        await this._waitForVideoLoad();
+      }
+
+      // Extract this video's UUID
+      const uuid = await this.postProcessor._extractVideoUUID();
+      const uuidFull = uuid ? uuid.toLowerCase() : null;
+      const uuid8 = uuidFull ? uuidFull.substring(0, 8) : 'unknown';
+
+      if (!uuidFull) {
+        this.logger.warn(`[Pruner] Could not extract UUID for current video — leaving on server`);
+        stats.unknown++;
+        skippedCount++;
+        actionIndex++;
+        await sleep(1000);
+        continue;
+      }
+
+      const isKept = keepSet.has(uuidFull) || keepSet.has(uuid8);
+
+      if (isKept) {
+        this.logger.info(`[Pruner] Keep ${uuid8} (whitelisted or source)`);
+        stats.kept++;
+        skippedCount++;
+      } else if (dryRun) {
+        this.logger.info(`[Pruner] Would delete ${uuid8}`);
+        stats.deleted++;
+        skippedCount++;
+      } else {
+        const deleteResult = await this.postProcessor._deleteWithRetry(actionIndex);
+        if (deleteResult.success) {
+          this.logger.success(`[Pruner] Deleted ${uuid8}`);
+          stats.deleted++;
+          // Don't increment skippedCount — the count drops on next _detectRemainingVideos
+        } else {
+          this.logger.error(`[Pruner] Failed to delete ${uuid8}: ${deleteResult.error}`);
+          stats.failed++;
+          skippedCount++; // Walk past this one to avoid infinite retry
+        }
+      }
+
+      actionIndex++;
+      await sleep(1000);
+    }
+
+    const verb = dryRun ? 'would delete' : 'deleted';
+    this.logger.info(
+      `[Pruner] Done: ${stats.kept} kept, ${stats.deleted} ${verb}, ${stats.failed} failed, ${stats.unknown} unknown`
+    );
+    return stats;
+  }
+
+  /**
    * Cleanup remaining videos on the server
    * Called after generation completes to download and delete any leftover videos
    * @returns {Promise<{downloaded: number, deleted: number, failed: number}>}
@@ -1200,7 +1339,16 @@ export class ParallelWorker {
         );
       }
 
-      if (deleteSkipped) {
+      if (result.skipped) {
+        // UUID already in registry — leave on server, count as skipped so the
+        // loop walks past it and eventually terminates.
+        skippedCount++;
+        stats.skipped++;
+        await this.manifest.incrementCounterAtomic('cleanupSkippedCount');
+        this.logger.info(
+          `[Worker ${this.workerId}] Cleanup ${cleanupIndex + 1}: Skipped — UUID already downloaded`
+        );
+      } else if (deleteSkipped) {
         // Video intentionally kept on server — track as skipped, not failed
         skippedCount++;
         stats.skipped++;
@@ -1230,7 +1378,7 @@ export class ParallelWorker {
       `${stats.deleted} deleted`,
     ];
     if (stats.skipped > 0) {
-      summaryParts.push(`${stats.skipped} kept (< ${config.MAX_VIDEO_DURATION}s)`);
+      summaryParts.push(`${stats.skipped} kept on server`);
     }
     summaryParts.push(`${stats.failed} failed`);
     this.logger.info(
