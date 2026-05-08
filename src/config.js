@@ -62,6 +62,14 @@ export const config = {
   MODERATION_RETRY_MAX: 100, // Max retries for content moderation errors
   MODERATION_RETRY_COOLDOWN: 1000, // 1 second cooldown between moderation retries
 
+  // Window after a mid-generation URL change to wait for fresh progress to appear
+  // on the new URL. If no progress is detected within this window, we treat the
+  // navigation as a moderation redirect (Grok occasionally bounces moderated
+  // generations to an unrelated existing /post/<UUID> rather than showing a
+  // moderation toast). 15s is generous enough that legit extends — where Grok
+  // navigates to the new post URL and progress shows within 1–3s — never trip it.
+  MODERATION_REDIRECT_TIMEOUT_MS: 15000,
+
   // Generation settings
   DEFAULT_BATCH_SIZE: 10,
 

@@ -1079,16 +1079,43 @@ export class VideoGenerator {
   }
 
   /**
-   * Wait for video generation to complete with real-time failure detection
+   * Wait for video generation to complete with real-time failure detection.
+   *
+   * URL drift handling: when generation is moderated, Grok sometimes redirects
+   * the page to an unrelated existing /post/<UUID> rather than showing a
+   * moderation toast. The redirect destination has a fully-rendered video that
+   * would otherwise pass _verifyVideoPlayable, producing a false success and
+   * causing the worker to advance its checkpoint to someone else's post. To
+   * defend against this we track which URL we're observing progress on and
+   * require fresh progress on any URL we end up on before declaring success.
+   * If progress doesn't appear on a new URL within MODERATION_REDIRECT_TIMEOUT_MS,
+   * the navigation is treated as a moderation redirect.
    */
   async _waitForCompletion(index) {
     const startTime = Date.now();
     const checkInterval = 2000;
     let loggedStart = false;
     let actualResolution = null; // Track if resolution was downgraded
+    let trackedUrl = this.page.url(); // URL we're currently observing progress on
+    let lastUrlChangeAt = null;       // ms timestamp of most recent URL change
 
     while (true) {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
+
+      // URL drift detection. Any change to the /post/<UUID> we're on resets our
+      // progress tracking — we need to see fresh progress on the new URL before
+      // we'll accept a "video ready" reading from it. This catches the Grok
+      // moderation-redirect pattern where the page gets bounced to an unrelated
+      // existing post that has its own playable video element.
+      const currentUrl = this.page.url();
+      if (currentUrl !== trackedUrl) {
+        this.logger.warn(
+          `${this._tag(index)} Page URL changed during generation: ${trackedUrl} → ${currentUrl} (resetting progress tracking)`
+        );
+        loggedStart = false;
+        trackedUrl = currentUrl;
+        lastUrlChangeAt = Date.now();
+      }
 
       const video = await this.page.$(selectors.VIDEO_CONTAINER);
       const percentageProgress = await this._detectProgressPercentage();
@@ -1105,14 +1132,18 @@ export class VideoGenerator {
         }
       }
 
-      // Log once when generation starts
+      // Log once when generation starts (re-armed if URL drifted, so we log per-URL)
       if (generationInProgress && !loggedStart) {
         this.logger.info(`${this._tag(index)} Generation started: ${percentageProgress.percentage}%`);
         loggedStart = true;
+        // Once progress appears on the new URL, the redirect (if any) was legit
+        // — Grok navigated to the new generation's post URL. Clear the timer.
+        lastUrlChangeAt = null;
       }
 
       // 1. Check for video completion - only if we saw generation start
       // This prevents false positives from pre-existing videos on the page
+      // (including unrelated posts we may have been redirected to).
       if (video && loggedStart) {
         const isPlayable = await this._verifyVideoPlayable(video);
         if (isPlayable) {
@@ -1149,6 +1180,25 @@ export class VideoGenerator {
         const driftUrl = this.page.url();
         this.logger.warn(`${this._tag(index)} Page navigated away to ${driftUrl}`);
         throw new Error(`PAGE_DRIFTED: Page navigated to ${driftUrl}`);
+      }
+
+      // 3b. Moderation-redirect detection: if URL changed and no fresh progress
+      // has appeared on the new URL within MODERATION_REDIRECT_TIMEOUT_MS, treat
+      // this as a moderation redirect. Grok's bug: moderated generations
+      // sometimes silently redirect to an unrelated existing /post/<UUID> rather
+      // than showing a moderation toast on our page. Without this check the
+      // unrelated post's playable video would later satisfy the success gate
+      // and produce a false success.
+      if (lastUrlChangeAt !== null && !loggedStart) {
+        const sinceUrlChange = Date.now() - lastUrlChangeAt;
+        if (sinceUrlChange > config.MODERATION_REDIRECT_TIMEOUT_MS) {
+          this.logger.warn(
+            `${this._tag(index)} URL drifted to ${currentUrl} but no progress observed after ${Math.round(sinceUrlChange / 1000)}s — treating as moderation redirect`
+          );
+          throw new Error(
+            `CONTENT_MODERATED: Page redirected to ${currentUrl} without active generation (likely Grok moderation redirect)`
+          );
+        }
       }
 
       // 4. Only check for errors when % is 0 or not visible

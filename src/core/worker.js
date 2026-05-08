@@ -970,15 +970,23 @@ export class ParallelWorker {
           // Cooldown before retry to let stale moderation messages clear
           await sleep(config.MODERATION_RETRY_COOLDOWN);
 
-          // If page drifted away from /post/, break to outer loop which will
-          // navigate back to checkpoint and re-trigger extend mode.
-          if (!this.page.url().includes('/imagine/post/')) {
+          // If the page drifted — either away from /imagine/post/ entirely, OR
+          // to a /post/<UUID> different from the checkpoint (Grok's moderation-
+          // redirect quirk where moderated generations bounce to an unrelated
+          // existing post) — break to the outer loop, which will navigate back
+          // to the checkpoint and re-trigger extend mode. Without this, we'd
+          // retry generate() on an unrelated post in the wrong UI state.
+          const postModerationUrl = this.page.url();
+          const drifted =
+            !postModerationUrl.includes('/imagine/post/') ||
+            postModerationUrl !== checkpointUrl;
+          if (drifted) {
             this.logger.warn(
-              `[Worker ${this.workerId}] Page drifted to ${this.page.url()} after moderation, will re-navigate to checkpoint`
+              `[Worker ${this.workerId}] Page drifted to ${postModerationUrl} after moderation (checkpoint: ${checkpointUrl}), will re-navigate to checkpoint`
             );
             break; // → outer loop handles recovery
           }
-          // Still on a /post/ page — retry generate directly (UI still in extend mode)
+          // Still on the checkpoint page — retry generate directly (UI still in extend mode)
           continue;
         } else {
           failedAttempts++;
