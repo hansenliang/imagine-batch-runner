@@ -70,6 +70,13 @@ export const config = {
   // navigates to the new post URL and progress shows within 1–3s — never trip it.
   MODERATION_REDIRECT_TIMEOUT_MS: 15000,
 
+  // Hard cap on Playwright's `context.close()` per worker during shutdown. If
+  // Chrome is hung on in-flight requests / pending downloads / profile flushes,
+  // we abandon the graceful close after this and force-kill the underlying
+  // Chrome processes with pkill -9 -f <profileDir>. Healthy closes are
+  // sub-second so this only fires in pathological cases.
+  WORKER_SHUTDOWN_TIMEOUT_MS: 5000,
+
   // Generation settings
   DEFAULT_BATCH_SIZE: 10,
 

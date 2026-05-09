@@ -1,4 +1,5 @@
 import { chromium } from 'playwright';
+import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
 import config, { selectors } from '../config.js';
@@ -1774,13 +1775,38 @@ export class ParallelWorker {
 
     try {
       if (this.context) {
-        await this.context.close();
+        // Bound context.close() with a hard timeout. Playwright's graceful close
+        // can hang for many minutes when Chrome is mid-request or flushing
+        // profile state — we'd rather force-kill than wait. See
+        // WORKER_SHUTDOWN_TIMEOUT_MS in config.js for the rationale.
+        const timeoutMs = config.WORKER_SHUTDOWN_TIMEOUT_MS;
+        const closePromise = this.context
+          .close()
+          .then(() => true)
+          .catch((err) => {
+            this.logger.debug(
+              `[Worker ${this.workerId}] context.close() threw: ${err.message}`
+            );
+            return true; // treat as "done"; we move on either way
+          });
+        const timeoutPromise = new Promise((resolve) =>
+          setTimeout(() => resolve(false), timeoutMs)
+        );
+        const closedCleanly = await Promise.race([closePromise, timeoutPromise]);
+
+        if (!closedCleanly) {
+          this.logger.warn(
+            `[Worker ${this.workerId}] context.close() exceeded ${timeoutMs}ms — force-killing Chrome`
+          );
+          await this._forceKillChrome();
+        }
+
         this.context = null;
         this.page = null;
         this.generator = null;
       }
 
-      // Cleanup worker profile
+      // Cleanup worker profile (sub-second on SSD; safe to await)
       try {
         await fs.rm(this.workerProfileDir, { recursive: true, force: true });
       } catch (error) {
@@ -1793,6 +1819,47 @@ export class ParallelWorker {
       );
     } catch (error) {
       this.logger.error(`[Worker ${this.workerId}] Shutdown error`, error);
+    }
+  }
+
+  /**
+   * Force-kill any Chrome processes whose argv references this worker's
+   * profile directory. Safe across workers because each worker's profile
+   * path is unique (cache/<job>/worker-profiles/worker-N). Best-effort:
+   * pkill is POSIX-only; on platforms without it, we silently no-op and
+   * let the orphaned Chrome be reaped by the OS at process exit.
+   * @private
+   */
+  async _forceKillChrome() {
+    if (process.platform === 'win32') {
+      this.logger.debug(
+        `[Worker ${this.workerId}] Force-kill not implemented for win32 — leaving Chrome to exit on its own`
+      );
+      return;
+    }
+    try {
+      await new Promise((resolve) => {
+        const proc = spawn('pkill', ['-9', '-f', this.workerProfileDir], {
+          stdio: 'ignore',
+        });
+        // pkill exits 0 if it killed something, 1 if no match — both are fine.
+        const safetyTimer = setTimeout(() => {
+          try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+          resolve();
+        }, 2000);
+        proc.on('exit', () => {
+          clearTimeout(safetyTimer);
+          resolve();
+        });
+        proc.on('error', () => {
+          clearTimeout(safetyTimer);
+          resolve();
+        });
+      });
+    } catch (error) {
+      this.logger.debug(
+        `[Worker ${this.workerId}] pkill error: ${error.message}`
+      );
     }
   }
 }
