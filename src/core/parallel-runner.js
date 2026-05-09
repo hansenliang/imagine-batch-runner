@@ -64,6 +64,8 @@ export class ParallelRunner {
     this.logger = null;
     this.workers = [];
     this.rateLimitDetected = false;
+    this.ghostExtendDetected = false;
+    this.ghostExtendUrl = null;
     this.summaryPrinted = false;
   }
 
@@ -181,6 +183,20 @@ export class ParallelRunner {
               this.logger.info('Workers will complete their current video before shutting down');
               this.workers.forEach(w => w.stop());
             }
+          } else if (error.message?.startsWith('GHOST_EXTEND_STOP')) {
+            // Same fan-out behavior as rate limit: one worker hitting a
+            // ghost-extend usually means the source/prompt combination is
+            // tripping Grok's bug for everyone, so stop sibling workers too
+            // rather than burn parallel credits on the same misbehavior.
+            if (!this.ghostExtendDetected) {
+              this.ghostExtendDetected = true;
+              // Extract URL from "GHOST_EXTEND_STOP: <url>" message
+              const ghostUrl = error.message.replace(/^GHOST_EXTEND_STOP:\s*/, '');
+              this.ghostExtendUrl = ghostUrl;
+              this.logger.warn(`Ghost extend detected by worker ${worker.workerId} — suspected Grok bug`);
+              this.logger.info('Signaling all workers to stop gracefully...');
+              this.workers.forEach(w => w.stop());
+            }
           }
           return { error, workerId: worker.workerId };
         })
@@ -200,6 +216,10 @@ export class ParallelRunner {
       if (this.rateLimitDetected || manifestStatus === 'STOPPED_RATE_LIMIT') {
         await this.logger.warn('Run stopped due to rate limit');
         await this.manifest.updateStatusAtomic('STOPPED_RATE_LIMIT', 'Rate limit detected');
+      } else if (this.ghostExtendDetected) {
+        const reason = `Ghost extend detected (suspected Grok bug). Inspect ${this.ghostExtendUrl}`;
+        await this.logger.warn(`Run stopped: ${reason}`);
+        await this.manifest.updateStatusAtomic('STOPPED_GHOST_EXTEND', reason);
       } else if (errors.length > 0 && errors.length === successfulWorkers.length) {
         // All workers failed
         await this.logger.error('All workers failed');
