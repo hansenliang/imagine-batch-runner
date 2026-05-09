@@ -813,7 +813,14 @@ export class ParallelWorker {
         this.logger.info(`[Worker ${this.workerId}] Work loop completed`);
       }
     } catch (error) {
-      if (error.message === 'RATE_LIMIT_STOP') {
+      // Controlled stop signals propagate silently to the coordinator, which
+      // logs them at WARN with the appropriate stop reason. Logging them here
+      // as "Fatal error" with a stack trace is misleading — they're expected
+      // termination paths, not crashes.
+      if (
+        error.message === 'RATE_LIMIT_STOP' ||
+        error.message?.startsWith('GHOST_EXTEND_STOP')
+      ) {
         throw error; // Propagate to coordinator
       }
       this.logger.error(`[Worker ${this.workerId}] Fatal error in work loop`, error);
