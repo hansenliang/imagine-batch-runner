@@ -14,11 +14,17 @@ export class VideoGenerator {
   /**
    * @param {import('playwright').Page} page - Playwright page instance
    * @param {import('../utils/logger.js').Logger} logger - Logger instance
+   * @param {Object} [options]
+   * @param {boolean} [options.allowDowngradedQuality=true] - When false, a
+   *   resolution downgrade toast (e.g. "720p rate limit reached. Switched to
+   *   480p.") is treated as a hard rate limit and aborts generation with
+   *   RATE_LIMIT instead of silently continuing at the downgraded resolution.
    */
-  constructor(page, logger) {
+  constructor(page, logger, options = {}) {
     this.page = page;
     this.logger = logger;
     this._logLabel = 'Attempt'; // Default label; overridden per generate() call
+    this.allowDowngradedQuality = options.allowDowngradedQuality !== false; // default true
   }
 
   /**
@@ -544,9 +550,15 @@ export class VideoGenerator {
   }
 
   /**
-   * Trigger extend mode by clicking "..." menu → "Extend video".
+   * Trigger extend mode by clicking "..." (More options) menu → "Extend".
    * After this, the UI transitions to extend mode where generate() can be called
    * with the same prompt to extend the video.
+   *
+   * Current Grok UI (May 2026): the trigger is button[aria-label="More options"]
+   * (same button used by the delete flow) and the menu item is labelled "Extend".
+   * Legacy UIs used a "Settings" gear and "Extend video" label — both supported
+   * via fallbacks below.
+   *
    * @param {number} index - Current attempt index for logging
    * @returns {Promise<boolean>} - Whether extend mode was triggered successfully
    */
@@ -554,34 +566,39 @@ export class VideoGenerator {
     try {
       await this._dismissBanners();
 
-      // Step 1: Click the Settings button (same button used for mode selection).
-      // When a video is already generated, its menu includes "Extend video".
-      const settingsButton = await this.page.$(selectors.SETTINGS_BUTTON);
-      if (!settingsButton) {
-        this.logger.debug(`${this._tag(index)} Settings button not found for extend`);
+      // Step 1: Click the "..." More options button. Same selector as delete flow.
+      let menuButton = await this.page.$(selectors.VIDEO_MENU_BUTTON);
+      if (!menuButton) {
+        // Legacy fallback: older Grok UI used a Settings gear for this menu.
+        menuButton = await this.page.$(selectors.SETTINGS_BUTTON);
+      }
+      if (!menuButton) {
+        this.logger.debug(`${this._tag(index)} More options button not found for extend`);
         return false;
       }
 
-      const isVisible = await settingsButton.isVisible().catch(() => false);
+      const isVisible = await menuButton.isVisible().catch(() => false);
       if (!isVisible) {
-        this.logger.debug(`${this._tag(index)} Settings button not visible for extend`);
+        this.logger.debug(`${this._tag(index)} More options button not visible for extend`);
         return false;
       }
 
-      await settingsButton.click();
+      await menuButton.click();
       await sleep(config.UI_ACTION_DELAY);
 
-      // Step 2: Click "Extend video" menu item
+      // Step 2: Click "Extend" menu item (legacy: "Extend video")
       let extendItem = await this.page.$(selectors.EXTEND_MENU_ITEM);
 
-      // Fallback: scan menu items for extend text
+      // Fallback: scan menu items for an exact-trim "Extend" or "Extend video" label.
+      // We do not match arbitrary substrings, to avoid hitting "Extend from frame"
+      // or any future "Extend X" items.
       if (!extendItem) {
         const menuItems = await this.page.$$('[role="menuitem"]');
         for (const item of menuItems) {
           const itemVisible = await item.isVisible().catch(() => false);
           if (!itemVisible) continue;
-          const text = await item.innerText().catch(() => '');
-          if (/extend\s+video/i.test(text)) {
+          const text = (await item.innerText().catch(() => '')).trim();
+          if (/^extend(\s+video)?$/i.test(text)) {
             extendItem = item;
             break;
           }
@@ -589,14 +606,14 @@ export class VideoGenerator {
       }
 
       if (!extendItem) {
-        this.logger.debug(`${this._tag(index)} Extend video menu item not found in Settings menu`);
+        this.logger.debug(`${this._tag(index)} Extend menu item not found in More options menu`);
         await this.page.keyboard.press('Escape');
         return false;
       }
 
       const itemVisible = await extendItem.isVisible().catch(() => false);
       if (!itemVisible) {
-        this.logger.debug(`${this._tag(index)} Extend video menu item not visible`);
+        this.logger.debug(`${this._tag(index)} Extend menu item not visible`);
         await this.page.keyboard.press('Escape');
         return false;
       }
@@ -604,7 +621,7 @@ export class VideoGenerator {
       await extendItem.click();
       await sleep(config.UI_ACTION_DELAY);
 
-      this.logger.debug(`${this._tag(index)} Extend mode triggered via Settings menu`);
+      this.logger.debug(`${this._tag(index)} Extend mode triggered via More options menu`);
       return true;
     } catch (error) {
       this.logger.debug(`${this._tag(index)} Extend mode trigger failed: ${error.message}`);
@@ -1068,16 +1085,46 @@ export class VideoGenerator {
   }
 
   /**
-   * Wait for video generation to complete with real-time failure detection
+   * Wait for video generation to complete with real-time failure detection.
+   *
+   * URL drift handling: when generation is moderated, Grok sometimes redirects
+   * the page to an unrelated existing /post/<UUID> rather than showing a
+   * moderation toast. The redirect destination has a fully-rendered video that
+   * would otherwise pass _verifyVideoPlayable, producing a false success and
+   * causing the worker to advance its checkpoint to someone else's post. To
+   * defend against this we track which URL we're observing progress on and
+   * require fresh progress on any URL we end up on before declaring success.
+   * If progress doesn't appear on a new URL within MODERATION_REDIRECT_TIMEOUT_MS,
+   * the navigation is treated as a moderation redirect.
    */
   async _waitForCompletion(index) {
     const startTime = Date.now();
     const checkInterval = 2000;
     let loggedStart = false;
     let actualResolution = null; // Track if resolution was downgraded
+    let trackedUrl = this.page.url(); // URL we're currently observing progress on
+    let lastUrlChangeAt = null;       // ms timestamp of most recent URL change
 
     while (true) {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
+
+      // URL drift detection. Grok normally navigates to a new /post/<UUID> at
+      // the start of every generation — that's expected and benign. We reset
+      // our progress tracking so we require fresh progress on the new URL,
+      // which keeps the "video ready" success gate honest: in the normal case
+      // progress reappears on the new URL within ~1–2s and the gate works
+      // normally; in the moderation-redirect case (Grok bouncing us to an
+      // unrelated existing post) no progress ever appears on the new URL and
+      // the timeout below throws CONTENT_MODERATED.
+      const currentUrl = this.page.url();
+      if (currentUrl !== trackedUrl) {
+        this.logger.debug(
+          `${this._tag(index)} URL advanced ${trackedUrl} → ${currentUrl} (awaiting fresh progress on new URL)`
+        );
+        loggedStart = false;
+        trackedUrl = currentUrl;
+        lastUrlChangeAt = Date.now();
+      }
 
       const video = await this.page.$(selectors.VIDEO_CONTAINER);
       const percentageProgress = await this._detectProgressPercentage();
@@ -1085,23 +1132,36 @@ export class VideoGenerator {
       // % > 0 means generation is actively in progress
       const generationInProgress = percentageProgress.detected && percentageProgress.percentage > 0;
 
-      // Check for resolution downgrade once, early in generation (before loggedStart)
+      // Check for resolution downgrade once, early in generation (before loggedStart).
+      // When allowDowngradedQuality=false, the downgrade is treated as a hard
+      // rate limit (caller wants to stop and move on rather than silently
+      // accept a lower-quality output).
       if (!actualResolution && !loggedStart) {
         const downgrade = await this._detectResolutionDowngrade();
         if (downgrade.detected) {
+          if (!this.allowDowngradedQuality) {
+            this.logger.warn(
+              `${this._tag(index)} Resolution downgrade detected (${downgrade.message}); allowDowngradedQuality=false — treating as rate limit`
+            );
+            throw new Error(`RATE_LIMIT: Resolution downgrade — ${downgrade.message}`);
+          }
           actualResolution = downgrade.actualResolution;
           this.logger.info(`${this._tag(index)} Resolution downgraded: ${downgrade.message}`);
         }
       }
 
-      // Log once when generation starts
+      // Log once when generation starts (re-armed if URL drifted, so we log per-URL)
       if (generationInProgress && !loggedStart) {
         this.logger.info(`${this._tag(index)} Generation started: ${percentageProgress.percentage}%`);
         loggedStart = true;
+        // Once progress appears on the new URL, the redirect (if any) was legit
+        // — Grok navigated to the new generation's post URL. Clear the timer.
+        lastUrlChangeAt = null;
       }
 
       // 1. Check for video completion - only if we saw generation start
       // This prevents false positives from pre-existing videos on the page
+      // (including unrelated posts we may have been redirected to).
       if (video && loggedStart) {
         const isPlayable = await this._verifyVideoPlayable(video);
         if (isPlayable) {
@@ -1138,6 +1198,25 @@ export class VideoGenerator {
         const driftUrl = this.page.url();
         this.logger.warn(`${this._tag(index)} Page navigated away to ${driftUrl}`);
         throw new Error(`PAGE_DRIFTED: Page navigated to ${driftUrl}`);
+      }
+
+      // 3b. Moderation-redirect detection: if URL changed and no fresh progress
+      // has appeared on the new URL within MODERATION_REDIRECT_TIMEOUT_MS, treat
+      // this as a moderation redirect. Grok's bug: moderated generations
+      // sometimes silently redirect to an unrelated existing /post/<UUID> rather
+      // than showing a moderation toast on our page. Without this check the
+      // unrelated post's playable video would later satisfy the success gate
+      // and produce a false success.
+      if (lastUrlChangeAt !== null && !loggedStart) {
+        const sinceUrlChange = Date.now() - lastUrlChangeAt;
+        if (sinceUrlChange > config.MODERATION_REDIRECT_TIMEOUT_MS) {
+          this.logger.warn(
+            `${this._tag(index)} URL drifted to ${currentUrl} but no progress observed after ${Math.round(sinceUrlChange / 1000)}s — treating as moderation redirect`
+          );
+          throw new Error(
+            `CONTENT_MODERATED: Page redirected to ${currentUrl} without active generation (likely Grok moderation redirect)`
+          );
+        }
       }
 
       // 4. Only check for errors when % is 0 or not visible

@@ -1,4 +1,5 @@
 import { chromium } from 'playwright';
+import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
 import config, { selectors } from '../config.js';
@@ -47,6 +48,9 @@ export class ParallelWorker {
     // Video settings selection (opt-in)
     this.selectMaxDuration = options.selectMaxDuration || false;
     this.selectMaxResolution = options.selectMaxResolution || false;
+    // When false, a resolution downgrade (e.g. 720p → 480p due to per-resolution
+    // rate limit) is treated as a hard rate limit instead of silently continuing.
+    this.allowDowngradedQuality = options.allowDowngradedQuality !== false; // default true
 
     // Extend settings
     this.maxExtendMode = options.maxExtendMode || false;
@@ -144,7 +148,9 @@ export class ParallelWorker {
       }
 
       // Create video generator
-      this.generator = new VideoGenerator(this.page, this.logger);
+      this.generator = new VideoGenerator(this.page, this.logger, {
+        allowDowngradedQuality: this.allowDowngradedQuality,
+      });
 
       // Create post-processor if download/upscale/delete enabled, or if cleanup is enabled
       if (this.autoDownload || this.downloadAndDeleteRemainingVideos) {
@@ -686,6 +692,25 @@ export class ParallelWorker {
             }
           }
 
+          // Same pattern for ghost-extend: in max-extend mode with no real
+          // successful extends, there's no partial to preserve, so stop
+          // immediately. The throw is caught in parallel-runner alongside
+          // RATE_LIMIT_STOP and surfaces a clear stop reason.
+          if (extResult.ghostExtendDetected) {
+            if (this.maxExtendMode && extResult.successfulExtends === 0 && !extResult.alreadyAtTarget) {
+              await this.manifest.updateItemAtomic(
+                index,
+                {
+                  status: 'FAILED',
+                  error: `Ghost extend (suspected Grok bug): ${extResult.ghostExtendUrl}`,
+                  attempts: 0,
+                },
+                this.workerId
+              );
+              throw new Error(`GHOST_EXTEND_STOP: ${extResult.ghostExtendUrl}`);
+            }
+          }
+
           // In max-extend mode with zero successful extends, skip post-processing
           // to protect the original video — UNLESS the video is already at max duration
           // (e.g., source was already 30s), in which case it's ready for post-processing.
@@ -763,6 +788,16 @@ export class ParallelWorker {
           throw new Error('RATE_LIMIT_STOP');
         }
 
+        // Same pattern for ghost-extend: post-process whatever real successes
+        // we accumulated before the ghost (chain may have grown e.g. 10s → 20s
+        // legitimately, then ghost-failed on extend 3), then stop the run.
+        if (extResult?.ghostExtendDetected) {
+          this.logger.warn(
+            `[Worker ${this.workerId}] Ghost extend during chain ${index + 1} — stopping after preserving partial work`
+          );
+          throw new Error(`GHOST_EXTEND_STOP: ${extResult.ghostExtendUrl}`);
+        }
+
         // Check if we should stop AFTER completing work
         if (this.shouldStop) {
           this.logger.info(`[Worker ${this.workerId}] Stop signal received, exiting after attempt ${index + 1}`);
@@ -831,10 +866,12 @@ export class ParallelWorker {
     const targetDuration = config.MAX_VIDEO_DURATION;
     let lastKnownDuration = 0; // Track duration across extends for diagnostics
     let alreadyAtTarget = false; // True if video was already at max duration (no extend needed)
+    let ghostExtendDetected = false; // True if Grok produced a same-length "extension"
+    let ghostExtendUrl = null;       // URL of the ghost post (for diagnostics in the throw)
 
     this.logger.debug(`[Worker ${this.workerId}] Extend loop starting — checkpoint: ${checkpointUrl}`);
 
-    while (failedAttempts < maxFailedAttempts && !rateLimitedOnExtend) {
+    while (failedAttempts < maxFailedAttempts && !rateLimitedOnExtend && !ghostExtendDetected) {
       this.logger.info(
         `[Worker ${this.workerId}] Extend ${successfulExtends + 1} (failures: ${failedAttempts})`
       );
@@ -862,6 +899,14 @@ export class ParallelWorker {
           checkpointUrl = landedUrl;
         }
       }
+
+      // Capture the duration of the video about to be extended. Used after the
+      // generation completes to verify the result actually grew (a real extend
+      // produces a strictly-longer video; a "ghost extend" — Grok bug where
+      // the new post is unrelated to the source — leaves it at the same length).
+      // Read here, before triggerExtendMode opens the menu / transitions UI,
+      // so we're sampling the stable post page.
+      const preExtendDuration = await this._getVideoDuration();
 
       // Step 1: Trigger extend mode.
       // On the first extend, if extendFromTime is set, use "extend from frame"
@@ -915,13 +960,38 @@ export class ParallelWorker {
         const extDuration = Math.round((extResult.durationMs || 0) / 1000);
 
         if (extResult.success) {
+          // Read post-extend duration BEFORE advancing checkpoint or counters,
+          // so we can roll the "success" back to a ghost-extend stop without
+          // having to undo state changes.
+          const videoDur = await this._getVideoDuration();
+          const ghostUrl = this.page.url();
+
+          // Ghost-extend invariant: a real extension is *defined* by the video
+          // growing in duration. If we observed full progress and got a
+          // playable video but the duration didn't grow, Grok's "extend"
+          // landed us on an unrelated post (suspected DB / moderation bug).
+          // Stop the run rather than burn credits chasing fake successes.
+          // Tolerance of 0.5s covers floating-point / measurement noise; even
+          // a +5s near-cap extension grows by ~5s, well above this floor.
+          if (preExtendDuration > 0 && videoDur > 0 && videoDur <= preExtendDuration + 0.5) {
+            this.logger.warn(
+              `[Worker ${this.workerId}] GHOST EXTEND detected — duration unchanged (${preExtendDuration.toFixed(1)}s → ${videoDur.toFixed(1)}s). ` +
+                `Ghost post: ${ghostUrl} | Real checkpoint: ${checkpointUrl}. ` +
+                `Suspected Grok bug; stopping run for this config to avoid burning credits.`
+            );
+            ghostExtendDetected = true;
+            ghostExtendUrl = ghostUrl;
+            // Do NOT advance checkpointUrl, do NOT increment successfulExtends.
+            // Break out of inner loop; outer's while exits via ghostExtendDetected.
+            break;
+          }
+
           successfulExtends++;
           failedAttempts = 0; // Reset on success
           const prevCheckpoint = checkpointUrl;
           checkpointUrl = this.page.url(); // Advance checkpoint
           await this.manifest.incrementCounterAtomic('extendedCount');
 
-          const videoDur = await this._getVideoDuration();
           lastKnownDuration = videoDur;
 
           // Diagnostic: log checkpoint advancement and URL change
@@ -970,15 +1040,23 @@ export class ParallelWorker {
           // Cooldown before retry to let stale moderation messages clear
           await sleep(config.MODERATION_RETRY_COOLDOWN);
 
-          // If page drifted away from /post/, break to outer loop which will
-          // navigate back to checkpoint and re-trigger extend mode.
-          if (!this.page.url().includes('/imagine/post/')) {
+          // If the page drifted — either away from /imagine/post/ entirely, OR
+          // to a /post/<UUID> different from the checkpoint (Grok's moderation-
+          // redirect quirk where moderated generations bounce to an unrelated
+          // existing post) — break to the outer loop, which will navigate back
+          // to the checkpoint and re-trigger extend mode. Without this, we'd
+          // retry generate() on an unrelated post in the wrong UI state.
+          const postModerationUrl = this.page.url();
+          const drifted =
+            !postModerationUrl.includes('/imagine/post/') ||
+            postModerationUrl !== checkpointUrl;
+          if (drifted) {
             this.logger.warn(
-              `[Worker ${this.workerId}] Page drifted to ${this.page.url()} after moderation, will re-navigate to checkpoint`
+              `[Worker ${this.workerId}] Page drifted to ${postModerationUrl} after moderation (checkpoint: ${checkpointUrl}), will re-navigate to checkpoint`
             );
             break; // → outer loop handles recovery
           }
-          // Still on a /post/ page — retry generate directly (UI still in extend mode)
+          // Still on the checkpoint page — retry generate directly (UI still in extend mode)
           continue;
         } else {
           failedAttempts++;
@@ -1010,7 +1088,15 @@ export class ParallelWorker {
       `[Worker ${this.workerId}] Extend loop exiting — checkpoint: ${checkpointUrl}, lastDuration: ${lastKnownDuration.toFixed(1)}s, currentPageUrl: ${this.page.url()}`
     );
 
-    return { successfulExtends, rateLimited: rateLimitedOnExtend, checkpointUrl, lastKnownDuration, alreadyAtTarget };
+    return {
+      successfulExtends,
+      rateLimited: rateLimitedOnExtend,
+      checkpointUrl,
+      lastKnownDuration,
+      alreadyAtTarget,
+      ghostExtendDetected,
+      ghostExtendUrl,
+    };
   }
 
   /**
@@ -1761,13 +1847,38 @@ export class ParallelWorker {
 
     try {
       if (this.context) {
-        await this.context.close();
+        // Bound context.close() with a hard timeout. Playwright's graceful close
+        // can hang for many minutes when Chrome is mid-request or flushing
+        // profile state — we'd rather force-kill than wait. See
+        // WORKER_SHUTDOWN_TIMEOUT_MS in config.js for the rationale.
+        const timeoutMs = config.WORKER_SHUTDOWN_TIMEOUT_MS;
+        const closePromise = this.context
+          .close()
+          .then(() => true)
+          .catch((err) => {
+            this.logger.debug(
+              `[Worker ${this.workerId}] context.close() threw: ${err.message}`
+            );
+            return true; // treat as "done"; we move on either way
+          });
+        const timeoutPromise = new Promise((resolve) =>
+          setTimeout(() => resolve(false), timeoutMs)
+        );
+        const closedCleanly = await Promise.race([closePromise, timeoutPromise]);
+
+        if (!closedCleanly) {
+          this.logger.warn(
+            `[Worker ${this.workerId}] context.close() exceeded ${timeoutMs}ms — force-killing Chrome`
+          );
+          await this._forceKillChrome();
+        }
+
         this.context = null;
         this.page = null;
         this.generator = null;
       }
 
-      // Cleanup worker profile
+      // Cleanup worker profile (sub-second on SSD; safe to await)
       try {
         await fs.rm(this.workerProfileDir, { recursive: true, force: true });
       } catch (error) {
@@ -1780,6 +1891,47 @@ export class ParallelWorker {
       );
     } catch (error) {
       this.logger.error(`[Worker ${this.workerId}] Shutdown error`, error);
+    }
+  }
+
+  /**
+   * Force-kill any Chrome processes whose argv references this worker's
+   * profile directory. Safe across workers because each worker's profile
+   * path is unique (cache/<job>/worker-profiles/worker-N). Best-effort:
+   * pkill is POSIX-only; on platforms without it, we silently no-op and
+   * let the orphaned Chrome be reaped by the OS at process exit.
+   * @private
+   */
+  async _forceKillChrome() {
+    if (process.platform === 'win32') {
+      this.logger.debug(
+        `[Worker ${this.workerId}] Force-kill not implemented for win32 — leaving Chrome to exit on its own`
+      );
+      return;
+    }
+    try {
+      await new Promise((resolve) => {
+        const proc = spawn('pkill', ['-9', '-f', this.workerProfileDir], {
+          stdio: 'ignore',
+        });
+        // pkill exits 0 if it killed something, 1 if no match — both are fine.
+        const safetyTimer = setTimeout(() => {
+          try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+          resolve();
+        }, 2000);
+        proc.on('exit', () => {
+          clearTimeout(safetyTimer);
+          resolve();
+        });
+        proc.on('error', () => {
+          clearTimeout(safetyTimer);
+          resolve();
+        });
+      });
+    } catch (error) {
+      this.logger.debug(
+        `[Worker ${this.workerId}] pkill error: ${error.message}`
+      );
     }
   }
 }

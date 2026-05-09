@@ -101,6 +101,7 @@ run
   .option('--extend-from-time <seconds>', 'Seek to this timestamp (seconds) and extend from that frame instead of from the end')
   .option('--download-max-duration-only', 'Only download/process videos that reached max duration (30s)', false)
   .option('--download-and-delete-remaining', 'Download and delete any remaining videos at end of run (forces --auto-download and --auto-delete)', false)
+  .option('--no-allow-downgraded-quality', 'Treat a resolution downgrade (e.g. 720p→480p rate limit) as a hard rate limit and stop the run')
   .action(async (options) => {
     try {
       // Load config file if specified
@@ -157,6 +158,12 @@ run
         // If downloadMaxDurationOnly wasn't explicitly set on CLI, use config value
         if (options.downloadMaxDurationOnly === false && configData.downloadMaxDurationOnly !== undefined) {
           options.downloadMaxDurationOnly = configData.downloadMaxDurationOnly;
+        }
+
+        // If allowDowngradedQuality wasn't explicitly set on CLI (still default true),
+        // use config value if provided.
+        if (options.allowDowngradedQuality === true && configData.allowDowngradedQuality !== undefined) {
+          options.allowDowngradedQuality = configData.allowDowngradedQuality;
         }
 
         // Handle downloadAndDeleteRemainingVideos from config
@@ -262,6 +269,7 @@ run
         extendFromTime,
         downloadMaxDurationOnly: options.downloadMaxDurationOnly || false,
         downloadAndDeleteRemainingVideos: options.downloadAndDeleteRemaining || false,
+        allowDowngradedQuality: options.allowDowngradedQuality !== false, // default true
       });
 
       await runner.init();
@@ -291,6 +299,7 @@ run
   .option('--auto-delete', 'Automatically delete extensions after download (never deletes original)', false)
   .option('--download-max-duration-only', 'Only download/process videos that reached max duration (30s)', false)
   .option('--extend-from-time <seconds>', 'Seek to this timestamp (seconds) and extend from that frame instead of from the end')
+  .option('--no-allow-downgraded-quality', 'Treat a resolution downgrade (e.g. 720p→480p rate limit) as a hard rate limit and stop the run')
   .action(async (options) => {
     try {
       // Load config file if specified
@@ -330,6 +339,12 @@ run
         // If downloadMaxDurationOnly wasn't explicitly set on CLI, use config value
         if (options.downloadMaxDurationOnly === false && configData.downloadMaxDurationOnly !== undefined) {
           options.downloadMaxDurationOnly = configData.downloadMaxDurationOnly;
+        }
+
+        // If allowDowngradedQuality wasn't explicitly set on CLI (still default true),
+        // use config value if provided.
+        if (options.allowDowngradedQuality === true && configData.allowDowngradedQuality !== undefined) {
+          options.allowDowngradedQuality = configData.allowDowngradedQuality;
         }
       }
 
@@ -422,6 +437,7 @@ run
         downloadMaxDurationOnly: options.downloadMaxDurationOnly || false,
         extendFromTime,
         maxExtendMode: true,
+        allowDowngradedQuality: options.allowDowngradedQuality !== false, // default true
       });
 
       await runner.init();

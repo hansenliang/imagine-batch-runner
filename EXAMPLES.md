@@ -17,7 +17,7 @@ Generate 10 videos from a Grok image permalink:
 ```bash
 npm start run start \
   --account primary-account \
-  --permalink "https://grok.com/imagine/post/060ec750-c502-4fb2-9de0-562bdd2e599e" \
+  --permalink "https://grok.com/imagine/post/YOUR_POST_ID" \
   --prompt "camera pans into a detail of the dandelions softly moving in the wind" \
   --count 10 \
   --job-name "dandelion-test"
@@ -28,7 +28,7 @@ Output:
 🚀 Starting batch run...
 
 Account: primary-account
-Permalink: https://grok.com/imagine/post/060ec750-c502-4fb2-9de0-562bdd2e599e
+Permalink: https://grok.com/imagine/post/YOUR_POST_ID
 Batch size: 10
 
 [12:34:56] INFO: Initializing batch runner

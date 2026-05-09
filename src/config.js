@@ -62,6 +62,21 @@ export const config = {
   MODERATION_RETRY_MAX: 100, // Max retries for content moderation errors
   MODERATION_RETRY_COOLDOWN: 1000, // 1 second cooldown between moderation retries
 
+  // Window after a mid-generation URL change to wait for fresh progress to appear
+  // on the new URL. If no progress is detected within this window, we treat the
+  // navigation as a moderation redirect (Grok occasionally bounces moderated
+  // generations to an unrelated existing /post/<UUID> rather than showing a
+  // moderation toast). 15s is generous enough that legit extends — where Grok
+  // navigates to the new post URL and progress shows within 1–3s — never trip it.
+  MODERATION_REDIRECT_TIMEOUT_MS: 15000,
+
+  // Hard cap on Playwright's `context.close()` per worker during shutdown. If
+  // Chrome is hung on in-flight requests / pending downloads / profile flushes,
+  // we abandon the graceful close after this and force-kill the underlying
+  // Chrome processes with pkill -9 -f <profileDir>. Healthy closes are
+  // sub-second so this only fires in pathological cases.
+  WORKER_SHUTDOWN_TIMEOUT_MS: 5000,
+
   // Generation settings
   DEFAULT_BATCH_SIZE: 10,
 
@@ -167,8 +182,11 @@ export const selectors = {
   // "Make Video" mode menu item (inside Settings menu, switches from image to video mode — legacy UI)
   MAKE_VIDEO_MODE_ITEM: '[role="menuitem"]:has-text("Make Video"), [role="menuitem"]:has-text("Make video")',
 
-  // Extend video menu item (inside "..." more options menu)
-  EXTEND_MENU_ITEM: '[role="menuitem"]:has-text("Extend video"), [role="menuitem"]:has-text("Extend Video")',
+  // Extend menu item (inside "..." more options menu).
+  // Current Grok UI (May 2026) labels it just "Extend"; legacy UI used "Extend video".
+  // :text-is matches the element's normalized text exactly so we don't accidentally
+  // match "Extend from frame" or other future "Extend X" items.
+  EXTEND_MENU_ITEM: '[role="menuitem"]:text-is("Extend"), [role="menuitem"]:text-is("extend"), [role="menuitem"]:has-text("Extend video")',
 
   // "Extend from frame" button (appears on hover over video progress bar)
   EXTEND_FROM_FRAME_BUTTON: 'button:has-text("extend from frame"), button:has-text("Extend from frame"), button:has-text("Extend from Frame")',

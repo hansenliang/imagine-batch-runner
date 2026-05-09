@@ -352,9 +352,12 @@ export class PostProcessor {
     const durationSec = await getVideoDurationSeconds(this.page);
     const durTag = durationSec > 0 ? `${durationSec}s` : 'unknown';
 
-    // Generate filename: YYMMDD-HHmmss_UUID8_DURs.mp4
+    // Generate filename: YYMMDD-HHmmss_UUID_DURs.mp4 (full UUID for direct
+    // grok.com/imagine/post/<UUID> link lookup; dedup still uses 8-char prefix
+    // via the registry).
+    const uuidForFilename = uuid ? uuid.toLowerCase() : 'unknown';
     const timestamp = formatTimestamp();
-    const filename = `${timestamp}_${uuid8}_${durTag}.mp4`;
+    const filename = `${timestamp}_${uuidForFilename}_${durTag}.mp4`;
     const filePath = path.join(this.downloadDir, filename);
 
     try {
@@ -975,7 +978,7 @@ export class PostProcessor {
     let uuid8ForTracking = null; // Track UUID for standalone HD downloads
 
     if (originalPath) {
-      // Derive from original: YYMMDD-HHmmss_UUID8_DURs.mp4 -> YYMMDD-HHmmss_UUID8_DURs_hd.mp4
+      // Derive from original: YYMMDD-HHmmss_UUID_DURs.mp4 -> YYMMDD-HHmmss_UUID_DURs_hd.mp4
       const originalFilename = path.basename(originalPath, '.mp4');
       hdFilename = `${originalFilename}_hd.mp4`;
     } else {
@@ -999,7 +1002,8 @@ export class PostProcessor {
       const timestamp = formatTimestamp();
       const durationSec = await getVideoDurationSeconds(this.page);
       const durTag = durationSec > 0 ? `${durationSec}s` : 'unknown';
-      hdFilename = `${timestamp}_${uuid8}_${durTag}_hd.mp4`;
+      const uuidForFilename = uuid ? uuid.toLowerCase() : 'unknown';
+      hdFilename = `${timestamp}_${uuidForFilename}_${durTag}_hd.mp4`;
     }
     const hdFilePath = path.join(this.downloadDir, hdFilename);
 

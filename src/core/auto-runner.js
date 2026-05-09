@@ -335,6 +335,12 @@ export class AutoRunner {
           cycleStats.status = 'STOPPED_RATE_LIMIT';
           cycleStats.stopReason = 'Rate limit detected';
           console.log(chalk.yellow(`           -> Rate limited (${result.successful}/${result.totalVideos})\n`));
+        } else if (result.status === 'STOPPED_GHOST_EXTEND') {
+          // Per-config stop: this config is bailed out for credit safety, but
+          // the cycle continues to other configs unaffected.
+          cycleStats.status = 'STOPPED_GHOST_EXTEND';
+          cycleStats.stopReason = result.stopReason || 'Ghost extend detected (suspected Grok bug)';
+          console.log(chalk.yellow(`           -> Ghost extend detected, stopped (${result.successful}/${result.totalVideos})\n`));
         } else {
           cycleStats.status = 'FAILED';
           cycleStats.stopReason = result.error || 'Unknown error';
@@ -438,6 +444,9 @@ export class AutoRunner {
         downloadAndDeleteRemainingVideos: configData.downloadAndDeleteRemainingVideos || false, // default false
         selectMaxDuration: configData.selectMaxDuration || false,   // default false
         selectMaxResolution: configData.selectMaxResolution || false, // default false
+        // When false, a 720p→480p (or any) resolution downgrade aborts the
+        // run with a hard rate limit instead of silently continuing.
+        allowDowngradedQuality: configData.allowDowngradedQuality !== false, // default true
         logFilePath,  // Pass the detailed log path
         downloadBaseName: baseName,  // Use base name (without timestamp) for download folder
       });
