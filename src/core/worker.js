@@ -268,6 +268,31 @@ export class ParallelWorker {
   }
 
   /**
+   * Race detection: wait until the page settles into either a loaded video OR
+   * a static-image post for the given UUID. Used after navigating to a permalink
+   * (or after a thumbnail click) where the destination could be either a video
+   * (extend path) or an image post (generate path) — without this, a missing
+   * video element silently consumes the full ELEMENT_WAIT_TIMEOUT (30s).
+   * @private
+   * @returns {Promise<'video'|'image'|'timeout'>}
+   */
+  async _waitForVideoOrImagePost(uuid, timeoutMs = 12000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const state = await this.page.evaluate((id) => {
+        const hasVideo = [...document.querySelectorAll('video')].some(v => !!(v.currentSrc || v.src));
+        if (hasVideo) return 'video';
+        const hasImage = id && !!document.querySelector(`img[src*="${id}"]`);
+        if (hasImage) return 'image';
+        return 'unknown';
+      }, uuid).catch(() => 'unknown');
+      if (state === 'video' || state === 'image') return state;
+      await sleep(300);
+    }
+    return 'timeout';
+  }
+
+  /**
    * Wait for the page URL to stabilize (no SPA redirect pending).
    * Grok's SPA navigation can asynchronously redirect after domcontentloaded,
    * so we poll the URL until it stays the same for a stable window.
@@ -523,22 +548,12 @@ export class ParallelWorker {
     this.isRunning = true;
     let stoppedEarly = false;
 
-    // For maxExtendMode, check once whether the permalink is a static image (no video).
-    // If so, generation uses the normal mode path (_ensureOnPermalink + generate) so that
-    // content moderation retries stay on the same page instead of re-navigating each time.
-    // The extend loop still runs after each successful generation (autoExtend is true).
-    // Check the current page directly — init already navigated to the permalink and
-    // selected video mode/duration/resolution, so no re-navigation needed.
+    // Whether the permalink is a static image (no video to extend). Detected
+    // lazily by _navigateToSourceVideo() on the first chain — checking here
+    // upfront via _getVideoDuration() would be wrong, since init's page.goto()
+    // gets auto-redirected by Grok to the latest derived video for the post,
+    // which has a duration even when the permalink itself is an image.
     let isImagePost = false;
-    if (this.maxExtendMode) {
-      const checkDuration = await this._getVideoDuration();
-      if (checkDuration <= 0) {
-        isImagePost = true;
-        this.logger.info(
-          `[Worker ${this.workerId}] Permalink is a static image — will generate videos then extend to ${config.MAX_VIDEO_DURATION}s`
-        );
-      }
-    }
 
     try {
       while (!this.shouldStop) {
@@ -570,48 +585,74 @@ export class ParallelWorker {
         // Track whether the video was freshly generated from an image (no existing
         // video at the permalink). When true, extendFromTime is skipped since the
         // generated video is too short for a specific-frame extend to make sense.
-        let generatedFromImage = isImagePost;
+        let generatedFromImage = false;
 
-        if (this.maxExtendMode && !isImagePost) {
-          // Max-extend with existing video: navigate to source, check duration
-          this.logger.info(`[Worker ${this.workerId}] Chain ${index + 1}: navigating to source video`);
-          await this._navigateToSourceVideo();
+        if (this.maxExtendMode) {
+          // Always navigate via _navigateToSourceVideo so each chain starts on the
+          // source post (Grok auto-redirects permalinks to the latest derivative,
+          // and chain 2+ otherwise sits on the previous chain's generated video).
+          // The return flag tells us whether the source is a video (extend path)
+          // or a static image (generate path).
+          this.logger.info(`[Worker ${this.workerId}] Chain ${index + 1}: navigating to source`);
+          const navResult = await this._navigateToSourceVideo();
 
-          const initialDuration = await this._getVideoDuration();
-          if (initialDuration <= 0) {
-            this.logger.error(`[Worker ${this.workerId}] Chain ${index + 1}: No video found at permalink`);
-            await this.manifest.updateItemAtomic(
-              index,
-              { status: 'FAILED', error: 'No video found at permalink', attempts: 0 },
-              this.workerId
-            );
-            await sleep(2000);
-            continue;
-          }
-
-          if (initialDuration >= config.MAX_VIDEO_DURATION) {
-            this.logger.warn(
-              `[Worker ${this.workerId}] Chain ${index + 1}: Video already at max duration (${initialDuration.toFixed(1)}s), skipping`
-            );
-            await this.manifest.updateItemAtomic(
-              index,
-              { status: 'COMPLETED', error: 'Already at max duration', attempts: 0 },
-              this.workerId
-            );
-            await sleep(2000);
-            continue;
-
+          if (navResult.isImagePost) {
+            if (!isImagePost) {
+              this.logger.info(
+                `[Worker ${this.workerId}] Source is a static image — generating fresh video then extending to ${config.MAX_VIDEO_DURATION}s`
+              );
+              isImagePost = true;
+            }
+            generatedFromImage = true;
+            // The thumbnail click landed us on the image page; init's
+            // _selectVideoMode() ran on the redirected video, so re-select here
+            // to ensure the generate UI is accessible.
+            await this._selectVideoMode();
+            await this._dismissOverlays();
+            // Fall through to the generate path below.
           } else {
+            const initialDuration = await this._getVideoDuration();
+            if (initialDuration <= 0) {
+              this.logger.error(`[Worker ${this.workerId}] Chain ${index + 1}: No video found at permalink`);
+              await this.manifest.updateItemAtomic(
+                index,
+                { status: 'FAILED', error: 'No video found at permalink', attempts: 0 },
+                this.workerId
+              );
+              await sleep(2000);
+              continue;
+            }
+
+            if (initialDuration >= config.MAX_VIDEO_DURATION) {
+              this.logger.warn(
+                `[Worker ${this.workerId}] Chain ${index + 1}: Video already at max duration (${initialDuration.toFixed(1)}s), skipping`
+              );
+              await this.manifest.updateItemAtomic(
+                index,
+                { status: 'COMPLETED', error: 'Already at max duration', attempts: 0 },
+                this.workerId
+              );
+              await sleep(2000);
+              continue;
+            }
+
             this.logger.info(
               `[Worker ${this.workerId}] Chain ${index + 1}: Source video is ${initialDuration.toFixed(1)}s, extending to ${config.MAX_VIDEO_DURATION}s`
             );
             generationOk = true;
           }
+        }
 
-        } else {
-          // Normal mode: generate a new video
+        if (!generationOk) {
+          // Fresh generation path — used by normal mode and by maxExtendMode
+          // when the source permalink is a static image.
           this.logger.info(`[Worker ${this.workerId}] Attempting generation ${index + 1}`);
-          await this._ensureOnPermalink();
+          // For image-post chains we already navigated via _navigateToSourceVideo;
+          // re-running _ensureOnPermalink would be a no-op anyway, but skip it for
+          // clarity and to avoid an extra DOM round-trip.
+          if (!generatedFromImage) {
+            await this._ensureOnPermalink();
+          }
 
           const result = await this.generator.generate(index, this.prompt);
           const duration = Math.round((result.durationMs || 0) / 1000);
@@ -1538,6 +1579,10 @@ export class ParallelWorker {
    *
    * Retries up to 3 times if the page fails to load a video (Grok sometimes shows
    * transient "post doesn't exist" errors on first load).
+   *
+   * @returns {Promise<{isImagePost: boolean}>} `isImagePost` is true when the
+   *   permalink resolves to a static image (no video to extend) — caller should
+   *   route through fresh-generation rather than the extend path.
    * @private
    */
   async _navigateToSourceVideo() {
@@ -1569,23 +1614,16 @@ export class ParallelWorker {
       await this._waitForReadyUI();
       await this._dismissOverlays();
 
-      // Quick check: if the page has a static image matching our UUID and no <video>
-      // element, this is an image post. Skip the expensive _waitForVideoLoaded() timeout
-      // (30s) and bail immediately so the caller can generate a video instead.
-      const isImagePost = await this.page.evaluate((id) => {
-        const hasVideo = [...document.querySelectorAll('video')].some(v => !!(v.currentSrc || v.src));
-        const hasImage = !!document.querySelector(`img[src*="${id}"]`);
-        return !hasVideo && hasImage;
-      }, uuid).catch(() => false);
-
-      if (isImagePost) {
+      // Race: the post-load page settles into either a video (extend path) or
+      // a static image (generate path). Without this, a missing video element
+      // would block us for the full ELEMENT_WAIT_TIMEOUT (30s).
+      const initialState = await this._waitForVideoOrImagePost(uuid);
+      if (initialState === 'image') {
         this.logger.info(
-          `[Worker ${this.workerId}] Detected static image post (UUID: ${uuid}), skipping video wait`
+          `[Worker ${this.workerId}] Detected static image post (UUID: ${uuid}), no video to extend`
         );
-        return;
+        return { isImagePost: true };
       }
-
-      await this._waitForVideoLoaded();
 
       // Wait for Grok's async SPA redirect to settle before checking the URL.
       // Without this, the URL may match our permalink briefly before Grok redirects
@@ -1599,13 +1637,12 @@ export class ParallelWorker {
       const duration = await this._getVideoDuration();
       if (duration <= 0) {
         // If we landed on the correct permalink (URL contains our UUID) but no video
-        // loaded, this is likely a static image post — retrying won't help. Bail
-        // immediately so the caller can handle it (e.g. generate a video from the image).
+        // loaded, this is likely a static image post — retrying won't help.
         if (landedUrl.includes(uuid)) {
           this.logger.info(
             `[Worker ${this.workerId}] URL matches permalink but no video — static image post, skipping retries`
           );
-          return;
+          return { isImagePost: true };
         }
         this.logger.warn(
           `[Worker ${this.workerId}] No video loaded after navigation (attempt ${attempt}), duration=0`
@@ -1615,7 +1652,7 @@ export class ParallelWorker {
           continue;
         }
         this.logger.warn(`[Worker ${this.workerId}] Exhausted retries — no video found`);
-        return;
+        return { isImagePost: false };
       }
 
       this.logger.info(
@@ -1627,7 +1664,7 @@ export class ParallelWorker {
         this.logger.info(
           `[Worker ${this.workerId}] URL matches permalink, on correct video (${duration.toFixed(1)}s)`
         );
-        return;
+        return { isImagePost: false };
       }
 
       // We were redirected — need to find and click the correct thumbnail
@@ -1637,7 +1674,7 @@ export class ParallelWorker {
 
       if (!uuid) {
         this.logger.warn(`[Worker ${this.workerId}] Could not extract UUID from permalink`);
-        return;
+        return { isImagePost: false };
       }
 
       const thumbnails = await this._getVisibleThumbnails();
@@ -1660,11 +1697,18 @@ export class ParallelWorker {
           );
           await thumb.click();
 
-          // Wait for SPA navigation to settle after thumbnail click.
-          // Grok may re-redirect back to the latest video if we don't wait.
-          await this._waitForVideoLoaded();
-          const stableUrl = await this._waitForUrlStable();
+          // After thumbnail click, the source page might be a video (extend path)
+          // or a static image post (generate path). Race detection here avoids the
+          // 30s _waitForVideoLoaded() hang when there's no video to load.
+          const postClickState = await this._waitForVideoOrImagePost(uuid);
+          if (postClickState === 'image') {
+            this.logger.info(
+              `[Worker ${this.workerId}] Thumbnail click landed on static image post — no video to extend`
+            );
+            return { isImagePost: true };
+          }
 
+          const stableUrl = await this._waitForUrlStable();
           const navDur = await this._getVideoDuration();
           this.logger.info(
             `[Worker ${this.workerId}] After thumbnail click: url=${stableUrl}, duration=${navDur.toFixed(1)}s`
@@ -1680,7 +1724,7 @@ export class ParallelWorker {
           }
 
           foundMatch = true;
-          return;
+          return { isImagePost: false };
         }
       }
 
@@ -1692,8 +1736,9 @@ export class ParallelWorker {
           `[Worker ${this.workerId}] Fallback video: url=${landedUrl}, duration=${duration.toFixed(1)}s`
         );
       }
-      return;
+      return { isImagePost: false };
     }
+    return { isImagePost: false };
   }
 
   /**
