@@ -310,12 +310,31 @@ export class ParallelRunner {
     const selectedDuration = this.workers.find(w => w.selectedDuration)?.selectedDuration;
     const durationDisplay = selectedDuration ? `max (${selectedDuration})` : 'default';
 
+    // Format the per-duration success buckets as a single line:
+    //   "10s=3, 20s=1, 30s=0"  — only non-zero buckets are shown.
+    const bucketKeys = Object.keys(summary.successByDuration || {})
+      .map((k) => parseInt(k, 10))
+      .filter((n) => Number.isFinite(n))
+      .sort((a, b) => a - b);
+    const totalBucketSuccesses = bucketKeys.reduce(
+      (acc, k) => acc + (summary.successByDuration[String(k)] || 0),
+      0
+    );
+    const bucketDisplay = bucketKeys.length
+      ? bucketKeys.map((k) => `${k}s=${summary.successByDuration[String(k)]}`).join(', ')
+      : null;
+
     // Console output: color-coded emoji summary
     console.log(chalk.blue('\n📊 Run Summary:\n'));
     console.log(chalk.gray(`  Workers: ${this.parallelism}`));
     console.log(chalk.gray(`  Duration setting: ${durationDisplay}`));
     console.log(chalk.gray(`  Total attempts: ${summary.totalAttempts}`));
-    console.log(chalk.green(`    ✓ Successful: ${summary.successful}`));
+    if (bucketDisplay) {
+      // Each verified generation (initial gen + each successful extension)
+      // counts here, bucketed by exact second length.
+      console.log(chalk.green(`    ✓ Successful generations: ${totalBucketSuccesses} (${bucketDisplay})`));
+    }
+    console.log(chalk.green(`    ✓ Chains completed: ${summary.successful}`));
     if (summary.contentModerated > 0) {
       console.log(chalk.yellow(`    ⚠ Content moderated: ${summary.contentModerated}`));
     }
@@ -369,7 +388,10 @@ export class ParallelRunner {
     await this.logger.logToFileOnly(`Workers: ${this.parallelism}`);
     await this.logger.logToFileOnly(`Duration setting: ${durationDisplay}`);
     await this.logger.logToFileOnly(`Total attempts: ${summary.totalAttempts}`);
-    await this.logger.logToFileOnly(`  Successful: ${summary.successful}`);
+    if (bucketDisplay) {
+      await this.logger.logToFileOnly(`  Successful generations: ${totalBucketSuccesses} (${bucketDisplay})`);
+    }
+    await this.logger.logToFileOnly(`  Chains completed: ${summary.successful}`);
     if (summary.contentModerated > 0) {
       await this.logger.logToFileOnly(`  Content moderated: ${summary.contentModerated}`);
     }

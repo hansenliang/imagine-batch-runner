@@ -56,6 +56,12 @@ export class VideoGenerator {
       // Step 1: Ensure prompt is set correctly
       await this._enterPrompt(prompt, index);
 
+      // Brief settle after prompt entry. TipTap/ProseMirror can re-render after
+      // fill() and any submit handler bound to the editor needs a tick to pick
+      // up the new value. Clicking the generate button immediately can race the
+      // editor's internal state, producing a submission with a stale prompt.
+      await sleep(config.POST_PROMPT_SETTLE_DELAY);
+
       // Step 2: Click the generation button
       await this._clickGenerationButton(index);
 
@@ -358,17 +364,23 @@ export class VideoGenerator {
 
     // Only fill if value doesn't match
     if (currentValue.trim() === prompt.trim()) {
-      this.logger.debug(`${this._tag(index)} Prompt already set correctly`);
+      this.logger.info(
+        `${this._tag(index)} Prompt already set (len=${prompt.length}, contenteditable=${isContentEditable})`
+      );
       return;
     }
 
     // Playwright's fill() supports both native inputs and contenteditable elements.
     // Click to focus first, then fill. Fall back to pressSequentially if fill() fails.
     await promptInput.click();
+    let fillPath = 'fill';
     try {
       await promptInput.fill(prompt);
     } catch (fillError) {
-      this.logger.debug(`${this._tag(index)} fill() failed (${fillError.message}), falling back to pressSequentially`);
+      fillPath = 'pressSequentially';
+      this.logger.warn(
+        `${this._tag(index)} fill() failed (${fillError.message}), falling back to pressSequentially`
+      );
       await this.page.keyboard.press('Control+a');
       await this.page.keyboard.press('Backspace');
       await promptInput.pressSequentially(prompt, { delay: 10 });
@@ -380,10 +392,17 @@ export class VideoGenerator {
       : await promptInput.inputValue().catch(() => '');
 
     if (verifyValue.trim() !== prompt.trim()) {
-      throw new Error(`Prompt verification failed: expected "${prompt.slice(0, 50)}..." but got "${verifyValue.slice(0, 50)}..."`);
+      this.logger.warn(
+        `${this._tag(index)} Prompt verify mismatch via ${fillPath}: expectedLen=${prompt.length} actualLen=${verifyValue.length} (contenteditable=${isContentEditable})`
+      );
+      throw new Error(
+        `Prompt verification failed via ${fillPath}: expected length ${prompt.length} but got length ${verifyValue.length}`
+      );
     }
 
-    this.logger.debug(`${this._tag(index)} Prompt entered and verified`);
+    this.logger.info(
+      `${this._tag(index)} Prompt entered via ${fillPath} (len=${prompt.length}, contenteditable=${isContentEditable})`
+    );
   }
 
   /**

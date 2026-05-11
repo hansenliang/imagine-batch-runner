@@ -587,6 +587,12 @@ export class ParallelWorker {
         // generated video is too short for a specific-frame extend to make sense.
         let generatedFromImage = false;
 
+        // Path of the most recently downloaded video for this chain (initial gen
+        // or any successful extension). Used at chain end to skip a redundant
+        // download in post-processing while still letting upscale/delete run.
+        // Stays null when downloadMaxDurationOnly is set or per-rung download fails.
+        let chainDownloadedPath = null;
+
         if (this.maxExtendMode) {
           // Always navigate via _navigateToSourceVideo so each chain starts on the
           // source post (Grok auto-redirects permalinks to the latest derivative,
@@ -683,6 +689,16 @@ export class ParallelWorker {
               `[Worker ${this.workerId}] Attempt ${index + 1}: Success in ${duration}s${settingsSuffix} - ${this.page.url()}`
             );
             generationOk = true;
+
+            // Verified video on the page: count it in the per-duration bucket
+            // and capture it to disk if per-rung downloads are enabled.
+            const initialDur = await this._getVideoDuration();
+            const downloadedPath = await this._handleRungSuccess(
+              index,
+              initialDur,
+              `Attempt ${index + 1}`
+            );
+            if (downloadedPath) chainDownloadedPath = downloadedPath;
           } else if (result.contentModerated) {
             await this.manifest.updateItemAtomic(
               index,
@@ -717,7 +733,14 @@ export class ParallelWorker {
         if (generationOk && this.autoExtend) {
           extResult = await this._runExtendLoop(this.page.url(), index, {
             skipExtendFromTime: generatedFromImage,
+            initialDownloadedPath: chainDownloadedPath,
           });
+          // Carry forward the latest per-rung download path from the extend loop
+          // so the final post-processing pass can skip re-downloading and seed
+          // the HD filename from the original.
+          if (extResult.lastDownloadedPath) {
+            chainDownloadedPath = extResult.lastDownloadedPath;
+          }
 
           if (extResult.rateLimited) {
             // In max-extend mode, rate limit on extend is fatal (nothing else to do)
@@ -752,19 +775,24 @@ export class ParallelWorker {
             }
           }
 
-          // In max-extend mode with zero successful extends, skip post-processing
-          // to protect the original video — UNLESS the video is already at max duration
-          // (e.g., source was already 30s), in which case it's ready for post-processing.
+          // In max-extend mode with zero successful extends, the chain plateaued.
+          // - Video-post source: skip post-processing to protect the untouched source.
+          // - Image-post source: we still generated a fresh video; let post-processing
+          //   run on that 10s/etc. so it gets upscaled (delete is already gated by
+          //   duration). The per-rung download already captured it to disk.
+          // - alreadyAtTarget: source was already 30s, normal post-processing applies.
           if (this.maxExtendMode && extResult.successfulExtends === 0 && !extResult.alreadyAtTarget) {
             this.logger.warn(
-              `[Worker ${this.workerId}] Chain ${index + 1}: No extensions succeeded, original video untouched`
+              `[Worker ${this.workerId}] Chain ${index + 1}: No extensions succeeded${generatedFromImage ? ' (keeping freshly generated video)' : ', original video untouched'}`
             );
             await this.manifest.updateItemAtomic(
               index,
               { status: 'FAILED', error: 'All extension attempts failed', attempts: 0 },
               this.workerId
             );
-            generationOk = false; // Skip post-processing
+            if (!generatedFromImage) {
+              generationOk = false; // Skip post-processing for video-post sources
+            }
           }
 
           // Navigate back to the last successfully extended video before post-processing.
@@ -811,7 +839,10 @@ export class ParallelWorker {
             }
           }
 
-          await this._runPostProcessing(index);
+          await this._runPostProcessing(index, {
+            skipDownload: chainDownloadedPath != null,
+            originalPath: chainDownloadedPath,
+          });
 
           this.autoDownload = savedAutoDownload;
           this.autoDelete = savedAutoDelete;
@@ -837,6 +868,23 @@ export class ParallelWorker {
             `[Worker ${this.workerId}] Ghost extend during chain ${index + 1} — stopping after preserving partial work`
           );
           throw new Error(`GHOST_EXTEND_STOP: ${extResult.ghostExtendUrl}`);
+        }
+
+        // Max-extend plateau guard: per spec, a worker should only generate a
+        // new video once its current chain has reached max duration. If the
+        // chain ended without reaching max (extends exhausted, generation
+        // moderated, structural failure, etc.), stop this worker rather than
+        // burning credits on another fresh generation. Other workers continue;
+        // autorun handles the next cycle. This worker exits cleanly.
+        if (this.maxExtendMode) {
+          const finalDur = generationOk ? await this._getVideoDuration() : 0;
+          if (finalDur < config.MAX_VIDEO_DURATION) {
+            this.logger.info(
+              `[Worker ${this.workerId}] Chain ${index + 1}: ended at ${finalDur.toFixed(1)}s (< ${config.MAX_VIDEO_DURATION}s) — stopping worker (no new chains until current reaches max)`
+            );
+            stoppedEarly = true;
+            break;
+          }
         }
 
         // Check if we should stop AFTER completing work
@@ -916,6 +964,10 @@ export class ParallelWorker {
     let alreadyAtTarget = false; // True if video was already at max duration (no extend needed)
     let ghostExtendDetected = false; // True if Grok produced a same-length "extension"
     let ghostExtendUrl = null;       // URL of the ghost post (for diagnostics in the throw)
+    // Carry forward the initial generation's per-rung download path so the
+    // worker's end-of-chain post-processing can pick whichever rung was
+    // downloaded last (initial gen, or any successful extension).
+    let lastDownloadedPath = options.initialDownloadedPath || null;
 
     this.logger.debug(`[Worker ${this.workerId}] Extend loop starting — checkpoint: ${checkpointUrl}`);
 
@@ -993,8 +1045,33 @@ export class ParallelWorker {
           alreadyAtTarget = true;
           break;
         }
-        this.logger.warn(`[Worker ${this.workerId}] Could not trigger extend mode, stopping extends`);
-        break;
+        // Recoverable: the page may have drifted, the More-options button may
+        // not have rendered yet, or a transient overlay covered it. Cool down,
+        // re-navigate to the checkpoint on the next outer iteration, and only
+        // bump failedAttempts so the shared maxFailedAttempts ceiling eventually
+        // cuts us off. We don't touch `extendAttemptCount` here — that counter
+        // only tracks the inner generate() outcomes, not failures to even open
+        // the extend UI.
+        failedAttempts++;
+        this.logger.warn(
+          `[Worker ${this.workerId}] Could not trigger extend mode (${failedAttempts}/${maxFailedAttempts}), will re-navigate to checkpoint and retry`
+        );
+        await sleep(config.MODERATION_RETRY_COOLDOWN);
+        // Force re-navigation on the next iteration even if the URL happens to
+        // match — the page may need to fully reload to recover the menu button.
+        if (this.page.url() === checkpointUrl) {
+          try {
+            await this.page.reload({ waitUntil: 'domcontentloaded', timeout: config.PAGE_LOAD_TIMEOUT });
+            await sleep(3000);
+            await this._waitForReadyUI();
+            await this._waitForVideoLoaded();
+          } catch (reloadErr) {
+            this.logger.debug(
+              `[Worker ${this.workerId}] Page reload after trigger failure failed: ${reloadErr.message}`
+            );
+          }
+        }
+        continue;
       }
 
       // Step 2: Select max extend duration (+10s pills)
@@ -1056,6 +1133,16 @@ export class ParallelWorker {
           this.logger.success(
             `[Worker ${this.workerId}] Extend ${successfulExtends} succeeded in ${extDuration}s — video now ${videoDur.toFixed(1)}s / ${targetDuration}s`
           );
+
+          // Bucket + capture the new rung. Mirrors the initial-generation path
+          // in worker.run() so both success points share the same accounting.
+          const rungPath = await this._handleRungSuccess(
+            index,
+            videoDur,
+            `Extend ${successfulExtends}`
+          );
+          if (rungPath) lastDownloadedPath = rungPath;
+
           if (videoDur >= targetDuration) {
             this.logger.success(
               `[Worker ${this.workerId}] Reached target duration ${videoDur.toFixed(1)}s`
@@ -1144,30 +1231,92 @@ export class ParallelWorker {
       alreadyAtTarget,
       ghostExtendDetected,
       ghostExtendUrl,
+      lastDownloadedPath,
     };
+  }
+
+  /**
+   * Record a verified video as a success for this chain: bumps the per-duration
+   * bucket on the manifest and, when per-rung downloads are enabled, captures
+   * the video to disk via the PostProcessor. Used after initial generation and
+   * after each successful extension — both produce a verified video on the page
+   * that should be counted and downloaded.
+   *
+   * @param {number} index - Manifest item index for logging.
+   * @param {number} durationSec - On-page video duration in seconds.
+   * @param {string} label - Log prefix (e.g. "Attempt 4", "Extend 2").
+   * @returns {Promise<string|null>} Local path of the downloaded video, or null
+   *   when no download happened (download disabled, registry hit, or failure).
+   * @private
+   */
+  async _handleRungSuccess(index, durationSec, label) {
+    if (durationSec > 0) {
+      await this.manifest.incrementSuccessByDurationAtomic(durationSec);
+    }
+
+    // Per-rung download only when explicitly enabled. Registry dedup makes
+    // re-downloads of the same UUID a no-op, so we don't need our own guard.
+    if (this.downloadMaxDurationOnly || !this.autoDownload || !this.postProcessor) {
+      return null;
+    }
+
+    const dl = await this.postProcessor.downloadCurrent(index);
+    if (dl.downloaded) {
+      await this.manifest.incrementCounterAtomic('downloadedCount');
+      this.logger.success(
+        `[Worker ${this.workerId}] ${label}: Downloaded rung (${durationSec.toFixed(1)}s) to ${dl.downloadPath} (${dl.fileSize})`
+      );
+      return dl.downloadPath;
+    }
+    if (dl.skipped) {
+      this.logger.info(
+        `[Worker ${this.workerId}] ${label}: Rung already in registry, skipping download`
+      );
+      return null;
+    }
+    if (dl.downloadError) {
+      await this.manifest.incrementCounterAtomic('downloadFailedCount');
+      this.logger.warn(
+        `[Worker ${this.workerId}] ${label}: Per-rung download failed - ${dl.downloadError}`
+      );
+    }
+    return null;
   }
 
   /**
    * Post-processing: download, upscale, and/or delete the current video.
    * @param {number} index - Manifest item index
+   * @param {Object} [options]
+   * @param {boolean} [options.skipDownload=false] - Skip download (caller
+   *   already downloaded the original via the extend-loop per-rung path).
+   * @param {string|null} [options.originalPath=null] - Path of the
+   *   already-downloaded original, used to derive the HD filename.
    * @private
    */
-  async _runPostProcessing(index) {
+  async _runPostProcessing(index, options = {}) {
     if (!this.postProcessor) return;
 
-    const postResult = await this.postProcessor.process(index);
+    const postResult = await this.postProcessor.process(index, options);
+    // When the caller already downloaded the original per-rung, suppress this
+    // method's download-counter increment and "Downloaded to ..." log to avoid
+    // double-counting and a confusing duplicate log line. The item-level update
+    // (`downloaded: true`, `downloadPath`) still runs so the manifest reflects
+    // that the chain produced a downloaded video.
+    const downloadHandledByCaller = options.skipDownload === true;
 
     // Update manifest with download results
     if (postResult.downloaded) {
-      await this.manifest.incrementCounterAtomic('downloadedCount');
+      if (!downloadHandledByCaller) {
+        await this.manifest.incrementCounterAtomic('downloadedCount');
+        this.logger.success(
+          `[Worker ${this.workerId}] Attempt ${index + 1}: Downloaded to ${postResult.downloadPath} (${postResult.fileSize})`
+        );
+      }
       await this.manifest.updateItemAtomic(index, {
         downloaded: true,
         downloadPath: postResult.downloadPath,
       }, this.workerId);
-      this.logger.success(
-        `[Worker ${this.workerId}] Attempt ${index + 1}: Downloaded to ${postResult.downloadPath} (${postResult.fileSize})`
-      );
-    } else if (this.autoDownload) {
+    } else if (this.autoDownload && !downloadHandledByCaller) {
       await this.manifest.incrementCounterAtomic('downloadFailedCount');
       this.logger.warn(
         `[Worker ${this.workerId}] Attempt ${index + 1}: Download failed - ${postResult.downloadError}`

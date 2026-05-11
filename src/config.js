@@ -58,6 +58,14 @@ export const config = {
   ELEMENT_WAIT_TIMEOUT: parseInt(process.env.ELEMENT_WAIT_TIMEOUT, 10) || 30000, // 30 seconds (configurable via env var)
   UI_ACTION_DELAY: 1000, // 1 second delay after UI actions (menu open/close, button clicks)
 
+  // Brief settle period after _enterPrompt before clicking the Make Video button.
+  // TipTap/ProseMirror is a rich-text editor that can re-render or run async
+  // commit handlers after fill(); clicking generate in the same tick has caused
+  // races where the submission captures a stale (empty/old) prompt. 400ms is
+  // generous enough to cover the editor's onUpdate cycle without noticeably
+  // slowing the loop.
+  POST_PROMPT_SETTLE_DELAY: 400,
+
   // Content moderation retry configuration
   MODERATION_RETRY_MAX: 100, // Max retries for content moderation errors
   MODERATION_RETRY_COOLDOWN: 1000, // 1 second cooldown between moderation retries

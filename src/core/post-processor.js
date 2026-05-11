@@ -127,11 +127,48 @@ export class PostProcessor {
   }
 
   /**
+   * Download the currently-displayed video without upscale/delete. Intended for
+   * mid-chain captures inside the extend loop, where we want to preserve every
+   * rung (10s, 20s, 30s) on disk before moving on. The UUID registry guarantees
+   * we never double-download the same video; the final post-processing pass at
+   * chain end will see those UUIDs already registered and skip its own download.
+   *
+   * Returns the same shape as the download portion of `process()`. The caller
+   * is responsible for any manifest counter updates.
+   * @param {number} index - Attempt index for logging
+   * @returns {Promise<{downloaded: boolean, skipped: boolean, downloadPath: ?string, fileSize: ?string, downloadError: ?string}>}
+   */
+  async downloadCurrent(index) {
+    // Match the small POST_GENERATION_DELAY that process() uses, so the video
+    // element is settled before we try to extract its UUID/duration.
+    await sleep(config.POST_GENERATION_DELAY);
+    const downloadResult = await this._downloadWithRetry(index);
+    return {
+      downloaded: downloadResult.success && !downloadResult.skipped,
+      skipped: downloadResult.skipped || false,
+      downloadPath: downloadResult.filePath || null,
+      fileSize: downloadResult.fileSize || null,
+      downloadError: downloadResult.error || null,
+    };
+  }
+
+  /**
    * Process post-generation actions (download, upscale, and/or delete)
    * @param {number} index - Attempt index for logging
+   * @param {Object} [options]
+   * @param {boolean} [options.skipDownload=false] - When true, assume the
+   *   caller already downloaded the current video (e.g. via `downloadCurrent`
+   *   during the extend loop) and proceed straight to upscale/delete. The
+   *   `originalPath` option is used to derive the HD filename and signals
+   *   to downstream steps that a verified download exists.
+   * @param {string|null} [options.originalPath=null] - File path of the
+   *   already-downloaded original video, used as the HD filename base. Only
+   *   meaningful when `skipDownload=true`.
    * @returns {Promise<Object>} Result with download/upscale/delete status
    */
-  async process(index) {
+  async process(index, options = {}) {
+    const { skipDownload = false, originalPath = null } = options;
+
     const result = {
       downloaded: false,
       skipped: false,
@@ -149,18 +186,27 @@ export class PostProcessor {
     // Wait before starting post-processing
     await sleep(config.POST_GENERATION_DELAY);
 
-    // Step 1: Download original video if enabled
-    if (this.autoDownload) {
+    // Step 1: Download original video if enabled (unless caller already did)
+    if (this.autoDownload && !skipDownload) {
       const downloadResult = await this._downloadWithRetry(index);
       result.downloaded = downloadResult.success && !downloadResult.skipped;
       result.skipped = downloadResult.skipped || false;
       result.downloadPath = downloadResult.filePath;
       result.fileSize = downloadResult.fileSize;
       result.downloadError = downloadResult.error;
+    } else if (skipDownload && originalPath) {
+      // Caller already downloaded — treat as a successful download for the
+      // purposes of upscale/delete gating, and seed the path so HD filename
+      // derives from the original.
+      result.downloaded = true;
+      result.downloadPath = originalPath;
     }
 
     // If we skipped the download (UUID already in registry), leave the server video
     // untouched — no upscale, no delete. The registry is the source of truth.
+    // (Only applies when WE attempted the download; caller-supplied skipDownload
+    // means the download already happened on a prior loop iteration and we should
+    // proceed.)
     if (result.skipped) {
       return result;
     }
