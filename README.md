@@ -14,6 +14,9 @@ Demo: https://youtu.be/FT3I99cdwpE
 - **Persistent sessions**: Set up accounts once, reuse without re-login
 - **Rate-limit aware**: Automatic detection and graceful stopping
 - **Auto-download**: Optionally download and upscale videos
+- **Extend to max duration**: Auto-extend new generations or max-extend an existing short video to 30s
+- **Prune**: Delete unwanted variations from a permalink, keeping a whitelist
+- **UUID dedup**: Persistent per-job registry skips already-downloaded videos
 - **Config files**: Save settings in JSON for easy reuse
 
 ## Installation
@@ -73,6 +76,12 @@ npm start accounts list             # List accounts
 npm start run start --config <file> # Start from config
 npm start run start --account <alias> --permalink <url> --prompt "<text>" --count <n>
 
+# Max-extend an existing short video to 30s (multiple parallel chains)
+node src/cli.js run max-extend --config max-extend-config.json
+
+# Prune unwanted variations from a permalink (keeps source + whitelist)
+node src/cli.js run prune --account <alias> --permalink <url> --keep uuid1,uuid2 [--dry-run]
+
 # Auto-run (scheduled)
 npm start autorun start --interval 3h --config-dir ./autorun-configs
 ```
@@ -90,6 +99,7 @@ Edit `src/config.js` for timeouts, rate limits, and browser settings.
 | `AUTH_REQUIRED` | Re-run `npm start accounts add <alias>` |
 | Videos timing out | Increase `VIDEO_GENERATION_TIMEOUT` in `src/config.js` |
 | Rate limited | Wait ~3 hours, then rerun |
+| `STOPPED_GHOST_EXTEND` | Grok pointed an "extend" at an unrelated video. Run is stopped on purpose; the ghost URL is in the stop reason. Retry the run; partial extends are preserved. |
 
 ## License
 

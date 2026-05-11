@@ -42,6 +42,15 @@ CLI (cli.js)
 ### PostProcessor (`src/core/post-processor.js`)
 - Handles download, upscale (HD), and delete operations after successful generation
 - Each operation has retry logic with configurable attempts
+- Consults a persistent per-job UUID registry (`./logs/uuid-registry/<job>.txt`) before downloading — already-known UUIDs are skipped entirely (no bytes, no file). Registry survives across runs and concurrent workers append atomically
+
+### Extend loop & max-extend mode
+- `worker.js` extends a generated (or existing) video until it reaches the 30s max duration. A real extension requires the post-extend duration to grow vs the pre-extend duration — otherwise it's a "ghost extend" and the worker throws `GHOST_EXTEND_STOP`, which the runner fans out as a stop signal across siblings
+- `run max-extend` reuses the same loop, starting from an existing permalink. If the permalink is a static image post, the worker generates a new video first, then extends it
+- `extendFromTime` triggers an "extend from frame" on the first extension only (subsequent extensions extend from the end). See `generator.js` → `triggerExtendFromFrame()`
+
+### Prune mode (`run prune`)
+- One-shot worker that lists every video under a permalink and deletes everything not on the keep-list. The source UUID is always kept. Supports `--keep <uuids>`, `--keep-file <path>`, and `--dry-run`. No manifest, no generation — just navigation + delete
 
 ## Generation Flow
 
@@ -59,7 +68,8 @@ CLI (cli.js)
 
 | Error Type | Behavior | Log Level |
 |------------|----------|-----------|
-| Rate limit | Stop new work, finish current video | WARN |
+| Rate limit | Stop new work, finish current video, manifest → `STOPPED_RATE_LIMIT` | WARN |
+| Ghost extend | Grok pointed the extend at an unrelated video. Worker preserves prior real extends, manifest → `STOPPED_GHOST_EXTEND` (with ghost URL in stop reason) | WARN |
 | Content moderation | Expected failure, continue | WARN |
 | Timeout/Network | Mark failed, continue | ERROR |
 | Auth required | Stop entire run | ERROR |
@@ -87,12 +97,18 @@ UI selectors are centralized in `src/config.js` → update there when Grok UI ch
 ## Directory Structure
 
 ```
-./logs/<job-name>/
-    └── run.log              # Detailed logs (persists)
+./logs/runs/<job-name>.log              # Single-run logs (persists)
+./logs/autorun/<session-id>/            # Autorun logs (persists)
+    ├── run.log                         # Session-level events
+    ├── summary.log                     # Per-cycle tallies
+    └── detailed/<job-name>.log         # Per-job detailed trace
+./logs/uuid-registry/<job-name>.txt     # Persistent UUID dedup registry
 
-./cache/<job-name>/          # Ephemeral (auto-cleaned after run)
+./cache/<job-name>/                     # Ephemeral (auto-cleaned after run)
     ├── manifest.json
     └── worker-profiles/
 
-./downloads/<job-name>/      # Downloaded videos (if autoDownload enabled)
+./downloads/<job-name>/                 # Downloaded videos (if autoDownload enabled)
+                                        # Filenames: YYMMDD-HHmmss_<full-UUID>_<DUR>s.mp4
+                                        # HD upscales append _hd before .mp4
 ```
