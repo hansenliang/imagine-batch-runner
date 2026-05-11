@@ -171,12 +171,68 @@ When enabled:
 - After generation completes, any remaining videos on the server are downloaded and deleted
 - For non-HD videos: downloads original, upscales (if autoUpscale enabled), downloads HD, then deletes
 - For already-HD videos: downloads HD version, then deletes
-- Duplicate detection: videos are named with UUIDs (e.g., `video_20240115-143022_94fab9d4.mp4`). If the same video is downloaded again, it's prefixed with `DUPLICATE_` for manual review
+- Downloaded files are named `YYMMDD-HHmmss_<full-UUID>_<DUR>s.mp4` (HD upscales append `_hd` before the extension). The full UUID means the Grok permalink (`grok.com/imagine/post/<UUID>`) is recoverable directly from the filename
+- Re-downloads are prevented by a persistent per-job UUID registry at `./logs/uuid-registry/<job>.txt`. If a UUID is already in the registry the download is skipped entirely (no file written). Pair with `run prune` to clean up server-side leftovers
 
 CLI usage:
 ```bash
 npm start run start --config batch-config.json --download-and-delete-remaining
 ```
+
+## Max-Extend an Existing Video
+
+Extend an existing short video to the maximum 30s by running multiple parallel chains. Each chain branches independently from the same source video, useful for curating the best 30s result.
+
+```bash
+node src/cli.js run max-extend \
+  --account my-account \
+  --permalink "https://grok.com/imagine/post/abc123" \
+  --prompt "pixel art style, looping aesthetic" \
+  --count 5 \
+  --parallel 3 \
+  --auto-download \
+  --auto-upscale \
+  --auto-delete
+```
+
+- `--count` = number of independent extension chains (each aims for 30s)
+- `--parallel` = number of workers running chains simultaneously
+- `--auto-delete` deletes only extensions that reached 30s, never the original video
+- If the permalink is a static image post (no video), each chain generates a new video first, then extends it
+
+See `max-extend-config.example.json` for the config-file form.
+
+## Extend From a Specific Frame
+
+The first extension in a chain can extend from a specific timestamp instead of the end. This trims everything after the chosen frame, then extends from there. Subsequent extensions in the same chain use the normal extend path.
+
+CLI:
+```bash
+node src/cli.js run max-extend \
+  --account my-account \
+  --permalink "https://grok.com/imagine/post/abc123" \
+  --prompt "..." \
+  --extend-from-time 22 \
+  --count 3 \
+  --parallel 3
+```
+
+Config equivalent: `"extendFromTime": 22`. Works in both `run start --auto-extend` and `run max-extend`. See `max-extend-from-frame.example.json`.
+
+## Prune Unwanted Variations
+
+Delete every variation under a permalink except the source (always kept) and a whitelist of UUIDs.
+
+Dry-run first to preview what will be deleted:
+```bash
+node src/cli.js run prune \
+  --account my-account \
+  --permalink "https://grok.com/imagine/post/YOUR_POST_ID" \
+  --keep uuid1,uuid2 \
+  --dry-run
+```
+
+Then drop `--dry-run` to actually delete. UUIDs can be full or 8-char prefixes. Alternatively load from a file with `--keep-file <path>` (one UUID per line, `#` comments allowed).
 
 ## Viewing Generated Videos
 
