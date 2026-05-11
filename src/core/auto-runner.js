@@ -36,6 +36,22 @@ function formatTimestamp(date = new Date()) {
 }
 
 /**
+ * Format a successByDuration map as "10s=A, 20s=B, 30s=C". Returns null when
+ * the map is empty (caller decides whether to render anything).
+ */
+function formatSuccessByDuration(map) {
+  if (!map) return null;
+  const keys = Object.keys(map)
+    .map((k) => parseInt(k, 10))
+    .filter((n) => Number.isFinite(n) && map[String(n)] > 0)
+    .sort((a, b) => a - b);
+  if (keys.length === 0) return null;
+  const total = keys.reduce((acc, k) => acc + (map[String(k)] || 0), 0);
+  const parts = keys.map((k) => `${k}s=${map[String(k)]}`).join(', ');
+  return { total, display: parts };
+}
+
+/**
  * Format timestamp for display (YYYY-MM-DD HH:mm:ss)
  */
 function formatDisplayTimestamp(date = new Date()) {
@@ -108,6 +124,9 @@ export class AutoRunner {
       totalCleanupDeleted: 0,
       totalCleanupSkipped: 0,
       totalCleanupFailed: 0,
+      // Per-duration generation success counts, summed across all configs and
+      // cycles. Same shape as the manifest's successByDuration map.
+      totalSuccessByDuration: {},
       parallelism: 0,
     };
 
@@ -285,6 +304,7 @@ export class AutoRunner {
       cleanupDeleted: 0,
       cleanupSkipped: 0,
       cleanupFailed: 0,
+      successByDuration: {},
       parallelism: 0,
       status: 'COMPLETED',
       stopReason: null,
@@ -327,6 +347,11 @@ export class AutoRunner {
         cycleStats.cleanupDeleted += result.cleanupDeleted || 0;
         cycleStats.cleanupSkipped += result.cleanupSkipped || 0;
         cycleStats.cleanupFailed += result.cleanupFailed || 0;
+        if (result.successByDuration) {
+          for (const [k, v] of Object.entries(result.successByDuration)) {
+            cycleStats.successByDuration[k] = (cycleStats.successByDuration[k] || 0) + v;
+          }
+        }
         cycleStats.parallelism = Math.max(cycleStats.parallelism, parallelism);
 
         if (result.status === 'COMPLETED') {
@@ -374,14 +399,21 @@ export class AutoRunner {
     this.sessionStats.totalCleanupDeleted += cycleStats.cleanupDeleted;
     this.sessionStats.totalCleanupSkipped += cycleStats.cleanupSkipped;
     this.sessionStats.totalCleanupFailed += cycleStats.cleanupFailed;
+    for (const [k, v] of Object.entries(cycleStats.successByDuration)) {
+      this.sessionStats.totalSuccessByDuration[k] = (this.sessionStats.totalSuccessByDuration[k] || 0) + v;
+    }
     this.sessionStats.parallelism = Math.max(this.sessionStats.parallelism, cycleStats.parallelism);
 
     // Print cycle summary
     const cycleDuration = Date.now() - this.cycleStartTime;
+    const cycleBuckets = formatSuccessByDuration(cycleStats.successByDuration);
     console.log(chalk.blue('\n----------------------------------------'));
     console.log(chalk.blue(`  Cycle ${this.cycleCount} Complete`));
     console.log(chalk.gray(`  Duration: ${formatDuration(cycleDuration)}`));
-    console.log(chalk.green(`  Successful: ${cycleStats.successful}`));
+    if (cycleBuckets) {
+      console.log(chalk.green(`  Successful generations: ${cycleBuckets.total} (${cycleBuckets.display})`));
+    }
+    console.log(chalk.green(`  Chains completed: ${cycleStats.successful}`));
     if (cycleStats.contentModerated > 0) {
       console.log(chalk.yellow(`  Content moderated: ${cycleStats.contentModerated}`));
     }
@@ -395,7 +427,10 @@ export class AutoRunner {
 
     await this.logger.info(`Cycle ${this.cycleCount} complete`);
     await this.logger.info(`  Duration: ${formatDuration(cycleDuration)}`);
-    await this.logger.info(`  Successful: ${cycleStats.successful}, Content moderated: ${cycleStats.contentModerated}, Failed: ${cycleStats.failed}, Rate limited: ${cycleStats.rateLimited}`);
+    if (cycleBuckets) {
+      await this.logger.info(`  Successful generations: ${cycleBuckets.total} (${cycleBuckets.display})`);
+    }
+    await this.logger.info(`  Chains completed: ${cycleStats.successful}, Content moderated: ${cycleStats.contentModerated}, Failed: ${cycleStats.failed}, Rate limited: ${cycleStats.rateLimited}`);
 
     // Write summary log with TOTALS and per-cycle summaries
     await this._writeSummaryLog(cycleStats);
@@ -480,6 +515,7 @@ export class AutoRunner {
         cleanupDeleted: summary.cleanupDeleted || 0,
         cleanupSkipped: summary.cleanupSkipped || 0,
         cleanupFailed: summary.cleanupFailed || 0,
+        successByDuration: summary.successByDuration || {},
         stopReason: summary.stopReason,
       };
     } catch (error) {
@@ -709,12 +745,16 @@ export class AutoRunner {
     const lines = [];
 
     // TOTALS section at top
+    const sessionBuckets = formatSuccessByDuration(this.sessionStats.totalSuccessByDuration);
     lines.push('---');
     lines.push(`📊 AUTORUN TOTALS (${this.sessionStats.totalCycles} cycles, last updated ${cycleTimestamp}):`);
     lines.push(`  Session started: ${formatDisplayTimestamp(this.sessionStartTime)}`);
     lines.push(`  Workers: ${this.sessionStats.parallelism}`);
     lines.push(`  Total attempts: ${this.sessionStats.totalAttempts}`);
-    lines.push(`    ✓ Successful: ${this.sessionStats.totalSuccessful}`);
+    if (sessionBuckets) {
+      lines.push(`    ✓ Successful generations: ${sessionBuckets.total} (${sessionBuckets.display})`);
+    }
+    lines.push(`    ✓ Chains completed: ${this.sessionStats.totalSuccessful}`);
     if (this.sessionStats.totalContentModerated > 0) {
       lines.push(`    ⚠ Content moderated: ${this.sessionStats.totalContentModerated}`);
     }
@@ -751,11 +791,15 @@ export class AutoRunner {
     // Per-cycle summaries (newest first)
     for (let i = this.cycleSummaries.length - 1; i >= 0; i--) {
       const cycle = this.cycleSummaries[i];
+      const buckets = formatSuccessByDuration(cycle.stats.successByDuration);
       lines.push(`--- Cycle ${cycle.cycleNumber} (${cycle.timestamp}) ---`);
       lines.push('📊 Auto-Run Summary:');
       lines.push(`  Workers: ${cycle.stats.parallelism}`);
       lines.push(`  Total attempts: ${cycle.stats.totalAttempts}`);
-      lines.push(`    ✓ Successful: ${cycle.stats.successful}`);
+      if (buckets) {
+        lines.push(`    ✓ Successful generations: ${buckets.total} (${buckets.display})`);
+      }
+      lines.push(`    ✓ Chains completed: ${cycle.stats.successful}`);
       if (cycle.stats.contentModerated > 0) {
         lines.push(`    ⚠ Content moderated: ${cycle.stats.contentModerated}`);
       }
@@ -810,10 +854,14 @@ export class AutoRunner {
     console.log(chalk.blue('     SESSION SUMMARY'));
     console.log(chalk.blue('========================================\n'));
 
+    const finalBuckets = formatSuccessByDuration(this.sessionStats.totalSuccessByDuration);
     console.log(chalk.gray(`Session ID: ${this.sessionId}`));
     console.log(chalk.gray(`Total cycles: ${this.sessionStats.totalCycles}`));
     console.log(chalk.gray(`Total attempts: ${this.sessionStats.totalAttempts}`));
-    console.log(chalk.green(`  Successful: ${this.sessionStats.totalSuccessful}`));
+    if (finalBuckets) {
+      console.log(chalk.green(`  Successful generations: ${finalBuckets.total} (${finalBuckets.display})`));
+    }
+    console.log(chalk.green(`  Chains completed: ${this.sessionStats.totalSuccessful}`));
     if (this.sessionStats.totalContentModerated > 0) {
       console.log(chalk.yellow(`  Content moderated: ${this.sessionStats.totalContentModerated}`));
     }
@@ -862,7 +910,10 @@ export class AutoRunner {
     await this.logger.info('=== Session Summary ===');
     await this.logger.info(`Total cycles: ${this.sessionStats.totalCycles}`);
     await this.logger.info(`Total attempts: ${this.sessionStats.totalAttempts}`);
-    await this.logger.info(`  Successful: ${this.sessionStats.totalSuccessful}`);
+    if (finalBuckets) {
+      await this.logger.info(`  Successful generations: ${finalBuckets.total} (${finalBuckets.display})`);
+    }
+    await this.logger.info(`  Chains completed: ${this.sessionStats.totalSuccessful}`);
     await this.logger.info(`  Content moderated: ${this.sessionStats.totalContentModerated}`);
     await this.logger.info(`  Failed: ${this.sessionStats.totalFailed}`);
     await this.logger.info(`  Rate limited: ${this.sessionStats.totalRateLimited}`);

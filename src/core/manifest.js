@@ -52,6 +52,13 @@ export class ManifestManager {
       abTestCount: 0,
       extendedCount: 0,        // successful video extensions
       extendAttemptCount: 0,   // total extend attempts (including failures)
+      // Per-duration generation success counts. Keys are integer seconds (e.g.
+      // "10", "20", "30"). Incremented every time a verified video lands on the
+      // page — initial generation OR successful extension — regardless of whether
+      // the chain ultimately reaches max duration. Lets the summary report
+      // "Successful: 10s=A, 20s=B, 30s=C" rather than collapsing everything into
+      // a single chain-level COMPLETED count.
+      successByDuration: {},
       cleanupDownloadedCount: 0,
       cleanupDeletedCount: 0,
       cleanupSkippedCount: 0,
@@ -256,6 +263,7 @@ export class ManifestManager {
       abTestCount: this.manifest.abTestCount || 0,
       extended: this.manifest.extendedCount || 0,
       extendAttempts: this.manifest.extendAttemptCount || 0,
+      successByDuration: { ...(this.manifest.successByDuration || {}) },
       cleanupDownloaded: this.manifest.cleanupDownloadedCount || 0,
       cleanupDeleted: this.manifest.cleanupDeletedCount || 0,
       cleanupSkipped: this.manifest.cleanupSkippedCount || 0,
@@ -343,6 +351,23 @@ export class ManifestManager {
     await this.lock.withLock(async () => {
       await this._reloadFromDisk();
       this.manifest[counterName] = (this.manifest[counterName] || 0) + 1;
+      await this._writeToFile();
+    });
+  }
+
+  /**
+   * Increment a per-duration success bucket atomically (thread-safe).
+   * @param {number} durationSec - Video duration in seconds (will be rounded)
+   */
+  async incrementSuccessByDurationAtomic(durationSec) {
+    const key = String(Math.round(Number(durationSec) || 0));
+    if (key === '0') return;
+    await this.lock.withLock(async () => {
+      await this._reloadFromDisk();
+      if (!this.manifest.successByDuration) {
+        this.manifest.successByDuration = {};
+      }
+      this.manifest.successByDuration[key] = (this.manifest.successByDuration[key] || 0) + 1;
       await this._writeToFile();
     });
   }
