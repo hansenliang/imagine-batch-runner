@@ -1123,6 +1123,7 @@ export class VideoGenerator {
     let actualResolution = null; // Track if resolution was downgraded
     let trackedUrl = this.page.url(); // URL we're currently observing progress on
     let lastUrlChangeAt = null;       // ms timestamp of most recent URL change
+    let staleFirstReadingSkipped = false; // One-shot guard against stale-UI false positives (see below)
 
     while (true) {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -1143,6 +1144,7 @@ export class VideoGenerator {
         loggedStart = false;
         trackedUrl = currentUrl;
         lastUrlChangeAt = Date.now();
+        staleFirstReadingSkipped = false; // re-arm per URL
       }
 
       const video = await this.page.$(selectors.VIDEO_CONTAINER);
@@ -1169,13 +1171,33 @@ export class VideoGenerator {
         }
       }
 
-      // Log once when generation starts (re-armed if URL drifted, so we log per-URL)
+      // Log once when generation starts (re-armed if URL drifted, so we log per-URL).
+      //
+      // Defense against stale-UI false positives. A real Grok generation polled
+      // every 2 s shouldn't be >50% on its very first observation — we polled
+      // ≤2 s after clicking Generate. When the first reading is >50% it's
+      // overwhelmingly the source video's playback timer (or another visible
+      // `span.tabular-nums` element) leaking through the progress selector,
+      // not a real generation. Investigation 2026-05-19: 36 of 119 ghost-extend
+      // events had a first reading of exactly "67%" within 1 s of the click,
+      // the page never navigated, and the source video passed `_verifyVideoPlayable`
+      // → false success. Suppress the first such reading and keep polling. A real
+      // generation will still be in progress on the next poll; a truly stale value
+      // (no actual gen running) will either fail to advance the loop or get caught
+      // by the URL-drift / timeout paths.
       if (generationInProgress && !loggedStart) {
-        this.logger.info(`${this._tag(index)} Generation started: ${percentageProgress.percentage}%`);
-        loggedStart = true;
-        // Once progress appears on the new URL, the redirect (if any) was legit
-        // — Grok navigated to the new generation's post URL. Clear the timer.
-        lastUrlChangeAt = null;
+        if (!staleFirstReadingSkipped && percentageProgress.percentage > 50) {
+          this.logger.warn(
+            `${this._tag(index)} First progress reading is ${percentageProgress.percentage}% — too high for a fresh generation, treating as stale UI and continuing to poll`
+          );
+          staleFirstReadingSkipped = true;
+        } else {
+          this.logger.info(`${this._tag(index)} Generation started: ${percentageProgress.percentage}%`);
+          loggedStart = true;
+          // Once progress appears on the new URL, the redirect (if any) was legit
+          // — Grok navigated to the new generation's post URL. Clear the timer.
+          lastUrlChangeAt = null;
+        }
       }
 
       // 1. Check for video completion - only if we saw generation start
