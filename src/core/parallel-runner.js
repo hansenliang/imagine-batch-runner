@@ -7,6 +7,27 @@ import { Logger } from '../utils/logger.js';
 import { ParallelWorker } from './worker.js';
 
 /**
+ * Return true iff a process with the given PID currently exists.
+ *
+ * Uses `process.kill(pid, 0)` — signal 0 doesn't actually deliver anything,
+ * it just runs the kernel's permission/existence check. ESRCH = no such
+ * process. EPERM = process exists but we lack permission to signal it,
+ * which still counts as "alive" for our purposes (we'd never have
+ * launched it, so a foreign PID with a stale lockfile is a non-issue
+ * — better to skip than to nuke a coincidence).
+ */
+function _isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === 'ESRCH') return false;
+    if (error.code === 'EPERM') return true;
+    return false;
+  }
+}
+
+/**
  * Parallel Runner - coordinates multiple workers for concurrent video generation
  */
 export class ParallelRunner {
@@ -98,6 +119,12 @@ export class ParallelRunner {
       await this.logger.info('downloadAndDeleteRemainingVideos enabled - autoDownload and autoDelete forced to true');
     }
 
+    // Claim our cache dir with a PID lockfile, then sweep any orphans
+    // belonging to dead PIDs. Lockfile must exist before sweep so a
+    // concurrent runner sweeping at the same moment doesn't nuke us.
+    await this._writeLockfile();
+    await this._sweepOrphanCacheDirs();
+
     // Initialize manifest (stored in cacheDir)
     this.manifest = new ManifestManager(this.cacheDir);
     await this.manifest.init({
@@ -111,6 +138,106 @@ export class ParallelRunner {
     await this.logger.info(`Log file: ${this.logFilePath}`);
     await this.logger.info(`Cache directory: ${this.cacheDir}`);
     await this.logger.success('Initialization complete');
+  }
+
+  /**
+   * Write a PID lockfile into our cacheDir so the orphan sweep on the next
+   * run can distinguish "active" dirs from leftovers.
+   * @private
+   */
+  async _writeLockfile() {
+    const lockPath = path.join(this.cacheDir, '.lock');
+    const payload = JSON.stringify({
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      jobName: this.jobName,
+    });
+    await fs.writeFile(lockPath, payload);
+  }
+
+  /**
+   * Scan config.CACHE_DIR for orphan job directories — leftovers from prior
+   * runs that died before their `cleanupOperationalFiles()` could fire
+   * (kill -9, OOM, power loss, etc.). A dir is an orphan if:
+   *
+   *   - its `.lock` file is missing or unparseable,         OR
+   *   - the PID in the lockfile is no longer running,
+   *
+   * AND its directory mtime is older than ORPHAN_GRACE_MS (so we never
+   * race a concurrent runner that just mkdir'd but hasn't written its
+   * lockfile yet).
+   *
+   * Always skips our own cache dir. Skips the test-artifact dir
+   * `cloudflare-test/`. Silent on missing cache base dir.
+   * @private
+   */
+  async _sweepOrphanCacheDirs() {
+    const ORPHAN_GRACE_MS = 60_000; // 1 min — generous concurrent-init window
+    const baseDir = config.CACHE_DIR;
+
+    let entries;
+    try {
+      entries = await fs.readdir(baseDir, { withFileTypes: true });
+    } catch (error) {
+      if (error.code === 'ENOENT') return;
+      await this.logger.warn(`Orphan sweep: cannot read ${baseDir}: ${error.message}`);
+      return;
+    }
+
+    const sweptDirs = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dir = path.join(baseDir, entry.name);
+      if (dir === this.cacheDir) continue;
+      // Skip reserved/test artifact dirs at the top level
+      if (entry.name === 'cloudflare-test') continue;
+
+      let dirStat;
+      try {
+        dirStat = await fs.stat(dir);
+      } catch {
+        continue;
+      }
+      const ageMs = Date.now() - dirStat.mtimeMs;
+      if (ageMs < ORPHAN_GRACE_MS) continue; // too fresh to judge
+
+      let reason = null;
+      try {
+        const raw = await fs.readFile(path.join(dir, '.lock'), 'utf8');
+        const lock = JSON.parse(raw);
+        const pid = Number(lock.pid);
+        if (!Number.isFinite(pid)) {
+          reason = 'malformed lockfile';
+        } else if (!_isProcessAlive(pid)) {
+          reason = `PID ${pid} not running`;
+        }
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          reason = 'no lockfile';
+        } else {
+          // Read or parse error — be conservative, skip so we don't nuke
+          // something legitimate we just couldn't read.
+          await this.logger.debug(`Orphan sweep skip ${entry.name}: ${error.message}`);
+          continue;
+        }
+      }
+
+      if (!reason) continue;
+      try {
+        await fs.rm(dir, { recursive: true, force: true });
+        sweptDirs.push({ name: entry.name, reason });
+      } catch (error) {
+        await this.logger.warn(`Orphan sweep failed to rm ${dir}: ${error.message}`);
+      }
+    }
+
+    if (sweptDirs.length > 0) {
+      await this.logger.info(
+        `Orphan sweep removed ${sweptDirs.length} cache dir(s): ${sweptDirs
+          .map((d) => `${d.name} (${d.reason})`)
+          .join(', ')}`
+      );
+    }
   }
 
   /**
@@ -264,7 +391,7 @@ export class ParallelRunner {
   }
 
   /**
-   * Cleanup: shutdown all workers
+   * Cleanup: shutdown all workers, then remove the cache directory.
    */
   async cleanup() {
     await this.logger.info(`Cleaning up workers (${this.workers.length})...`);
@@ -280,22 +407,29 @@ export class ParallelRunner {
 
     await Promise.allSettled(shutdownPromises);
 
+    // Remove the cache dir before logging "complete" so the reported duration
+    // includes the rm and the success log isn't lying when the rm fails.
+    await this.cleanupOperationalFiles();
+
     const cleanupDurationMs = Date.now() - cleanupStart;
     await this.logger.success(`Cleanup complete in ${cleanupDurationMs}ms`);
-
-    // Clean up operational files (keep run.log)
-    await this.cleanupOperationalFiles();
   }
 
   /**
-   * Clean up operational files after run completes (keeps run.log in runDir)
+   * Clean up operational files after run completes (keeps run.log in runDir).
+   *
+   * `force: true` already suppresses missing-dir errors; anything that still
+   * throws is a real failure (busy FD, permission, etc.) and worth surfacing
+   * so orphaned cache dirs don't accumulate silently — that's how the last
+   * round of pre-fix leftovers piled up to 11 GB unnoticed.
    */
   async cleanupOperationalFiles() {
-    // Remove entire cache directory (manifest, worker-profiles, etc.)
     try {
       await fs.rm(this.cacheDir, { recursive: true, force: true });
     } catch (error) {
-      // Ignore errors - directory may not exist
+      await this.logger.warn(
+        `Cache cleanup failed for ${this.cacheDir}: ${error.message}`
+      );
     }
   }
 
