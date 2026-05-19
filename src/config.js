@@ -53,7 +53,7 @@ export const config = {
   CACHE_DIR: path.resolve(__dirname, '..', 'cache'),
 
   // Timeouts (milliseconds)
-  VIDEO_GENERATION_TIMEOUT: 120000, // 120 seconds (increased for higher resolutions/durations)
+  VIDEO_GENERATION_TIMEOUT: 180000, // 180 seconds — gives Grok extends headroom under load (~28% of "Failed" attempts in 5/14–5/19 autorun were 120–123 s gen-timeouts on busy extends)
   PAGE_LOAD_TIMEOUT: 30000,
   ELEMENT_WAIT_TIMEOUT: parseInt(process.env.ELEMENT_WAIT_TIMEOUT, 10) || 30000, // 30 seconds (configurable via env var)
   UI_ACTION_DELAY: 1000, // 1 second delay after UI actions (menu open/close, button clicks)

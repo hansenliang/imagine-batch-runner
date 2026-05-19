@@ -108,6 +108,13 @@ Example autorun config (`autorun-configs/my-extend.json`):
 - Rate limit stops the cycle; autorun waits for the interval then starts a fresh cycle
 - All existing max-extend behaviors apply (original video never deleted, partial extensions preserved, etc.)
 
+## Lean Profile Copy
+Each worker boots Chrome from a copy of the account source profile (`profiles/<account>-chrome/`) into `cache/<job>/worker-profiles/worker-N/`. The copy is an **explicit allowlist** (`config.LEAN_PROFILE_INCLUDES`), not a full directory copy: only the ~1 MB subset that's load-bearing for Cloudflare bypass and Grok auth — cookies (`cf_clearance`, `__cf_bm`, grok session), per-origin Local Storage / IndexedDB, Preferences, Web Data, Login Data, Network state — is carried. The remaining ~219 MB of the source profile (HTTP cache, V8 code cache, GPU/shader caches, history, sessions, sync data) is bookkeeping Cloudflare cannot see and Chrome rebuilds on its own. Per-worker dir is ~1 MB instead of ~220 MB; orphaned dirs (from crashes / kill -9) cost MB not GB.
+
+Missing source paths are skipped silently — a fresh account profile may not have all of them yet. Auth failures still surface through the existing `_isAuthenticated()` check in `worker.initialize()`.
+
+If Cloudflare bypass starts failing after a Chrome update or CF policy change, the first suspects are new storage locations Chrome moved auth-adjacent state into. Add them to `LEAN_PROFILE_INCLUDES` in `src/config.js`.
+
 ## Key Files
 - `src/cli.js` — CLI entry point
 - `src/core/parallel-runner.js` — Worker orchestration
@@ -180,6 +187,21 @@ Example autorun config (`autorun-configs/my-extend.json`):
 2. **Check all related files**: Errors in one place often have root causes elsewhere (configs, dependencies, imports)
 3. **Read error messages carefully**: Full stack traces contain valuable information. Don't skip over them
 4. **Test your hypothesis**: Before declaring a fix, verify it actually resolves the issue
+
+### The 3-Round Rule (MANDATORY for troubleshooting & solution design)
+Whenever asked to troubleshoot, debug, or design a solution, **do not rush to the first conclusion**. Run the following loop **three full times** before responding with a recommendation:
+
+**One round =**
+1. **Context check** — Ask: "Do I have all the context I need? Do I need to research online or look up documentation/specifics?" If yes, gather it before proceeding.
+2. **Ideate** — Think carefully about your options. Come up with the best one you can given current understanding.
+3. **Critical pass** — Adopt the mindset of a senior reviewer on a grumpy day. Push hard on:
+   - Maximizing simplicity (fewer lines, fewer abstractions, fewer moving parts)
+   - Surfacing flaws, edge cases, hidden assumptions
+   - "Is this *actually* the root cause, or just a plausible-looking symptom?"
+
+Then go back to step 1 and run round 2, then round 3. **Three full rounds, every time.** Each round should sharpen or replace the previous one — if rounds 2/3 just rubber-stamp round 1, you didn't push hard enough.
+
+Only after the third round do you present a conclusion or recommendation.
 
 ## What NOT to Do
 - Don't make changes without understanding existing code first
