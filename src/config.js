@@ -78,22 +78,58 @@ export const config = {
   // navigates to the new post URL and progress shows within 1–3s — never trip it.
   MODERATION_REDIRECT_TIMEOUT_MS: 15000,
 
-  // Hard cap on Playwright's `context.close()` per worker during shutdown. If
-  // Chrome is hung on in-flight requests / pending downloads / profile flushes,
-  // we abandon the graceful close after this and force-kill the underlying
-  // Chrome processes with pkill -9 -f <profileDir>. Healthy closes are
-  // sub-second so this only fires in pathological cases.
-  WORKER_SHUTDOWN_TIMEOUT_MS: 5000,
+  // Allowlist of paths copied from the account source profile into each
+  // worker's ephemeral profile dir at launch. The full source profile is
+  // ~220 MB, but only ~1 MB of it is actually load-bearing for Cloudflare
+  // bypass and Grok auth — cookies (cf_clearance, __cf_bm, grok session),
+  // per-origin Local Storage / IndexedDB, and a few prefs / credential
+  // stores. The rest (HTTP cache, V8 code cache, GPU/shader caches, history,
+  // sessions, sync data, etc.) is bookkeeping Cloudflare cannot see and
+  // Chrome rebuilds on its own; copying it just burns disk I/O and turns
+  // every orphaned worker dir into a multi-MB cleanup problem.
+  //
+  // Missing paths are skipped silently — a fresh account profile may not
+  // have all of them yet, and that's fine: Playwright/Chrome will create
+  // whatever's needed on first launch. Auth state failures still surface
+  // via the existing `_isAuthenticated()` check in worker.initialize().
+  //
+  // If Cloudflare bypass ever starts failing after a Chrome update or CF
+  // policy change, the first suspects are new storage locations Chrome
+  // moved auth-adjacent state into — add them here.
+  LEAN_PROFILE_INCLUDES: [
+    // Cookies — cf_clearance, __cf_bm, grok session, etc.
+    'Default/Cookies',
+    'Default/Cookies-journal',
+    // Per-origin storage — grok.com state, possibly CF Turnstile tokens
+    'Default/Local Storage',
+    'Default/Session Storage',
+    'Default/IndexedDB',
+    // Prefs + credential stores (fingerprint-adjacent flags, autofill, etc.)
+    'Default/Preferences',
+    'Default/Secure Preferences',
+    'Default/Web Data',
+    'Default/Web Data-journal',
+    'Default/Login Data',
+    'Default/Login Data-journal',
+    // Network state — TLS resumption tickets, HSTS, Trust Tokens
+    'Default/Network',
+    'Default/Trust Tokens',
+    'Default/Trust Tokens-journal',
+    // Service worker registrations (if grok.com registers one)
+    'Default/Service Worker/Database',
+    // Browser-level state — Chrome reads these at startup
+    'Local State',
+    'First Run',
+  ],
 
   // Generation settings
   DEFAULT_BATCH_SIZE: 10,
 
   // Parallel execution
   DEFAULT_PARALLELISM: 10,
-  WORKER_SHUTDOWN_TIMEOUT: 60000, // 60s grace period for shutdown
 
   // Auto-run settings
-  DEFAULT_AUTORUN_INTERVAL: 2 * 60 * 60 * 1000, // 2 hours in milliseconds
+  DEFAULT_AUTORUN_INTERVAL: 4 * 60 * 60 * 1000, // 2 hours in milliseconds
   DEFAULT_AUTORUN_CONFIG_DIR: './autorun-configs',
   AUTORUN_MIN_INTERVAL: 30 * 60 * 1000, // 30 minutes minimum
 

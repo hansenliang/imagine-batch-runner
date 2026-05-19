@@ -1,9 +1,12 @@
 import { chromium } from 'playwright';
-import { spawn } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs/promises';
 import config, { selectors } from '../config.js';
 import { VideoGenerator } from './generator.js';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Sleep utility
@@ -20,6 +23,42 @@ function extractPermalinkUUID(permalink) {
   if (!permalink) return null;
   const match = permalink.match(/\/imagine\/post\/([a-f0-9-]+)/i);
   return match ? match[1] : null;
+}
+
+/**
+ * Copy only the bot-detection-relevant subset of a Chrome user-data-dir from
+ * `source` → `dest`. The full source profile is ~220 MB, of which ~219 MB is
+ * HTTP cache / V8 code cache / GPU shader caches / browsing history / etc.
+ * that Cloudflare cannot see and Chrome rebuilds on its own. The ~1 MB
+ * carry-along (cookies + per-origin storage + a few prefs) is what actually
+ * keeps Cloudflare and Grok auth happy; see config.LEAN_PROFILE_INCLUDES.
+ *
+ * Skips any missing source paths silently — a fresh source profile may not
+ * have them all yet, and Chrome will create what it needs on first launch.
+ * Any other I/O error propagates so we don't silently produce a broken copy.
+ */
+async function copyLeanProfile(source, dest) {
+  // Pre-create Default/ so include paths under it can be copied without a
+  // separate parent-dir mkdir each time.
+  await fs.mkdir(path.join(dest, 'Default'), { recursive: true });
+
+  for (const rel of config.LEAN_PROFILE_INCLUDES) {
+    const src = path.join(source, rel);
+    const tgt = path.join(dest, rel);
+    let stat;
+    try {
+      stat = await fs.stat(src);
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
+    await fs.mkdir(path.dirname(tgt), { recursive: true });
+    if (stat.isDirectory()) {
+      await fs.cp(src, tgt, { recursive: true, force: true });
+    } else {
+      await fs.copyFile(src, tgt);
+    }
+  }
 }
 
 /**
@@ -82,18 +121,18 @@ export class ParallelWorker {
       // Create worker profile directory
       await fs.mkdir(this.workerProfileDir, { recursive: true });
 
-      // Copy account profile to worker-specific directory
+      // Seed the worker profile with the auth-relevant subset of the account
+      // source profile. ~1 MB lean copy instead of ~220 MB full copy; see
+      // copyLeanProfile() and config.LEAN_PROFILE_INCLUDES for rationale.
       const sourceProfileDir = path.join(config.PROFILES_DIR, `${this.accountAlias}-chrome`);
 
       try {
         await fs.access(sourceProfileDir);
-        await fs.cp(sourceProfileDir, this.workerProfileDir, {
-          recursive: true,
-          force: true
-        });
+        await copyLeanProfile(sourceProfileDir, this.workerProfileDir);
       } catch (error) {
         if (error.code === 'ENOENT') {
-          // Profile will be created by Playwright
+          // No source profile yet — Playwright/Chrome will create one fresh.
+          // _isAuthenticated() will catch the resulting "not logged in" state.
         } else {
           throw error;
         }
@@ -2041,49 +2080,32 @@ export class ParallelWorker {
   }
 
   /**
-   * Shutdown worker and cleanup resources
+   * Shutdown worker and cleanup resources.
+   *
+   * The worker profile is throwaway, so there's no state worth flushing back
+   * to disk — Playwright's graceful `context.close()` empirically force-killed
+   * 87% of the time anyway (after a full 5s wait), and the remaining 13% had
+   * nothing in flight worth waiting for. Skip the wait entirely: fire
+   * `context.close()` in the background so Playwright tears down its own
+   * handles, then SIGKILL Chrome immediately.
+   *
+   * Worker profile dir cleanup is intentionally absent — ParallelRunner's
+   * `cleanupOperationalFiles()` rms the parent `cacheDir` in one pass, which
+   * covers this worker's dir. Doing both raced our own SIGKILL (renderer FDs
+   * held for a few ms after kill).
    */
   async shutdown() {
     const shutdownStart = Date.now();
 
     try {
       if (this.context) {
-        // Bound context.close() with a hard timeout. Playwright's graceful close
-        // can hang for many minutes when Chrome is mid-request or flushing
-        // profile state — we'd rather force-kill than wait. See
-        // WORKER_SHUTDOWN_TIMEOUT_MS in config.js for the rationale.
-        const timeoutMs = config.WORKER_SHUTDOWN_TIMEOUT_MS;
-        const closePromise = this.context
-          .close()
-          .then(() => true)
-          .catch((err) => {
-            this.logger.debug(
-              `[Worker ${this.workerId}] context.close() threw: ${err.message}`
-            );
-            return true; // treat as "done"; we move on either way
-          });
-        const timeoutPromise = new Promise((resolve) =>
-          setTimeout(() => resolve(false), timeoutMs)
-        );
-        const closedCleanly = await Promise.race([closePromise, timeoutPromise]);
-
-        if (!closedCleanly) {
-          this.logger.warn(
-            `[Worker ${this.workerId}] context.close() exceeded ${timeoutMs}ms — force-killing Chrome`
-          );
-          await this._forceKillChrome();
-        }
-
+        // Fire-and-forget: let Playwright clean up its protocol state in the
+        // background, but don't wait — Chrome is about to die.
+        this.context.close().catch(() => { /* Chrome already dead, expected */ });
+        await this._forceKillChrome();
         this.context = null;
         this.page = null;
         this.generator = null;
-      }
-
-      // Cleanup worker profile (sub-second on SSD; safe to await)
-      try {
-        await fs.rm(this.workerProfileDir, { recursive: true, force: true });
-      } catch (error) {
-        this.logger.warn(`[Worker ${this.workerId}] Profile cleanup failed: ${error.message}`);
       }
 
       const shutdownDurationMs = Date.now() - shutdownStart;
@@ -2096,11 +2118,26 @@ export class ParallelWorker {
   }
 
   /**
-   * Force-kill any Chrome processes whose argv references this worker's
-   * profile directory. Safe across workers because each worker's profile
-   * path is unique (cache/<job>/worker-profiles/worker-N). Best-effort:
-   * pkill is POSIX-only; on platforms without it, we silently no-op and
-   * let the orphaned Chrome be reaped by the OS at process exit.
+   * Force-kill this worker's Chrome process by finding the PID via `ps` and
+   * sending SIGKILL via `process.kill`. Chrome's renderer/utility children
+   * detect the lost IPC channel and exit on their own.
+   *
+   * Why this shape rather than `pkill -9 -f <profileDir>` (the old approach):
+   *   - **No substring collision.** We match the exact `--user-data-dir=<abs>`
+   *     flag, so `worker-1`'s kill no longer takes down `worker-10`. This
+   *     used to be theoretical-only during whole-cleanup (where every
+   *     worker was dying anyway) but became a real bug on partial shutdown
+   *     (e.g. one worker hits rate-limit, others still running).
+   *   - **No reliance on `pkill` being in PATH.** `process.kill` is the
+   *     same syscall the kernel exposes; no extra binary required.
+   *   - **One `ps` invocation instead of a `pkill` spawn.** Lighter, and
+   *     gives us the list of PIDs so we can log them explicitly.
+   *
+   * We can't use Playwright's `browser().process()` because for persistent
+   * contexts Playwright doesn't expose the underlying ChildProcess handle.
+   *
+   * Win32: no-op (same as before). `ps`/SIGKILL aren't portable to Windows;
+   * Chrome will be reaped when the parent node process exits.
    * @private
    */
   async _forceKillChrome() {
@@ -2110,29 +2147,46 @@ export class ParallelWorker {
       );
       return;
     }
+
+    const needle = `--user-data-dir=${this.workerProfileDir}`;
+    let stdout;
     try {
-      await new Promise((resolve) => {
-        const proc = spawn('pkill', ['-9', '-f', this.workerProfileDir], {
-          stdio: 'ignore',
-        });
-        // pkill exits 0 if it killed something, 1 if no match — both are fine.
-        const safetyTimer = setTimeout(() => {
-          try { proc.kill('SIGKILL'); } catch { /* ignore */ }
-          resolve();
-        }, 2000);
-        proc.on('exit', () => {
-          clearTimeout(safetyTimer);
-          resolve();
-        });
-        proc.on('error', () => {
-          clearTimeout(safetyTimer);
-          resolve();
-        });
+      // `pid=,command=` suppresses column headers for both fields, so we
+      // get raw "<pid> <command>" lines.
+      const result = await execFileAsync('ps', ['-A', '-o', 'pid=,command='], {
+        maxBuffer: 8 * 1024 * 1024,
       });
+      stdout = result.stdout;
     } catch (error) {
+      this.logger.debug(`[Worker ${this.workerId}] ps invocation failed: ${error.message}`);
+      return;
+    }
+
+    const pids = stdout
+      .split('\n')
+      .filter((line) => line.includes(needle))
+      .map((line) => parseInt(line.trim().split(/\s+/)[0], 10))
+      .filter(Number.isFinite);
+
+    if (pids.length === 0) {
       this.logger.debug(
-        `[Worker ${this.workerId}] pkill error: ${error.message}`
+        `[Worker ${this.workerId}] No Chrome process found for ${this.workerProfileDir}`
       );
+      return;
+    }
+
+    for (const pid of pids) {
+      try {
+        process.kill(pid, 'SIGKILL');
+        this.logger.debug(`[Worker ${this.workerId}] SIGKILL ${pid}`);
+      } catch (error) {
+        // ESRCH = process already dead, which is the success state.
+        if (error.code !== 'ESRCH') {
+          this.logger.warn(
+            `[Worker ${this.workerId}] SIGKILL ${pid} failed: ${error.message}`
+          );
+        }
+      }
     }
   }
 }
