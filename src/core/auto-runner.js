@@ -434,6 +434,9 @@ export class AutoRunner {
 
     // Write summary log with TOTALS and per-cycle summaries
     await this._writeSummaryLog(cycleStats);
+
+    // Print cumulative session totals to console after each cycle
+    await this._printSessionSummary({ final: false });
   }
 
   /**
@@ -847,15 +850,25 @@ export class AutoRunner {
   }
 
   /**
-   * Print final session summary
+   * Print cumulative session totals. `final` controls the banner and footer:
+   * - final=true (default): "SESSION SUMMARY" banner + log-path footer (end of session).
+   * - final=false: "Session totals so far" inline banner, no footer (after each cycle).
+   * The body (the actual totals) is identical in both modes.
    */
-  async _printSessionSummary() {
-    console.log(chalk.blue('\n========================================'));
-    console.log(chalk.blue('     SESSION SUMMARY'));
-    console.log(chalk.blue('========================================\n'));
+  async _printSessionSummary({ final = true } = {}) {
+    if (final) {
+      console.log(chalk.blue('\n========================================'));
+      console.log(chalk.blue('     SESSION SUMMARY'));
+      console.log(chalk.blue('========================================\n'));
+    } else {
+      const cyclesStr = `${this.sessionStats.totalCycles} cycle${this.sessionStats.totalCycles === 1 ? '' : 's'}`;
+      console.log(chalk.blue(`\nSession totals so far (across ${cyclesStr}):`));
+    }
 
     const finalBuckets = formatSuccessByDuration(this.sessionStats.totalSuccessByDuration);
-    console.log(chalk.gray(`Session ID: ${this.sessionId}`));
+    if (final) {
+      console.log(chalk.gray(`Session ID: ${this.sessionId}`));
+    }
     console.log(chalk.gray(`Total cycles: ${this.sessionStats.totalCycles}`));
     console.log(chalk.gray(`Total attempts: ${this.sessionStats.totalAttempts}`));
     if (finalBuckets) {
@@ -904,10 +917,18 @@ export class AutoRunner {
       cp.push(`${this.sessionStats.totalCleanupFailed} failed`);
       console.log(chalk.cyan(`  Cleanup: ${cp.join(', ')}`));
     }
-    console.log(chalk.gray(`\nSummary log: ${this.summaryLogPath}`));
-    console.log(chalk.gray(`Detailed logs: ${this.sessionDir}\n`));
+    if (final) {
+      console.log(chalk.gray(`\nSummary log: ${this.summaryLogPath}`));
+      console.log(chalk.gray(`Detailed logs: ${this.sessionDir}\n`));
+    } else {
+      console.log('');
+    }
 
-    await this.logger.info('=== Session Summary ===');
+    await this.logger.info(
+      final
+        ? '=== Session Summary ==='
+        : `=== Cumulative session totals after cycle ${this.cycleCount} ===`
+    );
     await this.logger.info(`Total cycles: ${this.sessionStats.totalCycles}`);
     await this.logger.info(`Total attempts: ${this.sessionStats.totalAttempts}`);
     if (finalBuckets) {
